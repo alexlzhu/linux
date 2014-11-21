@@ -3549,6 +3549,9 @@ static int __extent_writepage(struct page *page, struct writeback_control *wbc,
 	loff_t i_size = i_size_read(inode);
 	unsigned long end_index = i_size >> PAGE_SHIFT;
 	unsigned long nr_written = 0;
+	bool skip_last_page = (wbc->sync_mode == WB_SYNC_NONE) &&
+		test_bit(BTRFS_INODE_APPEND_WRITE,
+			 &BTRFS_I(inode)->runtime_flags);
 
 	trace___extent_writepage(page, inode, wbc);
 
@@ -3564,7 +3567,7 @@ static int __extent_writepage(struct page *page, struct writeback_control *wbc,
 		return 0;
 	}
 
-	if (page->index == end_index) {
+	if (page->index == end_index && !skip_last_page) {
 		char *userpage;
 
 		userpage = kmap_atomic(page);
@@ -3572,6 +3575,10 @@ static int __extent_writepage(struct page *page, struct writeback_control *wbc,
 		       PAGE_SIZE - pg_offset);
 		kunmap_atomic(userpage);
 		flush_dcache_page(page);
+	} else if (page->index == end_index) {
+		redirty_page_for_writepage(wbc, page);
+		unlock_page(page);
+		return 0;
 	}
 
 	set_page_extent_mapped(page);

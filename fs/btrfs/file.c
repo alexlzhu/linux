@@ -1928,6 +1928,10 @@ static ssize_t btrfs_file_write_iter(struct kiocb *iocb,
 		}
 	}
 
+	if (file->f_flags & O_APPEND)
+		set_bit(BTRFS_INODE_APPEND_WRITE,
+			&BTRFS_I(inode)->runtime_flags);
+
 	current->backing_dev_info = inode_to_bdi(inode);
 	err = file_remove_privs(file);
 	if (err) {
