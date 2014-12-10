@@ -1794,17 +1794,22 @@ static noinline int lock_delalloc_pages(struct inode *inode,
  */
 EXPORT_FOR_TESTS
 noinline_for_stack bool find_lock_delalloc_range(struct inode *inode,
-				    struct page *locked_page, u64 *start,
+				    struct page *locked_page,
+				    struct writeback_control *wbc, u64 *start,
 				    u64 *end)
 {
 	struct extent_io_tree *tree = &BTRFS_I(inode)->io_tree;
 	u64 max_bytes = BTRFS_MAX_EXTENT_SIZE;
 	u64 delalloc_start;
 	u64 delalloc_end;
-	bool found;
+	loff_t i_size = i_size_read(inode);
 	struct extent_state *cached_state = NULL;
 	int ret;
 	int loops = 0;
+	bool found;
+	bool skip_last_page = (wbc->sync_mode == WB_SYNC_NONE) &&
+		test_bit(BTRFS_INODE_APPEND_WRITE,
+			 &BTRFS_I(inode)->runtime_flags);
 
 again:
 	/* step one, find a bunch of delalloc bytes starting at start */
@@ -1832,6 +1837,13 @@ again:
 	 */
 	if (delalloc_end + 1 - delalloc_start > max_bytes)
 		delalloc_end = delalloc_start + max_bytes - 1;
+
+	/*
+	 * Don't include the last page if it is a partial page and we're
+	 * O_APPEND.
+	 */
+	if (skip_last_page && delalloc_end >= i_size)
+		delalloc_end = round_down(i_size, PAGE_SIZE) - 1;
 
 	/* step two, lock all the pages after the page that has start */
 	ret = lock_delalloc_pages(inode, locked_page,
@@ -3351,7 +3363,7 @@ static noinline_for_stack int writepage_delalloc(struct inode *inode,
 
 
 	while (delalloc_end < page_end) {
-		found = find_lock_delalloc_range(inode, page,
+		found = find_lock_delalloc_range(inode, page, wbc,
 					       &delalloc_start,
 					       &delalloc_end);
 		if (!found) {

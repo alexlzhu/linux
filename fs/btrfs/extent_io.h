@@ -320,7 +320,8 @@ struct bio *btrfs_create_repair_bio(struct inode *inode, struct bio *failed_bio,
 				    bio_end_io_t *endio_func, void *data);
 #ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
 bool find_lock_delalloc_range(struct inode *inode,
-			     struct page *locked_page, u64 *start,
+			     struct page *locked_page,
+			     struct writeback_control *wbc, u64 *start,
 			     u64 *end);
 #endif
 struct extent_buffer *alloc_test_extent_buffer(struct btrfs_fs_info *fs_info,
