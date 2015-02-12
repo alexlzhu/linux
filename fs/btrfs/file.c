@@ -1592,6 +1592,7 @@ static noinline ssize_t btrfs_buffered_write(struct kiocb *iocb,
 	u64 release_bytes = 0;
 	u64 lockstart;
 	u64 lockend;
+	u64 balance_pending = 0;
 	size_t num_written = 0;
 	int nrptrs;
 	int ret = 0;
@@ -1795,9 +1796,13 @@ again:
 
 		cond_resched();
 
-		balance_dirty_pages_ratelimited(inode->i_mapping);
-		if (dirty_pages < (fs_info->nodesize >> PAGE_SHIFT) + 1)
-			btrfs_btree_balance_dirty(fs_info);
+		balance_pending += copied;
+		if (balance_pending > 16 * 1024 * 1024) {
+			balance_pending = 0;
+			balance_dirty_pages_ratelimited(inode->i_mapping);
+			if (dirty_pages < (fs_info->nodesize >> PAGE_SHIFT) + 1)
+				btrfs_btree_balance_dirty(fs_info);
+		}
 
 		pos += copied;
 		num_written += copied;
@@ -1989,6 +1994,11 @@ static ssize_t btrfs_file_write_iter(struct kiocb *iocb,
 	}
 
 	inode_unlock(inode);
+
+	/* we try not to balance dirty with the mutex held */
+	balance_dirty_pages_ratelimited(inode->i_mapping);
+	if (num_written < fs_info->nodesize)
+		btrfs_btree_balance_dirty(fs_info);
 
 	/*
 	 * We also have to set last_sub_trans to the current log transid,
