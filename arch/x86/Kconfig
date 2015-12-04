@@ -424,7 +424,7 @@ config X86_FEATURE_NAMES
 
 config X86_X2APIC
 	bool "Support x2apic"
-	depends on X86_LOCAL_APIC && X86_64 && (IRQ_REMAP || HYPERVISOR_GUEST)
+	depends on X86_LOCAL_APIC && X86_64
 	---help---
 	  This enables x2apic support on CPUs that have this feature.
 
