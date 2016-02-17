@@ -47,6 +47,7 @@
 #include <linux/sched/clock.h>
 #include <linux/sched/debug.h>
 #include <linux/sched/task_stack.h>
+#include <linux/utsname.h>
 
 #include <linux/uaccess.h>
 #include <asm/sections.h>
@@ -2557,6 +2558,12 @@ skip:
 						&r.text_buf[0],
 						r.info->text_len,
 						&r.info->dev_info);
+
+			/* FB-ONLY */
+			ext_len += msg_add_dict_text(ext_text + ext_len,
+						sizeof(ext_text) - ext_len,
+						"UNAME",
+						init_utsname()->release);
 		}
 		len = record_print_text(&r,
 				console_msg_format & MSG_FORMAT_SYSLOG,
