@@ -48,6 +48,7 @@
 #include <linux/sched/clock.h>
 #include <linux/sched/debug.h>
 #include <linux/sched/task_stack.h>
+#include <linux/utsname.h>
 
 #include <linux/uaccess.h>
 #include <asm/sections.h>
@@ -778,6 +779,11 @@ static ssize_t msg_print_ext_body(char *buf, size_t size,
 	}
 
 	return p - buf;
+}
+
+static ssize_t msg_print_ext_uname(char *buf, size_t size)
+{
+	return scnprintf(buf, size, " UNAME=%s\n", init_utsname()->release);
 }
 
 /* /dev/kmsg - userspace message inject/listen interface */
@@ -2456,6 +2462,12 @@ skip:
 						sizeof(ext_text) - ext_len,
 						log_dict(msg), msg->dict_len,
 						log_text(msg), msg->text_len);
+
+			/*
+			 * FB hack: append a "UNAME=%s" key to the dict
+			 */
+			ext_len += msg_print_ext_uname(ext_text + ext_len,
+						sizeof(ext_text) - ext_len);
 		}
 		console_idx = log_next(console_idx);
 		console_seq++;
