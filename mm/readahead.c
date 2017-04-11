@@ -215,6 +215,20 @@ out:
 	return nr_pages;
 }
 
+static unsigned long ra_req_size(struct backing_dev_info *bdi,
+				 struct file_ra_state *ra,
+				 unsigned long req_size)
+{
+	unsigned long max_pages;
+
+	/*
+	 * If the request exceeds the readahead window, allow the read to
+	 * be up to the optimal hardware IO size
+	 */
+	max_pages = max_t(unsigned long, bdi->io_pages, ra->ra_pages);
+	return min(req_size, max_pages);
+}
+
 /*
  * Chunk the readahead into 2 megabyte units, so that we don't pin too much
  * memory at once.
@@ -224,17 +238,11 @@ int force_page_cache_readahead(struct address_space *mapping, struct file *filp,
 {
 	struct backing_dev_info *bdi = inode_to_bdi(mapping->host);
 	struct file_ra_state *ra = &filp->f_ra;
-	unsigned long max_pages;
 
 	if (unlikely(!mapping->a_ops->readpage && !mapping->a_ops->readpages))
 		return -EINVAL;
 
-	/*
-	 * If the request exceeds the readahead window, allow the read to
-	 * be up to the optimal hardware IO size
-	 */
-	max_pages = max_t(unsigned long, bdi->io_pages, ra->ra_pages);
-	nr_to_read = min(nr_to_read, max_pages);
+	nr_to_read = ra_req_size(bdi, ra, nr_to_read);
 	while (nr_to_read) {
 		unsigned long this_chunk = (2 * 1024 * 1024) / PAGE_SIZE;
 
@@ -265,7 +273,7 @@ static unsigned long get_init_ra_size(unsigned long size, unsigned long max)
 	else
 		newsize = max;
 
-	return newsize;
+	return max(newsize, size);
 }
 
 /*
