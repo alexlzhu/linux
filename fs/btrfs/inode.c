@@ -9532,6 +9532,7 @@ static int btrfs_rename2(struct inode *old_dir, struct dentry *old_dentry,
 
 struct btrfs_delalloc_work {
 	struct inode *inode;
+	int sync_mode;
 	struct completion completion;
 	struct list_head list;
 	struct btrfs_work work;
@@ -9541,20 +9542,28 @@ static void btrfs_run_delalloc_work(struct btrfs_work *work)
 {
 	struct btrfs_delalloc_work *delalloc_work;
 	struct inode *inode;
+	int (*flush_func)(struct address_space *);
 
 	delalloc_work = container_of(work, struct btrfs_delalloc_work,
 				     work);
 	inode = delalloc_work->inode;
-	filemap_flush(inode->i_mapping);
+
+	if (delalloc_work->sync_mode == WB_SYNC_NONE)
+		flush_func = filemap_flush;
+	else
+		flush_func = filemap_fdatawrite;
+
+	flush_func(inode->i_mapping);
 	if (test_bit(BTRFS_INODE_HAS_ASYNC_EXTENT,
 				&BTRFS_I(inode)->runtime_flags))
-		filemap_flush(inode->i_mapping);
+		flush_func(inode->i_mapping);
 
 	iput(inode);
 	complete(&delalloc_work->completion);
 }
 
-static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode)
+static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode,
+							     int sync_mode)
 {
 	struct btrfs_delalloc_work *work;
 
@@ -9565,6 +9574,7 @@ static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode
 	init_completion(&work->completion);
 	INIT_LIST_HEAD(&work->list);
 	work->inode = inode;
+	work->sync_mode = sync_mode;
 	btrfs_init_work(&work->work, btrfs_run_delalloc_work, NULL, NULL);
 
 	return work;
@@ -9574,7 +9584,8 @@ static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode
  * some fairly slow code that needs optimization. This walks the list
  * of all the inodes with pending delalloc and forces them to disk.
  */
-static int start_delalloc_inodes(struct btrfs_root *root, int nr, bool snapshot)
+static int start_delalloc_inodes(struct btrfs_root *root, int nr, bool snapshot,
+				 int sync_mode)
 {
 	struct btrfs_inode *binode;
 	struct inode *inode;
@@ -9605,7 +9616,7 @@ static int start_delalloc_inodes(struct btrfs_root *root, int nr, bool snapshot)
 		if (snapshot)
 			set_bit(BTRFS_INODE_SNAPSHOT_FLUSH,
 				&binode->runtime_flags);
-		work = btrfs_alloc_delalloc_work(inode);
+		work = btrfs_alloc_delalloc_work(inode, sync_mode);
 		if (!work) {
 			iput(inode);
 			ret = -ENOMEM;
@@ -9646,13 +9657,14 @@ int btrfs_start_delalloc_snapshot(struct btrfs_root *root)
 	if (test_bit(BTRFS_FS_STATE_ERROR, &fs_info->fs_state))
 		return -EROFS;
 
-	ret = start_delalloc_inodes(root, -1, true);
+	ret = start_delalloc_inodes(root, -1, true, WB_SYNC_ALL);
 	if (ret > 0)
 		ret = 0;
 	return ret;
 }
 
-int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, int nr)
+int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, int nr,
+			       int sync_mode)
 {
 	struct btrfs_root *root;
 	struct list_head splice;
@@ -9675,7 +9687,7 @@ int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, int nr)
 			       &fs_info->delalloc_roots);
 		spin_unlock(&fs_info->delalloc_root_lock);
 
-		ret = start_delalloc_inodes(root, nr, false);
+		ret = start_delalloc_inodes(root, nr, false, sync_mode);
 		btrfs_put_fs_root(root);
 		if (ret < 0)
 			goto out;

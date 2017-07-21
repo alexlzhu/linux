@@ -92,7 +92,7 @@ commit_trans:
 			need_commit--;
 
 			if (need_commit > 0) {
-				btrfs_start_delalloc_roots(fs_info, -1);
+				btrfs_start_delalloc_roots(fs_info, -1, WB_SYNC_NONE);
 				btrfs_wait_ordered_roots(fs_info, U64_MAX, 0,
 							 (u64)-1);
 			}
