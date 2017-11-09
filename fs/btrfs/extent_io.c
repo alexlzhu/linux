@@ -685,8 +685,9 @@ int __clear_extent_bit(struct extent_io_tree *tree, u64 start, u64 end,
 	struct extent_state *prealloc = NULL;
 	struct rb_node *node;
 	u64 last_end;
-	int err;
+	int err = 0;
 	int clear = 0;
+	bool need_prealloc = false;
 
 	btrfs_debug_check_extent_io_range(tree, start, end);
 	trace_btrfs_clear_extent_bit(tree, start, end - start + 1, bits);
@@ -709,6 +710,9 @@ again:
 		 * If we end up needing a new extent state we allocate it later.
 		 */
 		prealloc = alloc_extent_state(mask);
+		if (!prealloc && need_prealloc)
+			return -ENOMEM;
+		need_prealloc = false;
 	}
 
 	spin_lock(&tree->lock);
@@ -768,7 +772,15 @@ hit_next:
 
 	if (state->start < start) {
 		prealloc = alloc_extent_state_atomic(prealloc);
-		BUG_ON(!prealloc);
+		if (!prealloc) {
+			if (gfpflags_allow_blocking(mask)) {
+				need_prealloc = true;
+				spin_unlock(&tree->lock);
+				goto again;
+			}
+			err = -ENOMEM;
+			goto out;
+		}
 		err = split_state(tree, state, prealloc, start);
 		if (err)
 			extent_io_tree_panic(tree, err);
@@ -791,7 +803,15 @@ hit_next:
 	 */
 	if (state->start <= end && state->end > end) {
 		prealloc = alloc_extent_state_atomic(prealloc);
-		BUG_ON(!prealloc);
+		if (!prealloc) {
+			if (gfpflags_allow_blocking(mask)) {
+				need_prealloc = true;
+				spin_unlock(&tree->lock);
+				goto again;
+			}
+			err = -ENOMEM;
+			goto out;
+		}
 		err = split_state(tree, state, prealloc, end + 1);
 		if (err)
 			extent_io_tree_panic(tree, err);
@@ -826,7 +846,7 @@ out:
 	if (prealloc)
 		free_extent_state(prealloc);
 
-	return 0;
+	return err;
 
 }
 
