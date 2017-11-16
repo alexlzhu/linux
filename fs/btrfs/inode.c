@@ -2132,10 +2132,10 @@ static blk_status_t btrfs_submit_bio_hook(struct inode *inode, struct bio *bio,
 				goto out;
 		}
 		goto mapit;
-	} else if (async && !skip_sum) {
+	} else if (root->root_key.objectid == BTRFS_DATA_RELOC_TREE_OBJECTID) {
 		/* csum items have already been cloned */
-		if (root->root_key.objectid == BTRFS_DATA_RELOC_TREE_OBJECTID)
-			goto mapit;
+		goto mapit;
+	} else if (async && !skip_sum) {
 		/* we're doing a write, do the async checksumming */
 		ret = btrfs_wq_submit_bio(fs_info, bio, mirror_num, bio_flags,
 					  0, inode, btrfs_submit_bio_start);
