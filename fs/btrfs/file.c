@@ -2026,6 +2026,12 @@ int btrfs_release_file(struct inode *inode, struct file *filp)
 	if (test_and_clear_bit(BTRFS_INODE_ORDERED_DATA_CLOSE,
 			       &BTRFS_I(inode)->runtime_flags))
 			filemap_flush(inode->i_mapping);
+
+	if (filp->f_flags & O_APPEND) {
+		clear_bit(BTRFS_INODE_APPEND_WRITE,
+			  &BTRFS_I(inode)->runtime_flags);
+	}
+
 	return 0;
 }
 
