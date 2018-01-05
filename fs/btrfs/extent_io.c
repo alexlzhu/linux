@@ -1785,6 +1785,19 @@ static noinline int lock_delalloc_pages(struct inode *inode,
 	return ret;
 }
 
+static bool wb_skip_last_page(struct inode *inode,
+			      struct writeback_control *wbc)
+{
+	/*
+	 * Skip writing out the last page for background writeback of O_APPEND,
+	 * unless we're explictly trying to free space.
+	 */
+	return (wbc->sync_mode == WB_SYNC_NONE &&
+		wbc->reason != WB_REASON_FS_FREE_SPACE &&
+		test_bit(BTRFS_INODE_APPEND_WRITE,
+			 &BTRFS_I(inode)->runtime_flags));
+}
+
 /*
  * Find and lock a contiguous range of bytes in the file marked as delalloc, no
  * more than @max_bytes.  @Start and @end are used to return the range,
@@ -1807,9 +1820,6 @@ noinline_for_stack bool find_lock_delalloc_range(struct inode *inode,
 	int ret;
 	int loops = 0;
 	bool found;
-	bool skip_last_page = (wbc->sync_mode == WB_SYNC_NONE) &&
-		test_bit(BTRFS_INODE_APPEND_WRITE,
-			 &BTRFS_I(inode)->runtime_flags);
 
 again:
 	/* step one, find a bunch of delalloc bytes starting at start */
@@ -1842,7 +1852,7 @@ again:
 	 * Don't include the last page if it is a partial page and we're
 	 * O_APPEND.
 	 */
-	if (skip_last_page && delalloc_end >= i_size)
+	if (wb_skip_last_page(inode, wbc) && delalloc_end >= i_size)
 		delalloc_end = round_down(i_size, PAGE_SIZE) - 1;
 
 	/* step two, lock all the pages after the page that has start */
@@ -3561,9 +3571,6 @@ static int __extent_writepage(struct page *page, struct writeback_control *wbc,
 	loff_t i_size = i_size_read(inode);
 	unsigned long end_index = i_size >> PAGE_SHIFT;
 	unsigned long nr_written = 0;
-	bool skip_last_page = (wbc->sync_mode == WB_SYNC_NONE) &&
-		test_bit(BTRFS_INODE_APPEND_WRITE,
-			 &BTRFS_I(inode)->runtime_flags);
 
 	trace___extent_writepage(page, inode, wbc);
 
@@ -3579,7 +3586,7 @@ static int __extent_writepage(struct page *page, struct writeback_control *wbc,
 		return 0;
 	}
 
-	if (page->index == end_index && !skip_last_page) {
+	if (page->index == end_index && !wb_skip_last_page(inode, wbc)) {
 		char *userpage;
 
 		userpage = kmap_atomic(page);
