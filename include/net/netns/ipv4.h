@@ -179,6 +179,8 @@ struct netns_ipv4 {
 	unsigned int sysctl_tcp_fastopen_blackhole_timeout;
 	atomic_t tfo_active_disable_times;
 	unsigned long tfo_active_disable_stamp;
+	int sysctl_tcp_min_rto_ms;
+	int sysctl_tcp_max_delack_ms;
 
 	int sysctl_udp_wmem_min;
 	int sysctl_udp_rmem_min;

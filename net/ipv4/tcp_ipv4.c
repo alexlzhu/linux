@@ -2783,6 +2783,8 @@ static int __net_init tcp_sk_init(struct net *net)
 	spin_lock_init(&net->ipv4.tcp_fastopen_ctx_lock);
 	net->ipv4.sysctl_tcp_fastopen_blackhole_timeout = 60 * 60;
 	atomic_set(&net->ipv4.tfo_active_disable_times, 0);
+	net->ipv4.sysctl_tcp_min_rto_ms = (TCP_RTO_MIN * 1000) / HZ;
+	net->ipv4.sysctl_tcp_max_delack_ms = (TCP_DELACK_MAX * 1000) / HZ;
 
 	/* Reno is always built in */
 	if (!net_eq(net, &init_net) &&

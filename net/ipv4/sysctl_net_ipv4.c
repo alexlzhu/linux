@@ -50,6 +50,8 @@ static int ip_ping_group_range_max[] = { GID_T_MAX, GID_T_MAX };
 static int comp_sack_nr_max = 255;
 static u32 u32_max_div_HZ = UINT_MAX / HZ;
 static int one_day_secs = 24 * 3600;
+static int max_min_rto = (TCP_RTO_MIN * 1000) / HZ;
+static int max_max_delack = (TCP_DELACK_MAX * 1000) / HZ;
 
 /* obsolete */
 static int sysctl_tcp_low_latency __read_mostly;
@@ -1335,6 +1337,24 @@ static struct ctl_table ipv4_net_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ONE
+	},
+	{
+		.procname	= "tcp_min_rto_ms",
+		.data		= &init_net.ipv4.sysctl_tcp_min_rto_ms,
+		.maxlen		= sizeof(init_net.ipv4.sysctl_tcp_min_rto_ms),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &four,
+		.extra2		= &max_min_rto,
+	},
+	{
+		.procname	= "tcp_max_delack_ms",
+		.data		= &init_net.ipv4.sysctl_tcp_max_delack_ms,
+		.maxlen		= sizeof(init_net.ipv4.sysctl_tcp_max_delack_ms),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= &max_max_delack,
 	},
 	{ }
 };
