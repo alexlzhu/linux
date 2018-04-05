@@ -60,6 +60,7 @@ enum {
 	Opt_prjquota, Opt_uquota, Opt_gquota, Opt_pquota,
 	Opt_uqnoenforce, Opt_gqnoenforce, Opt_pqnoenforce, Opt_qnoenforce,
 	Opt_discard, Opt_nodiscard, Opt_dax, Opt_barrier, Opt_nobarrier,
+	Opt_discard_sync,
 };
 
 static const struct fs_parameter_spec xfs_fs_parameters[] = {
@@ -101,6 +102,7 @@ static const struct fs_parameter_spec xfs_fs_parameters[] = {
 	fsparam_flag("pqnoenforce",	Opt_pqnoenforce),
 	fsparam_flag("qnoenforce",	Opt_qnoenforce),
 	fsparam_flag("discard",		Opt_discard),
+	fsparam_flag("discard_sync",	Opt_discard_sync),
 	fsparam_flag("nodiscard",	Opt_nodiscard),
 	fsparam_flag("dax",		Opt_dax),
 	/* Deprecated mount options scheduled for removal */
@@ -1242,8 +1244,13 @@ xfs_fc_parse_param(
 	case Opt_discard:
 		mp->m_flags |= XFS_MOUNT_DISCARD;
 		return 0;
+	case Opt_discard_sync:
+		mp->m_flags |= XFS_MOUNT_DISCARD;
+		mp->m_flags |= XFS_MOUNT_DISCARD_SYNC;
+		return 0;
 	case Opt_nodiscard:
 		mp->m_flags &= ~XFS_MOUNT_DISCARD;
+		mp->m_flags &= ~XFS_MOUNT_DISCARD_SYNC;
 		return 0;
 #ifdef CONFIG_FS_DAX
 	case Opt_dax:
