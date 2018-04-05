@@ -1256,6 +1256,7 @@ xfs_fs_parse_param(
 		return 0;
 	case Opt_discard:
 		mp->m_flags |= XFS_MOUNT_DISCARD;
+		mp->m_flags |= XFS_MOUNT_DISCARD_SYNC;
 		return 0;
 	case Opt_discard_sync:
 		mp->m_flags |= XFS_MOUNT_DISCARD;
