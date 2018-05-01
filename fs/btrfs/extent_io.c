@@ -1796,13 +1796,13 @@ EXPORT_FOR_TESTS
 noinline_for_stack bool find_lock_delalloc_range(struct inode *inode,
 				    struct page *locked_page,
 				    struct writeback_control *wbc, u64 *start,
-				    u64 *end, bool skip_last_page)
+				    u64 *end, loff_t i_size,
+				    bool skip_last_page)
 {
 	struct extent_io_tree *tree = &BTRFS_I(inode)->io_tree;
 	u64 max_bytes = BTRFS_MAX_EXTENT_SIZE;
 	u64 delalloc_start;
 	u64 delalloc_end;
-	loff_t i_size = i_size_read(inode);
 	struct extent_state *cached_state = NULL;
 	int ret;
 	int loops = 0;
@@ -3350,7 +3350,7 @@ static void update_nr_written(struct writeback_control *wbc,
 static noinline_for_stack int writepage_delalloc(struct inode *inode,
 		struct page *page, struct writeback_control *wbc,
 		u64 delalloc_start, unsigned long *nr_written,
-		bool skip_last_page)
+		loff_t i_size, bool skip_last_page)
 {
 	u64 page_end = delalloc_start + PAGE_SIZE - 1;
 	bool found;
@@ -3364,7 +3364,7 @@ static noinline_for_stack int writepage_delalloc(struct inode *inode,
 		found = find_lock_delalloc_range(inode, page, wbc,
 					       &delalloc_start,
 					       &delalloc_end,
-					       skip_last_page);
+					       i_size, skip_last_page);
 		if (!found) {
 			delalloc_start = delalloc_end + 1;
 			continue;
@@ -3601,7 +3601,7 @@ static int __extent_writepage(struct page *page, struct writeback_control *wbc,
 
 	if (!epd->extent_locked) {
 		ret = writepage_delalloc(inode, page, wbc, start, &nr_written,
-					 skip_last_page);
+					 i_size, skip_last_page);
 		if (ret == 1)
 			return 0;
 		if (ret)
