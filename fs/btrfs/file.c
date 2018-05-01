@@ -1928,10 +1928,6 @@ static ssize_t btrfs_file_write_iter(struct kiocb *iocb,
 		}
 	}
 
-	if (file->f_flags & O_APPEND)
-		set_bit(BTRFS_INODE_APPEND_WRITE,
-			&BTRFS_I(inode)->runtime_flags);
-
 	current->backing_dev_info = inode_to_bdi(inode);
 	err = file_remove_privs(file);
 	if (err) {
@@ -1973,6 +1969,10 @@ static ssize_t btrfs_file_write_iter(struct kiocb *iocb,
 		if (start_pos > round_up(oldsize, fs_info->sectorsize))
 			clean_page = 1;
 	}
+
+	if (pos == oldsize)
+		set_bit(BTRFS_INODE_APPEND_WRITE,
+			&BTRFS_I(inode)->runtime_flags);
 
 	if (sync)
 		atomic_inc(&BTRFS_I(inode)->sync_writers);
@@ -2027,10 +2027,12 @@ int btrfs_release_file(struct inode *inode, struct file *filp)
 			       &BTRFS_I(inode)->runtime_flags))
 			filemap_flush(inode->i_mapping);
 
-	if (filp->f_flags & O_APPEND) {
-		clear_bit(BTRFS_INODE_APPEND_WRITE,
-			  &BTRFS_I(inode)->runtime_flags);
-	}
+	/*
+	 * This file might still be open, but the flag will be set again on the
+	 * next extending write. The common case is only one file descriptor
+	 * open.
+	 */
+	clear_bit(BTRFS_INODE_APPEND_WRITE, &BTRFS_I(inode)->runtime_flags);
 
 	return 0;
 }
