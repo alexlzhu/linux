@@ -48,6 +48,7 @@
 #include "qgroup.h"
 #include "delalloc-space.h"
 #include "block-group.h"
+#include "backref.h"
 
 struct btrfs_iget_args {
 	struct btrfs_key *location;
@@ -2711,6 +2712,81 @@ void btrfs_writepage_endio_finish_ordered(struct page *page, u64 start,
 	btrfs_queue_work(wq, &ordered_extent->work);
 }
 
+static int __btrfs_debug_csum_failure(struct page *page)
+{
+	struct btrfs_path *path;
+	struct inode_fs_paths *ipath = NULL;
+	struct inode *inode = page->mapping->host;
+	struct btrfs_root *root = BTRFS_I(inode)->root;
+	u64 isize = i_size_read(inode);
+	u64 otime_sec = BTRFS_I(inode)->i_otime.tv_sec;
+	char page_bytes[64];
+	char *kaddr;
+	int ret;
+
+	path = btrfs_alloc_path();
+	if (!path)
+		goto out;
+
+	ipath = init_ipath(4096, BTRFS_I(inode)->root, path);
+	if (!ipath)
+		goto out_path;
+
+	ret = paths_from_inode(inode->i_ino, ipath);
+
+	if (ret < 0)
+		goto out_ipath;
+
+	kaddr = kmap(page);
+	memcpy(page_bytes, kaddr, 64);
+	kunmap(page);
+
+	btrfs_crit(root->fs_info, "XXXXXXX csum failed debug ino %lu root %Lu file offset %Lu otime %Lu size %Lu path %s bytes %*ph", inode->i_ino, root->root_key.objectid, page_offset(page), otime_sec, isize, (char *)(unsigned long)ipath->fspath->val[0], 64, page_bytes);
+
+out_ipath:
+	free_ipath(ipath);
+out_path:
+	btrfs_free_path(path);
+out:
+	return 0;
+}
+
+static int __data_readpage_endio_check(struct inode *inode,
+				  struct btrfs_io_bio *io_bio,
+				  int icsum, struct page *page,
+				  int pgoff, u64 start, size_t len)
+{
+	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
+	SHASH_DESC_ON_STACK(shash, fs_info->csum_shash);
+	char *kaddr;
+	u16 csum_size = btrfs_super_csum_size(fs_info->super_copy);
+	u8 *csum_expected;
+	u8 csum[BTRFS_CSUM_SIZE];
+
+	csum_expected = ((u8 *)io_bio->csum) + icsum * csum_size;
+
+	kaddr = kmap_atomic(page);
+	shash->tfm = fs_info->csum_shash;
+
+	crypto_shash_init(shash);
+	crypto_shash_update(shash, kaddr + pgoff, len);
+	crypto_shash_final(shash, csum);
+
+	if (memcmp(csum, csum_expected, csum_size))
+		goto zeroit;
+
+	kunmap_atomic(kaddr);
+	return 0;
+zeroit:
+	btrfs_print_data_csum_error(BTRFS_I(inode), start, csum, csum_expected,
+				    io_bio->mirror_num);
+	__btrfs_debug_csum_failure(page);
+	memset(kaddr + pgoff, 1, len);
+	flush_dcache_page(page);
+	kunmap_atomic(kaddr);
+	return -EIO;
+}
+
 static int __readpage_endio_check(struct inode *inode,
 				  struct btrfs_io_bio *io_bio,
 				  int icsum, struct page *page,
@@ -2775,7 +2851,7 @@ static int btrfs_readpage_end_io_hook(struct btrfs_io_bio *io_bio,
 	}
 
 	phy_offset >>= inode->i_sb->s_blocksize_bits;
-	return __readpage_endio_check(inode, io_bio, phy_offset, page, offset,
+	return __data_readpage_endio_check(inode, io_bio, phy_offset, page, offset,
 				      start, (size_t)(end - start + 1));
 }
 
