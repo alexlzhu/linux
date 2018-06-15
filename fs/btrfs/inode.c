@@ -2720,8 +2720,6 @@ static int __btrfs_debug_csum_failure(struct page *page)
 	struct btrfs_root *root = BTRFS_I(inode)->root;
 	u64 isize = i_size_read(inode);
 	u64 otime_sec = BTRFS_I(inode)->i_otime.tv_sec;
-	char page_bytes[64];
-	char *kaddr;
 	int ret;
 
 	path = btrfs_alloc_path();
@@ -2737,11 +2735,7 @@ static int __btrfs_debug_csum_failure(struct page *page)
 	if (ret < 0)
 		goto out_ipath;
 
-	kaddr = kmap(page);
-	memcpy(page_bytes, kaddr, 64);
-	kunmap(page);
-
-	btrfs_crit(root->fs_info, "XXXXXXX csum failed debug ino %lu root %Lu file offset %Lu otime %Lu size %Lu path %s bytes %*ph", inode->i_ino, root->root_key.objectid, page_offset(page), otime_sec, isize, (char *)(unsigned long)ipath->fspath->val[0], 64, page_bytes);
+	btrfs_crit(root->fs_info, "XXXXXXX csum failed debug ino %lu root %Lu file offset %Lu otime %Lu size %Lu path %s", inode->i_ino, root->root_key.objectid, page_offset(page), otime_sec, isize, (char *)(unsigned long)ipath->fspath->val[0]);
 
 out_ipath:
 	free_ipath(ipath);
@@ -2780,10 +2774,10 @@ static int __data_readpage_endio_check(struct inode *inode,
 zeroit:
 	btrfs_print_data_csum_error(BTRFS_I(inode), start, csum, csum_expected,
 				    io_bio->mirror_num);
-	__btrfs_debug_csum_failure(page);
 	memset(kaddr + pgoff, 1, len);
 	flush_dcache_page(page);
 	kunmap_atomic(kaddr);
+	__btrfs_debug_csum_failure(page);
 	return -EIO;
 }
 
