@@ -70,6 +70,8 @@ int __blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 
 		/* Make sure bi_size doesn't overflow */
 		req_sects = min_t(sector_t, nr_sects, max_sectors);
+		if (req_sects > UINT_MAX >> 9)
+			req_sects = UINT_MAX >> 9;
 
 		WARN_ON_ONCE((req_sects << 9) > UINT_MAX);
 
