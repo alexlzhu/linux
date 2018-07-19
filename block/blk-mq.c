@@ -1989,8 +1989,7 @@ static blk_qc_t blk_mq_make_request(struct request_queue *q, struct bio *bio)
 
 	if ((bio->bi_opf & REQ_RAHEAD) &&
 	    (fatal_signal_pending(current) || blk_cgroup_congested())) {
-		bio->bi_error = -EAGAIN;
-		bio_endio(bio);
+		bio_wouldblock_error(bio);
 		return BLK_QC_T_NONE;
 	}
 

@@ -1162,8 +1162,7 @@ blk_qc_t submit_bio(struct bio *bio)
 
 		if (unlikely((bio->bi_opf & REQ_RAHEAD) &&
 		    fatal_signal_pending(current))) {
-			bio->bi_error = -EAGAIN;
-			bio_endio(bio);
+			bio_wouldblock_error(bio);
 			return BLK_QC_T_NONE;
 		}
 
