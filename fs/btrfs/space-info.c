@@ -808,6 +808,14 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		if (flush_state > COMMIT_TRANS) {
 			commit_cycles++;
 			if (commit_cycles > 2) {
+				/* Once every ten seconds at most. */
+				static DEFINE_RATELIMIT_STATE(_rs, HZ * 10, 1);
+
+				if (__ratelimit(&_rs)) {
+					btrfs_err(fs_info,
+						  "reserve metadata bytes failed, possible early enospc");
+					__btrfs_dump_space_info(fs_info, space_info);
+				}
 				if (maybe_fail_all_tickets(fs_info, space_info)) {
 					flush_state = FLUSH_DELAYED_ITEMS_NR;
 					commit_cycles--;
@@ -1094,18 +1102,6 @@ int btrfs_reserve_metadata_bytes(struct btrfs_root *root,
 			ret = 0;
 	}
 	if (ret == -ENOSPC) {
-		if (flush == BTRFS_RESERVE_FLUSH_ALL) {
-			/* Only once per second. */
-			static DEFINE_RATELIMIT_STATE(_rs, HZ, 1);
-
-			if (__ratelimit(&_rs)) {
-				btrfs_err(fs_info,
-					  "reserve metadata bytes failed, possible early enospc");
-				btrfs_dump_space_info(fs_info,
-						      block_rsv->space_info,
-						      0, 0);
-			}
-		}
 		trace_btrfs_space_reservation(fs_info, "space_info:enospc",
 					      block_rsv->space_info->flags,
 					      orig_bytes, 1);
