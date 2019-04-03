@@ -80,6 +80,7 @@ struct link_dead_args {
 #define NBD_RT_BOUND			5
 #define NBD_RT_DESTROY_ON_DISCONNECT	6
 #define NBD_RT_DISCONNECT_ON_CLOSE	7
+#define NBD_RT_ROUND_ROBIN		8
 
 #define NBD_DESTROY_ON_DISCONNECT	0
 #define NBD_DISCONNECT_REQUESTED	1
@@ -92,6 +93,7 @@ struct nbd_config {
 	u64 deadline;
 
 	struct nbd_sock **socks;
+	atomic_t connection_counter;
 	int num_connections;
 	atomic_t live_connections;
 	wait_queue_head_t conn_wait;
@@ -929,6 +931,10 @@ static int nbd_handle_cmd(struct nbd_cmd *cmd, int index)
 		blk_mq_start_request(req);
 		return -EINVAL;
 	}
+	if (test_bit(NBD_RT_ROUND_ROBIN, &config->runtime_flags))
+		index = (atomic_inc_return(&config->connection_counter) %
+			 config->num_connections);
+
 	cmd->status = BLK_STS_OK;
 again:
 	nsock = config->socks[index];
@@ -1514,6 +1520,7 @@ static struct nbd_config *nbd_alloc_config(void)
 	init_waitqueue_head(&config->conn_wait);
 	config->blksize = NBD_DEF_BLKSIZE;
 	atomic_set(&config->live_connections, 0);
+	atomic_set(&config->connection_counter, 0);
 	try_module_get(THIS_MODULE);
 	return config;
 }
@@ -2012,6 +2019,8 @@ again:
 			set_bit(NBD_RT_DISCONNECT_ON_CLOSE,
 				&config->runtime_flags);
 		}
+		if (flags & NBD_CFLAG_ROUND_ROBIN)
+			set_bit(NBD_RT_ROUND_ROBIN, &config->runtime_flags);
 	}
 
 	if (info->attrs[NBD_ATTR_SOCKETS]) {
@@ -2198,6 +2207,11 @@ static int nbd_genl_reconfigure(struct sk_buff *skb, struct genl_info *info)
 			clear_bit(NBD_RT_DISCONNECT_ON_CLOSE,
 					&config->runtime_flags);
 		}
+
+		if (flags & NBD_CFLAG_ROUND_ROBIN)
+			set_bit(NBD_RT_ROUND_ROBIN, &config->runtime_flags);
+		else
+			clear_bit(NBD_RT_ROUND_ROBIN, &config->runtime_flags);
 	}
 
 	if (info->attrs[NBD_ATTR_SOCKETS]) {

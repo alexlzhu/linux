@@ -56,6 +56,8 @@ enum {
 #define NBD_CFLAG_DISCONNECT_ON_CLOSE (1 << 1) /* disconnect the nbd device on
 						*  close by last opener.
 						*/
+#define NBD_CFLAG_ROUND_ROBIN (1 << 2) /* round robin requests on the
+					* connections for the device. */
 
 /* userspace doesn't need the nbd_device structure */
 
