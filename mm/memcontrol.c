@@ -526,6 +526,13 @@ void memcg_set_shrinker_bit(struct mem_cgroup *memcg, int nid, int shrinker_id)
 	}
 }
 
+static unsigned long memcg_high(struct mem_cgroup *memcg)
+{
+	if (time_before(jiffies, memcg->high_tmp_expires))
+		return READ_ONCE(memcg->high_tmp);
+	return READ_ONCE(memcg->high);
+}
+
 /**
  * mem_cgroup_css_from_page - css of the memcg associated with a page
  * @page: page of interest
@@ -2365,7 +2372,7 @@ static unsigned long reclaim_high(struct mem_cgroup *memcg,
 	do {
 		unsigned long pflags;
 
-		if (page_counter_read(&memcg->memory) <= memcg->high)
+		if (page_counter_read(&memcg->memory) <= memcg_high(memcg))
 			continue;
 
 		memcg_memory_event(memcg, MEMCG_HIGH);
@@ -2388,7 +2395,7 @@ static void high_work_func(struct work_struct *work)
 
 	memcg = container_of(work, struct mem_cgroup, high_work);
 
-	high = READ_ONCE(memcg->high);
+	high = memcg_high(memcg);
 	usage = page_counter_read(&memcg->memory);
 
 	if (usage <= high)
@@ -2466,7 +2473,7 @@ static unsigned long calculate_high_delay(struct mem_cgroup *memcg,
 		u64 overage;
 
 		usage = page_counter_read(&memcg->memory);
-		high = READ_ONCE(memcg->high);
+		high = memcg_high(memcg);
 
 		if (usage <= high)
 			continue;
@@ -2736,7 +2743,7 @@ done_restock:
 	 * reclaim, the cost of mismatch is negligible.
 	 */
 	do {
-		if (page_counter_read(&memcg->memory) > memcg->high) {
+		if (page_counter_read(&memcg->memory) > memcg_high(memcg)) {
 			/*
 			 * Kick off the async reclaimer, which should
 			 * be doing most of the work to avoid latency
@@ -4463,7 +4470,7 @@ void mem_cgroup_wb_stats(struct bdi_writeback *wb, unsigned long *pfilepages,
 	*pheadroom = PAGE_COUNTER_MAX;
 
 	while ((parent = parent_mem_cgroup(memcg))) {
-		unsigned long ceiling = min(memcg->memory.max, memcg->high);
+		unsigned long ceiling = min(memcg->memory.max, memcg_high(memcg));
 		unsigned long used = page_counter_read(&memcg->memory);
 
 		*pheadroom = min(*pheadroom, ceiling - min(ceiling, used));
@@ -5191,6 +5198,7 @@ mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 		return ERR_CAST(memcg);
 
 	memcg->high = PAGE_COUNTER_MAX;
+	memcg->high_tmp_expires = jiffies;
 	memcg->soft_limit = PAGE_COUNTER_MAX;
 	if (parent) {
 		memcg->swappiness = mem_cgroup_swappiness(parent);
@@ -5341,6 +5349,7 @@ static void mem_cgroup_css_reset(struct cgroup_subsys_state *css)
 	page_counter_set_min(&memcg->memory, 0);
 	page_counter_set_low(&memcg->memory, 0);
 	memcg->high = PAGE_COUNTER_MAX;
+	memcg->high_tmp_expires = jiffies;
 	memcg->soft_limit = PAGE_COUNTER_MAX;
 	memcg_wb_domain_size_changed(memcg);
 }
@@ -6209,6 +6218,87 @@ static ssize_t memory_high_write(struct kernfs_open_file *of,
 	return nbytes;
 }
 
+static int memory_high_tmp_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+	unsigned long expires = READ_ONCE(memcg->high_tmp_expires);
+	unsigned long high = READ_ONCE(memcg->high_tmp);
+	unsigned long now = READ_ONCE(jiffies);
+
+	if (time_after_eq(now, expires)) {
+		seq_puts(m, "max 0\n");
+		return 0;
+	};
+
+	if (high == PAGE_COUNTER_MAX)
+		seq_puts(m, "max ");
+	else
+		seq_printf(m, "%llu ", (u64)high * PAGE_SIZE);
+
+	seq_printf(m, "%u\n", jiffies_to_usecs(expires - now));
+
+	return 0;
+}
+
+static ssize_t memory_high_tmp_write(struct kernfs_open_file *of,
+				     char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	unsigned int nr_retries = MEM_CGROUP_RECLAIM_RETRIES;
+	unsigned long timeout;
+	bool drained = false;
+	unsigned long high;
+	char *token;
+	int err;
+
+	buf = strstrip(buf);
+
+	token = strsep(&buf, " ");
+	if (!buf)
+		return -EINVAL;
+
+	err = page_counter_memparse(token, "max", &high);
+	if (err)
+		return err;
+
+	err = kstrtoul(buf, 0, &timeout);
+	if (err)
+		return err;
+
+	if (timeout > 300*1000*1000) /* idk */
+		return -ERANGE;
+
+	for (;;) {
+		unsigned long nr_pages = page_counter_read(&memcg->memory);
+		unsigned long reclaimed;
+
+		if (nr_pages <= high)
+			break;
+
+		if (signal_pending(current))
+			break;
+
+		if (!drained) {
+			drain_all_stock(memcg);
+			drained = true;
+			continue;
+		}
+
+		reclaimed = try_to_free_mem_cgroup_pages(memcg, nr_pages - high,
+							 GFP_KERNEL, true);
+
+		if (!reclaimed && !nr_retries--)
+			break;
+	}
+
+	memcg->high_tmp = high;
+	timeout = usecs_to_jiffies(timeout);
+	memcg->high_tmp_expires = jiffies + timeout;
+
+	memcg_wb_domain_size_changed(memcg);
+	return nbytes;
+}
+
 static int memory_max_show(struct seq_file *m, void *v)
 {
 	return seq_puts_memcg_tunable(m,
@@ -6355,6 +6445,12 @@ static struct cftype memory_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = memory_high_show,
 		.write = memory_high_write,
+	},
+	{
+		.name = "high.tmp",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memory_high_tmp_show,
+		.write = memory_high_tmp_write,
 	},
 	{
 		.name = "max",

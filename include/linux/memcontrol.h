@@ -243,6 +243,10 @@ struct mem_cgroup {
 	/* Range enforcement for interrupt charges */
 	struct work_struct high_work;
 
+	/* Temporary high setting with timeout */
+	unsigned long high_tmp;
+	unsigned long high_tmp_expires;
+
 	unsigned long soft_limit;
 
 	/* vmpressure notifications */
