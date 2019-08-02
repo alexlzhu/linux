@@ -757,6 +757,7 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 	u64 to_reclaim;
 	int flush_state;
 	int commit_cycles = 0;
+	int should_force_chunk = 0;
 	u64 last_tickets_id;
 
 	fs_info = container_of(work, struct btrfs_fs_info, async_reclaim_work);
@@ -802,8 +803,15 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		 * commit the transaction.  If nothing has changed the next go
 		 * around then we can force a chunk allocation.
 		 */
-		if (flush_state == ALLOC_CHUNK_FORCE && !commit_cycles)
+		if (flush_state == ALLOC_CHUNK_FORCE && !should_force_chunk) {
 			flush_state++;
+
+			/*
+			 * We are skipping the forced chunk this time, but next
+			 * time we should definitely do it.
+			 */
+			should_force_chunk = 1;
+		}
 
 		if (flush_state > COMMIT_TRANS) {
 			commit_cycles++;
