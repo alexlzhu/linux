@@ -752,6 +752,7 @@ static int blkcg_print_stat(struct seq_file *sf, void *v)
 		const char *dname;
 		char *buf;
 		u64 rbytes, wbytes, rios, wios, dbytes, dios;
+		u64 rrandbytes, wrandbytes, rrandios, wrandios;
 		size_t size = seq_get_buf(sf, &buf), off = 0;
 		int i;
 		bool has_stats = false;
@@ -780,9 +781,13 @@ static int blkcg_print_stat(struct seq_file *sf, void *v)
 			rbytes = bis->cur.bytes[BLKG_IOSTAT_READ];
 			wbytes = bis->cur.bytes[BLKG_IOSTAT_WRITE];
 			dbytes = bis->cur.bytes[BLKG_IOSTAT_DISCARD];
+			rrandbytes = bis->cur.bytes[BLKG_IOSTAT_READ_RAND];
+			wrandbytes = bis->cur.bytes[BLKG_IOSTAT_WRITE_RAND];
 			rios = bis->cur.ios[BLKG_IOSTAT_READ];
 			wios = bis->cur.ios[BLKG_IOSTAT_WRITE];
 			dios = bis->cur.ios[BLKG_IOSTAT_DISCARD];
+			rrandios = bis->cur.ios[BLKG_IOSTAT_READ_RAND];
+			wrandios = bis->cur.ios[BLKG_IOSTAT_WRITE_RAND];
 		} while (u64_stats_fetch_retry(&bis->sync, seq));
 
 		if (rbytes || wbytes || rios || wios) {
@@ -791,6 +796,11 @@ static int blkcg_print_stat(struct seq_file *sf, void *v)
 					 "rbytes=%llu wbytes=%llu rios=%llu wios=%llu dbytes=%llu dios=%llu",
 					 rbytes, wbytes, rios, wios,
 					 dbytes, dios);
+			if (rrandbytes || wrandbytes || rrandios || wrandios)
+				off += scnprintf(buf+off, size-off,
+						 " rrandbytes=%llu wrandbytes=%llu rrandios=%llu wrandios=%llu",
+						 rrandbytes, wrandbytes,
+						 rrandios, wrandios);
 		}
 
 		if (blkcg_debug_stats && atomic_read(&blkg->use_delay)) {

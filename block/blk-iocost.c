@@ -1636,17 +1636,20 @@ static void calc_vtime_cost_builtin(struct bio *bio, struct ioc_gq *iocg,
 	u64 pages = max_t(u64, bio_sectors(bio) >> IOC_SECT_TO_PAGE_SHIFT, 1);
 	u64 seek_pages = 0;
 	u64 cost = 0;
+	bool is_read;
 
 	switch (bio_op(bio)) {
 	case REQ_OP_READ:
 		coef_seqio	= ioc->params.lcoefs[LCOEF_RSEQIO];
 		coef_randio	= ioc->params.lcoefs[LCOEF_RRANDIO];
 		coef_page	= ioc->params.lcoefs[LCOEF_RPAGE];
+		is_read		= true;
 		break;
 	case REQ_OP_WRITE:
 		coef_seqio	= ioc->params.lcoefs[LCOEF_WSEQIO];
 		coef_randio	= ioc->params.lcoefs[LCOEF_WRANDIO];
 		coef_page	= ioc->params.lcoefs[LCOEF_WPAGE];
+		is_read		= false;
 		break;
 	default:
 		goto out;
@@ -1659,7 +1662,29 @@ static void calc_vtime_cost_builtin(struct bio *bio, struct ioc_gq *iocg,
 
 	if (!is_merge) {
 		if (seek_pages > LCOEF_RANDIO_PAGES) {
+			struct blkcg_gq *blkg = iocg_to_blkg(iocg);
+			struct blkg_iostat_set *bis;
+			int cpu;
+
 			cost += coef_randio;
+
+			cpu = get_cpu();
+			bis = per_cpu_ptr(blkg->iostat_cpu, cpu);
+			u64_stats_update_begin(&bis->sync);
+
+			if (is_read) {
+				bis->cur.bytes[BLKG_IOSTAT_READ_RAND] +=
+					pages * PAGE_SIZE;
+				bis->cur.ios[BLKG_IOSTAT_READ_RAND]++;
+			} else {
+				bis->cur.bytes[BLKG_IOSTAT_WRITE_RAND] +=
+					pages * PAGE_SIZE;
+				bis->cur.ios[BLKG_IOSTAT_WRITE_RAND]++;
+			}
+
+			u64_stats_update_end(&bis->sync);
+			cgroup_rstat_updated(blkg->blkcg->css.cgroup, cpu);
+			put_cpu();
 		} else {
 			cost += coef_seqio;
 		}
@@ -2104,8 +2129,23 @@ static size_t ioc_pd_stat(struct blkg_policy_data *pd, char *buf, size_t size)
 		unsigned vpct = DIV64_U64_ROUND_CLOSEST(
 					atomic64_read(&ioc->vtime_rate) * 10000,
 					VTIME_PER_USEC);
-		return scnprintf(buf, size, " cost.vrate=%u.%02u",
-				 vpct / 100, vpct % 100);
+		u64 rmet = 0, wmet = 0, rmissed = 0, wmissed = 0, rqwaitns = 0;
+		int cpu;
+
+		for_each_online_cpu(cpu) {
+			struct ioc_pcpu_stat *stat = per_cpu_ptr(ioc->pcpu_stat, cpu);
+
+			rmet += stat->missed[READ].last_met;
+			wmet += stat->missed[WRITE].last_met;
+			rmissed += stat->missed[READ].last_missed;
+			wmissed += stat->missed[WRITE].last_missed;
+			rqwaitns += stat->last_rq_wait_ns;
+		}
+
+		return scnprintf(buf, size,
+				 " cost.vrate=%u.%02u cost.rmet=%llu cost.wmet=%llu cost.rmissed=%llu cost.wmissed=%llu cost.rqwait=%llu",
+				 vpct / 100, vpct % 100,
+				 rmet, wmet, rmissed, wmissed, rqwaitns / 1000);
 	}
 
 	return 0;
