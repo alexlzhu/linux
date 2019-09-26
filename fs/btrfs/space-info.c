@@ -808,10 +808,7 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		if (flush_state > COMMIT_TRANS) {
 			commit_cycles++;
 			if (commit_cycles > 2) {
-				/* Once every ten seconds at most. */
-				static DEFINE_RATELIMIT_STATE(_rs, HZ * 10, 1);
-
-				if (__ratelimit(&_rs)) {
+				if (btrfs_test_opt(fs_info, ENOSPC_DEBUG)) {
 					btrfs_err(fs_info,
 						  "reserve metadata bytes failed, possible early enospc");
 					__btrfs_dump_space_info(fs_info, space_info);
