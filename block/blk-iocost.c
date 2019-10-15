@@ -1542,19 +1542,39 @@ skip_surplus_transfers:
 	if (rq_wait_pct > RQ_WAIT_BUSY_PCT ||
 	    missed_ppm[READ] > ppm_rthr ||
 	    missed_ppm[WRITE] > ppm_wthr) {
+		/* clearly missing QoS targets, slow down vrate */
 		ioc->busy_level = max(ioc->busy_level, 0);
 		ioc->busy_level++;
 	} else if (rq_wait_pct <= RQ_WAIT_BUSY_PCT * UNBUSY_THR_PCT / 100 &&
 		   missed_ppm[READ] <= ppm_rthr * UNBUSY_THR_PCT / 100 &&
 		   missed_ppm[WRITE] <= ppm_wthr * UNBUSY_THR_PCT / 100) {
-		/* take action iff there is contention */
-		if (nr_shortages && !nr_lagging) {
+		/* QoS targets are being met with >25% margin */
+		if (nr_shortages) {
+			/*
+			 * We're throttling while the device has spare
+			 * capacity.  If vrate was being slowed down, stop.
+			 */
 			ioc->busy_level = min(ioc->busy_level, 0);
-			/* redistribute surpluses first */
-			if (!nr_surpluses)
+
+			/*
+			 * If there are IOs spanning multiple periods, wait
+			 * them out before pushing the device harder.  If
+			 * there are surpluses, let redistribution work it
+			 * out first.
+			 */
+			if (!nr_lagging && !nr_surpluses)
 				ioc->busy_level--;
+		} else {
+			/*
+			 * Nobody is being throttled and the users aren't
+			 * issuing enough IOs to saturate the device.  We
+			 * simply don't know how close the device is to
+			 * saturation.  Coast.
+			 */
+			ioc->busy_level = 0;
 		}
 	} else {
+		/* inside the hysterisis margin, we're good */
 		ioc->busy_level = 0;
 	}
 
@@ -1664,6 +1684,8 @@ static void calc_vtime_cost_builtin(struct bio *bio, struct ioc_gq *iocg,
 		if (seek_pages > LCOEF_RANDIO_PAGES) {
 			struct blkcg_gq *blkg = iocg_to_blkg(iocg);
 			struct blkg_iostat_set *bis;
+			int rw = is_read ? BLKG_IOSTAT_READ_RAND :
+					   BLKG_IOSTAT_WRITE_RAND;
 			int cpu;
 
 			cost += coef_randio;
@@ -1672,15 +1694,8 @@ static void calc_vtime_cost_builtin(struct bio *bio, struct ioc_gq *iocg,
 			bis = per_cpu_ptr(blkg->iostat_cpu, cpu);
 			u64_stats_update_begin(&bis->sync);
 
-			if (is_read) {
-				bis->cur.bytes[BLKG_IOSTAT_READ_RAND] +=
-					pages * PAGE_SIZE;
-				bis->cur.ios[BLKG_IOSTAT_READ_RAND]++;
-			} else {
-				bis->cur.bytes[BLKG_IOSTAT_WRITE_RAND] +=
-					pages * PAGE_SIZE;
-				bis->cur.ios[BLKG_IOSTAT_WRITE_RAND]++;
-			}
+			bis->cur.bytes[rw] += pages * PAGE_SIZE;
+			bis->cur.ios[rw] += 1;
 
 			u64_stats_update_end(&bis->sync);
 			cgroup_rstat_updated(blkg->blkcg->css.cgroup, cpu);
