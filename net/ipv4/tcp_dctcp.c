@@ -62,7 +62,8 @@ static unsigned int dctcp_alpha_on_init __read_mostly = DCTCP_MAX_ALPHA;
 module_param(dctcp_alpha_on_init, uint, 0644);
 MODULE_PARM_DESC(dctcp_alpha_on_init, "parameter for initial alpha value");
 
-static struct tcp_congestion_ops dctcp_reno;
+extern struct tcp_congestion_ops cubictcp;
+static struct tcp_congestion_ops dctcp_reno __read_mostly;
 
 static void dctcp_reset(const struct tcp_sock *tp, struct dctcp *ca)
 {
@@ -96,6 +97,8 @@ static void dctcp_init(struct sock *sk)
 	 * ECT from sk since it is set during 3WHS for DCTCP.
 	 */
 	inet_csk(sk)->icsk_ca_ops = &dctcp_reno;
+	if (inet_csk(sk)->icsk_ca_ops->init)
+		inet_csk(sk)->icsk_ca_ops->init(sk);
 	INET_ECN_dontxmit(sk);
 }
 
@@ -227,18 +230,15 @@ static struct tcp_congestion_ops dctcp __read_mostly = {
 	.name		= "dctcp",
 };
 
-static struct tcp_congestion_ops dctcp_reno __read_mostly = {
-	.ssthresh	= tcp_reno_ssthresh,
-	.cong_avoid	= tcp_reno_cong_avoid,
-	.undo_cwnd	= tcp_reno_undo_cwnd,
-	.get_info	= dctcp_get_info,
-	.owner		= THIS_MODULE,
-	.name		= "dctcp-reno",
-};
-
 static int __init dctcp_register(void)
 {
+	BUILD_BUG_ON(!IS_BUILTIN(CONFIG_TCP_CONG_CUBIC));
 	BUILD_BUG_ON(sizeof(struct dctcp) > ICSK_CA_PRIV_SIZE);
+	dctcp_reno = cubictcp;
+	strncpy(dctcp_reno.name, "dctcp-cubic", TCP_CA_NAME_MAX);
+	dctcp_reno.owner = THIS_MODULE;
+	dctcp_reno.key = TCP_CA_UNSPEC;
+	memset(&dctcp_reno.list, 0, sizeof(dctcp_reno.list));
 	return tcp_register_congestion_control(&dctcp);
 }
 
