@@ -1459,6 +1459,10 @@ static char *memory_stat_format(struct mem_cgroup *memcg)
 	seq_buf_printf(&s, "pgsteal %lu\n",
 		       memcg_events(memcg, PGSTEAL_KSWAPD) +
 		       memcg_events(memcg, PGSTEAL_DIRECT));
+	seq_buf_printf(&s, "pgscan_direct %lu\n",
+		       memcg_events(memcg, PGSCAN_DIRECT));
+	seq_buf_printf(&s, "pgsteal_direct %lu\n",
+		       memcg_events(memcg, PGSTEAL_DIRECT));
 	seq_buf_printf(&s, "%s %lu\n", vm_event_name(PGACTIVATE),
 		       memcg_events(memcg, PGACTIVATE));
 	seq_buf_printf(&s, "%s %lu\n", vm_event_name(PGDEACTIVATE),
@@ -2248,10 +2252,19 @@ static void reclaim_high(struct mem_cgroup *memcg,
 
 static void high_work_func(struct work_struct *work)
 {
+	unsigned long high, usage;
 	struct mem_cgroup *memcg;
 
 	memcg = container_of(work, struct mem_cgroup, high_work);
-	reclaim_high(memcg, MEMCG_CHARGE_BATCH, GFP_KERNEL);
+
+	high = READ_ONCE(memcg->high);
+	usage = page_counter_read(&memcg->memory);
+
+	if (usage <= high)
+		return;
+
+	set_worker_desc("cswapd/%llx", cgroup_id(memcg->css.cgroup));
+	reclaim_high(memcg, usage - high, GFP_KERNEL);
 }
 
 /*
@@ -2381,19 +2394,15 @@ void mem_cgroup_handle_over_high(void)
 	unsigned long penalty_jiffies;
 	unsigned long pflags;
 	unsigned int nr_pages = current->memcg_nr_pages_over_high;
+	bool tried_direct_reclaim = false;
 	struct mem_cgroup *memcg;
 
 	if (likely(!nr_pages))
 		return;
 
 	memcg = get_mem_cgroup_from_mm(current->mm);
-	reclaim_high(memcg, nr_pages, GFP_KERNEL);
 	current->memcg_nr_pages_over_high = 0;
-
-	/*
-	 * memory.high is breached and reclaim is unable to keep up. Throttle
-	 * allocators proactively to slow down excessive growth.
-	 */
+recheck:
 	penalty_jiffies = calculate_high_delay(memcg, nr_pages);
 
 	/*
@@ -2406,6 +2415,19 @@ void mem_cgroup_handle_over_high(void)
 		goto out;
 
 	/*
+	 * It's possible async reclaim just isn't able to keep
+	 * up. Before we go to sleep, try direct reclaim.
+	 */
+	if (!tried_direct_reclaim) {
+		reclaim_high(memcg, nr_pages, GFP_KERNEL);
+		tried_direct_reclaim = true;
+		goto recheck;
+	}
+
+	/*
+	 * memory.high is breached and reclaim is unable to keep up. Throttle
+	 * allocators proactively to slow down excessive growth.
+	 *
 	 * If we exit early, we're guaranteed to die (since
 	 * schedule_timeout_killable sets TASK_KILLABLE). This means we don't
 	 * need to account for any ill-begotten jiffies to pay them off later.
@@ -2580,13 +2602,21 @@ done_restock:
 	 */
 	do {
 		if (page_counter_read(&memcg->memory) > memcg->high) {
+			/*
+			 * Kick off the async reclaimer, which should
+			 * be doing most of the work to avoid latency
+			 * in the workload. But also check in on its
+			 * progress before resuming to userspace, in
+			 * case we need to do direct reclaim, or even
+			 * throttle the allocating thread if reclaim
+			 * cannot keep up with allocation demand.
+			 */
+			queue_work(system_unbound_wq, &memcg->high_work);
 			/* Don't bother a random interrupted task */
-			if (in_interrupt()) {
-				schedule_work(&memcg->high_work);
-				break;
+			if (!in_interrupt()) {
+				current->memcg_nr_pages_over_high += batch;
+				set_notify_resume(current);
 			}
-			current->memcg_nr_pages_over_high += batch;
-			set_notify_resume(current);
 			break;
 		}
 	} while ((memcg = parent_mem_cgroup(memcg)));
