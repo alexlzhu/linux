@@ -192,6 +192,7 @@ void put_task_struct_rcu_user(struct task_struct *task)
 void release_task(struct task_struct *p)
 {
 	struct task_struct *leader;
+	struct pid *thread_pid;
 	int zap_leader;
 repeat:
 	/* don't need to get the RCU readlock here - the process is dead and
@@ -200,11 +201,11 @@ repeat:
 	atomic_dec(&__task_cred(p)->user->processes);
 	rcu_read_unlock();
 
-	proc_flush_task(p);
 	cgroup_release(p);
 
 	write_lock_irq(&tasklist_lock);
 	ptrace_release_task(p);
+	thread_pid = get_pid(p->thread_pid);
 	__exit_signal(p);
 
 	/*
@@ -227,6 +228,7 @@ repeat:
 	}
 
 	write_unlock_irq(&tasklist_lock);
+	proc_flush_pid(thread_pid);
 	release_thread(p);
 	put_task_struct_rcu_user(p);
 
