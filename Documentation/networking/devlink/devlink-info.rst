@@ -72,6 +72,12 @@ Control unit firmware version. This firmware is responsible for house
 keeping tasks, PHY control etc. but not the packet-by-packet data path
 operation.
 
+fw.mgmt.api
+-----------
+
+Firmware interface specification version of the software interfaces between
+driver and firmware.
+
 fw.app
 ------
 
