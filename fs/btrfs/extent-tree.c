@@ -3774,6 +3774,55 @@ static int find_free_extent_update_loop(struct btrfs_fs_info *fs_info,
 	return -ENOSPC;
 }
 
+static struct btrfs_block_group *
+get_first_block_group(struct btrfs_space_info *space_info, int index,
+		      int delalloc)
+{
+	struct btrfs_block_group *block_group = NULL;
+	struct rb_node *n;
+
+	read_lock(&space_info->groups_lock);
+	n = rb_first_cached(&space_info->block_groups_tree[index]);
+	if (n) {
+		block_group = rb_entry(n, struct btrfs_block_group,
+				       size_node);
+		btrfs_get_block_group(block_group);
+	}
+	read_unlock(&space_info->groups_lock);
+
+	if (block_group)
+		btrfs_lock_block_group(block_group, delalloc);
+	return block_group;
+}
+
+static struct btrfs_block_group *
+get_next_block_group(struct btrfs_space_info *space_info,
+		     struct btrfs_block_group *block_group, int index,
+		     int delalloc)
+{
+	struct btrfs_block_group *ret = NULL;
+	struct rb_node *n;
+
+	read_lock(&space_info->groups_lock);
+	if (!block_group)
+		n = rb_first_cached(&space_info->block_groups_tree[index]);
+	else
+		n = rb_next(&block_group->size_node);
+	if (n) {
+		ret = rb_entry(n, struct btrfs_block_group, size_node);
+		if (ret->length != ret->used)
+			btrfs_get_block_group(ret);
+		else
+			ret = NULL;
+	}
+	read_unlock(&space_info->groups_lock);
+	if (block_group)
+		btrfs_release_block_group(block_group, delalloc);
+	if (ret)
+		btrfs_lock_block_group(ret, delalloc);
+	return ret;
+}
+
 /*
  * walks the btree of allocated extents and find a hole of a given size.
  * The key ins is changed to record the hole:
@@ -3883,6 +3932,22 @@ static noinline int find_free_extent(struct btrfs_fs_info *fs_info,
 	ffe_ctl.search_start = max(ffe_ctl.search_start,
 				   first_logical_byte(fs_info, 0));
 	ffe_ctl.search_start = max(ffe_ctl.search_start, hint_byte);
+	if (btrfs_test_opt(fs_info, SSD_SPREAD) && (!last_ptr || !use_cluster)) {
+		down_read(&space_info->groups_sem);
+		block_group = get_first_block_group(space_info, ffe_ctl.index,
+						    delalloc);
+		if (block_group && !block_group->ro &&
+		    !list_empty(&block_group->list)) {
+			ffe_ctl.search_start = block_group->start;
+			ffe_ctl.index =
+				btrfs_bg_flags_to_raid_index(block_group->flags);
+			goto have_block_group;
+		} else if (block_group) {
+			btrfs_release_block_group(block_group, delalloc);
+		}
+		up_read(&space_info->groups_sem);
+	}
+
 	if (ffe_ctl.search_start == hint_byte) {
 		block_group = btrfs_lookup_block_group(fs_info,
 						       ffe_ctl.search_start);
@@ -3917,18 +3982,19 @@ static noinline int find_free_extent(struct btrfs_fs_info *fs_info,
 		}
 	}
 search:
+	block_group = NULL;
 	ffe_ctl.have_caching_bg = false;
 	if (ffe_ctl.index == btrfs_bg_flags_to_raid_index(flags) ||
 	    ffe_ctl.index == 0)
 		full_search = true;
 	down_read(&space_info->groups_sem);
-	list_for_each_entry(block_group,
-			    &space_info->block_groups[ffe_ctl.index], list) {
+	while ((block_group =
+		get_next_block_group(space_info, block_group, ffe_ctl.index,
+				     delalloc)) != NULL) {
 		/* If the block group is read-only, we can skip it entirely. */
 		if (unlikely(block_group->ro))
 			continue;
 
-		btrfs_grab_block_group(block_group, delalloc);
 		ffe_ctl.search_start = block_group->start;
 
 		/*
@@ -3949,13 +4015,6 @@ search:
 			 */
 			if ((flags & extra) && !(block_group->flags & extra))
 				goto loop;
-
-			/*
-			 * This block group has different flags than we want.
-			 * It's possible that we have MIXED_GROUP flag but no
-			 * block group is mixed.  Just skip such block group.
-			 */
-			btrfs_release_block_group(block_group, delalloc);
 			continue;
 		}
 
@@ -4054,7 +4113,6 @@ loop:
 		ffe_ctl.retry_unclustered = false;
 		BUG_ON(btrfs_bg_flags_to_raid_index(block_group->flags) !=
 		       ffe_ctl.index);
-		btrfs_release_block_group(block_group, delalloc);
 		cond_resched();
 	}
 	up_read(&space_info->groups_sem);

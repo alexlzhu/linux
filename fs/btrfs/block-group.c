@@ -233,6 +233,47 @@ static struct btrfs_block_group *block_group_cache_tree_search(
 	return ret;
 }
 
+static void
+block_group_update_used(struct btrfs_block_group *block_group,
+			u64 val)
+{
+	struct btrfs_space_info *space_info = block_group->space_info;
+	struct btrfs_block_group *tmp;
+	struct rb_node *parent = NULL;
+	struct rb_node **p;
+	u64 free;
+	int index = btrfs_bg_flags_to_raid_index(block_group->flags);
+	bool leftmost = true;
+
+	lockdep_assert_held(&block_group->lock);
+	write_lock(&space_info->groups_lock);
+	if (!RB_EMPTY_NODE(&block_group->size_node))
+		rb_erase_cached(&block_group->size_node,
+				&space_info->block_groups_tree[index]);
+	block_group->used = val;
+	free = block_group->length - val;
+	p = &space_info->block_groups_tree[index].rb_root.rb_node;
+	while (*p) {
+		u64 cur_free;
+
+		parent = *p;
+		tmp = rb_entry(parent, struct btrfs_block_group,
+			       size_node);
+		cur_free = tmp->length - tmp->used;
+		if (free > cur_free) {
+			p = &(*p)->rb_left;
+		} else {
+			leftmost = false;
+			p = &(*p)->rb_right;
+		}
+	}
+	rb_link_node(&block_group->size_node, parent, p);
+	rb_insert_color_cached(&block_group->size_node,
+			       &space_info->block_groups_tree[index],
+			       leftmost);
+	write_unlock(&space_info->groups_lock);
+}
+
 /*
  * Return the block group that starts at or after bytenr
  */
@@ -969,6 +1010,11 @@ int btrfs_remove_block_group(struct btrfs_trans_handle *trans,
 	if (fs_info->first_logical_byte == block_group->start)
 		fs_info->first_logical_byte = (u64)-1;
 	spin_unlock(&fs_info->block_group_cache_lock);
+
+	write_lock(&block_group->space_info->groups_lock);
+	rb_erase_cached(&block_group->size_node,
+			&block_group->space_info->block_groups_tree[index]);
+	write_unlock(&block_group->space_info->groups_lock);
 
 	down_write(&block_group->space_info->groups_sem);
 	/*
@@ -1757,6 +1803,7 @@ static struct btrfs_block_group *btrfs_create_block_group_cache(
 	INIT_LIST_HEAD(&cache->discard_list);
 	INIT_LIST_HEAD(&cache->dirty_list);
 	INIT_LIST_HEAD(&cache->io_list);
+	RB_CLEAR_NODE(&cache->size_node);
 	btrfs_init_free_space_ctl(cache);
 	atomic_set(&cache->trimming, 0);
 	mutex_init(&cache->free_space_lock);
@@ -1906,6 +1953,7 @@ static int read_one_block_group(struct btrfs_fs_info *info,
 
 	cache->space_info = space_info;
 
+	block_group_update_used(cache, cache->used);
 	link_block_group(cache);
 
 	set_avail_alloc_bits(info, cache->flags);
@@ -2103,6 +2151,7 @@ int btrfs_make_block_group(struct btrfs_trans_handle *trans, u64 bytes_used,
 				cache->bytes_super, &cache->space_info);
 	btrfs_update_global_block_rsv(fs_info);
 
+	block_group_update_used(cache, bytes_used);
 	link_block_group(cache);
 
 	list_add_tail(&cache->bg_list, &trans->new_bgs);
@@ -2843,7 +2892,7 @@ int btrfs_update_block_group(struct btrfs_trans_handle *trans,
 		num_bytes = min(total, cache->length - byte_in_group);
 		if (alloc) {
 			old_val += num_bytes;
-			cache->used = old_val;
+			block_group_update_used(cache, old_val);
 			cache->reserved -= num_bytes;
 			cache->space_info->bytes_reserved -= num_bytes;
 			cache->space_info->bytes_used += num_bytes;
@@ -2852,7 +2901,7 @@ int btrfs_update_block_group(struct btrfs_trans_handle *trans,
 			spin_unlock(&cache->space_info->lock);
 		} else {
 			old_val -= num_bytes;
-			cache->used = old_val;
+			block_group_update_used(cache, old_val);
 			cache->pinned += num_bytes;
 			btrfs_space_info_update_bytes_pinned(info,
 					cache->space_info, num_bytes);
@@ -3255,6 +3304,7 @@ int btrfs_free_block_groups(struct btrfs_fs_info *info)
 	struct btrfs_space_info *space_info;
 	struct btrfs_caching_control *caching_ctl;
 	struct rb_node *n;
+	int index;
 
 	down_write(&info->commit_root_sem);
 	while (!list_empty(&info->caching_block_groups)) {
@@ -3279,14 +3329,22 @@ int btrfs_free_block_groups(struct btrfs_fs_info *info)
 	while ((n = rb_last(&info->block_group_cache_tree)) != NULL) {
 		block_group = rb_entry(n, struct btrfs_block_group,
 				       cache_node);
+		space_info = block_group->space_info;
+		index = btrfs_bg_flags_to_raid_index(block_group->flags);
+
 		rb_erase(&block_group->cache_node,
 			 &info->block_group_cache_tree);
 		RB_CLEAR_NODE(&block_group->cache_node);
 		spin_unlock(&info->block_group_cache_lock);
 
-		down_write(&block_group->space_info->groups_sem);
+		write_lock(&space_info->groups_lock);
+		rb_erase_cached(&block_group->size_node,
+				&space_info->block_groups_tree[index]);
+		write_unlock(&space_info->groups_lock);
+
+		down_write(&space_info->groups_sem);
 		list_del(&block_group->list);
-		up_write(&block_group->space_info->groups_sem);
+		up_write(&space_info->groups_sem);
 
 		/*
 		 * We haven't cached this block group, which means we could

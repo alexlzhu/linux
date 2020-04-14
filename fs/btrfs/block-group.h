@@ -111,6 +111,9 @@ struct btrfs_block_group {
 	/* Block group cache stuff */
 	struct rb_node cache_node;
 
+	/* For indexing based on free space */
+	struct rb_node size_node;
+
 	/* For block groups in the same raid type */
 	struct list_head list;
 
