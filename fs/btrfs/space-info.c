@@ -266,10 +266,11 @@ static void __btrfs_dump_space_info(struct btrfs_fs_info *fs_info,
 		   info->total_bytes - btrfs_space_info_used(info, true),
 		   info->full ? "" : "not ");
 	btrfs_info(fs_info,
-		"space_info total=%llu, used=%llu, pinned=%llu, reserved=%llu, may_use=%llu, readonly=%llu",
+		"space_info total=%llu, used=%llu, pinned=%llu, reserved=%llu, may_use=%llu, readonly=%llu, disk_used=%llu, total_bytes_pinned=%llu",
 		info->total_bytes, info->bytes_used, info->bytes_pinned,
 		info->bytes_reserved, info->bytes_may_use,
-		info->bytes_readonly);
+		info->bytes_readonly, info->disk_used,
+		percpu_counter_sum_positive(&info->total_bytes_pinned));
 
 	DUMP_BLOCK_RSV(fs_info, global_block_rsv);
 	DUMP_BLOCK_RSV(fs_info, trans_block_rsv);
@@ -1093,8 +1094,18 @@ int btrfs_reserve_metadata_bytes(struct btrfs_root *root,
 			ret = 0;
 	}
 	if (ret == -ENOSPC) {
-		if (flush == BTRFS_RESERVE_FLUSH_ALL)
-			btrfs_err_rl(fs_info, "reserve metadata bytes failed, possible early enospc");
+		if (flush == BTRFS_RESERVE_FLUSH_ALL) {
+			/* Only once per second. */
+			static DEFINE_RATELIMIT_STATE(_rs, HZ, 1);
+
+			if (__ratelimit(&_rs)) {
+				btrfs_err(fs_info,
+					  "reserve metadata bytes failed, possible early enospc");
+				btrfs_dump_space_info(fs_info,
+						      block_rsv->space_info,
+						      0, 0);
+			}
+		}
 		trace_btrfs_space_reservation(fs_info, "space_info:enospc",
 					      block_rsv->space_info->flags,
 					      orig_bytes, 1);
