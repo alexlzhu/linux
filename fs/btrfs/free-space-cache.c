@@ -2574,6 +2574,8 @@ link:
 	ret = link_free_space(ctl, info);
 	if (ret)
 		kmem_cache_free(btrfs_free_space_cachep, info);
+	if (ctl->max_extent_size < info->bytes)
+		ctl->max_extent_size = info->bytes;
 out:
 	btrfs_discard_update_discardable(block_group, ctl);
 	spin_unlock(&ctl->tree_lock);
@@ -2751,6 +2753,7 @@ void btrfs_init_free_space_ctl(struct btrfs_block_group *block_group)
 	ctl->start = block_group->start;
 	ctl->private = block_group;
 	ctl->op = &free_space_op;
+	ctl->max_extent_size = 0;
 	INIT_LIST_HEAD(&ctl->trimming_ranges);
 	mutex_init(&ctl->cache_writeout_mutex);
 
@@ -2954,6 +2957,7 @@ u64 btrfs_find_space_for_alloc(struct btrfs_block_group *block_group,
 			link_free_space(ctl, entry);
 	}
 out:
+	ctl->max_extent_size = *max_extent_size;
 	btrfs_discard_update_discardable(block_group, ctl);
 	spin_unlock(&ctl->tree_lock);
 
@@ -3394,7 +3398,7 @@ int btrfs_find_space_cluster(struct btrfs_block_group *block_group,
 	 * If we know we don't have enough space to make a cluster don't even
 	 * bother doing all the work to try and find one.
 	 */
-	if (ctl->free_space < bytes) {
+	if (ctl->free_space < bytes || ctl->max_extent_size < cont1_bytes) {
 		spin_unlock(&ctl->tree_lock);
 		return -ENOSPC;
 	}

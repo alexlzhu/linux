@@ -46,6 +46,7 @@ struct btrfs_free_space_ctl {
 	spinlock_t tree_lock;
 	struct rb_root free_space_offset;
 	u64 free_space;
+	u64 max_extent_size;
 	int extents_thresh;
 	int free_extents;
 	int total_bitmaps;

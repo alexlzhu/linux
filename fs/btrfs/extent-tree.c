@@ -2861,7 +2861,15 @@ static int unpin_extent_range(struct btrfs_fs_info *fs_info,
 		spin_lock(&cache->lock);
 		cache->pinned -= len;
 		btrfs_space_info_update_bytes_pinned(fs_info, space_info, -len);
-		space_info->max_extent_size = 0;
+		if (space_info->max_extent_size) {
+			struct btrfs_free_space_ctl *ctl = cache->free_space_ctl;
+
+			spin_lock(&ctl->tree_lock);
+			if (ctl->max_extent_size > space_info->max_extent_size)
+				space_info->max_extent_size =
+					ctl->max_extent_size;
+			spin_unlock(&ctl->tree_lock);
+		}
 		percpu_counter_add_batch(&space_info->total_bytes_pinned,
 			    -len, BTRFS_TOTAL_BYTES_PINNED_BATCH);
 		if (cache->ro) {

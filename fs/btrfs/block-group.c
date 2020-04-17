@@ -3008,7 +3008,15 @@ void btrfs_free_reserved_bytes(struct btrfs_block_group *cache,
 		space_info->bytes_readonly += num_bytes;
 	cache->reserved -= num_bytes;
 	space_info->bytes_reserved -= num_bytes;
-	space_info->max_extent_size = 0;
+
+	if (space_info->max_extent_size) {
+		struct btrfs_free_space_ctl *ctl = cache->free_space_ctl;
+
+		spin_lock(&ctl->tree_lock);
+		if (ctl->max_extent_size > space_info->max_extent_size)
+			space_info->max_extent_size = ctl->max_extent_size;
+		spin_unlock(&ctl->tree_lock);
+	}
 
 	if (delalloc)
 		cache->delalloc_bytes -= num_bytes;
