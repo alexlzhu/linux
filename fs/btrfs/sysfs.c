@@ -338,12 +338,10 @@ static const struct attribute_group btrfs_static_feature_attr_group = {
 	.attrs = btrfs_supported_static_feature_attrs,
 };
 
-#ifdef CONFIG_BTRFS_DEBUG
-
 /*
  * Discard statistics and tunables
  */
-#define discard_to_fs_info(_kobj)	to_fs_info((_kobj)->parent->parent)
+#define discard_to_fs_info(_kobj)	to_fs_info((_kobj)->parent)
 
 static ssize_t btrfs_discardable_bytes_show(struct kobject *kobj,
 					    struct kobj_attribute *a,
@@ -502,6 +500,7 @@ static const struct attribute *discard_debug_attrs[] = {
 	NULL,
 };
 
+#ifdef CONFIG_BTRFS_DEBUG
 /*
  * Runtime debugging exported via sysfs
  *
@@ -1008,13 +1007,13 @@ void btrfs_sysfs_remove_mounted(struct btrfs_fs_info *fs_info)
 		kobject_del(fs_info->space_info_kobj);
 		kobject_put(fs_info->space_info_kobj);
 	}
-#ifdef CONFIG_BTRFS_DEBUG
 	if (fs_info->discard_debug_kobj) {
 		sysfs_remove_files(fs_info->discard_debug_kobj,
 				   discard_debug_attrs);
 		kobject_del(fs_info->discard_debug_kobj);
 		kobject_put(fs_info->discard_debug_kobj);
 	}
+#ifdef CONFIG_BTRFS_DEBUG
 	if (fs_info->debug_kobj) {
 		sysfs_remove_files(fs_info->debug_kobj, btrfs_debug_mount_attrs);
 		kobject_del(fs_info->debug_kobj);
@@ -1485,9 +1484,10 @@ int btrfs_sysfs_add_mounted(struct btrfs_fs_info *fs_info)
 	if (error)
 		goto failure;
 
+#endif
 	/* Discard directory */
 	fs_info->discard_debug_kobj = kobject_create_and_add("discard",
-						     fs_info->debug_kobj);
+							     fsid_kobj);
 	if (!fs_info->discard_debug_kobj) {
 		error = -ENOMEM;
 		goto failure;
@@ -1497,7 +1497,6 @@ int btrfs_sysfs_add_mounted(struct btrfs_fs_info *fs_info)
 				   discard_debug_attrs);
 	if (error)
 		goto failure;
-#endif
 
 	error = addrm_unknown_feature_attrs(fs_info, true);
 	if (error)
