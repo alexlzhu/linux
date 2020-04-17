@@ -980,9 +980,9 @@ struct btrfs_fs_info {
 	struct rb_root block_tree;
 #endif
 
+	struct kobject *discard_debug_kobj;
 #ifdef CONFIG_BTRFS_DEBUG
 	struct kobject *debug_kobj;
-	struct kobject *discard_debug_kobj;
 	struct list_head allocated_roots;
 
 	spinlock_t eb_leak_lock;
