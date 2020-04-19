@@ -48,6 +48,7 @@
 #include "qgroup.h"
 #include "delalloc-space.h"
 #include "block-group.h"
+#include "backref.h"
 
 struct btrfs_iget_args {
 	struct btrfs_key *location;
@@ -2108,7 +2109,7 @@ static blk_status_t btrfs_submit_bio_hook(struct inode *inode, struct bio *bio,
 	enum btrfs_wq_endio_type metadata = BTRFS_WQ_ENDIO_DATA;
 	blk_status_t ret = 0;
 	int skip_sum;
-	int async = !atomic_read(&BTRFS_I(inode)->sync_writers);
+	int async = 0; /* we're never async for now, cgroup helpers need this */
 
 	skip_sum = BTRFS_I(inode)->flags & BTRFS_INODE_NODATASUM;
 
@@ -2131,10 +2132,10 @@ static blk_status_t btrfs_submit_bio_hook(struct inode *inode, struct bio *bio,
 				goto out;
 		}
 		goto mapit;
-	} else if (async && !skip_sum) {
+	} else if (root->root_key.objectid == BTRFS_DATA_RELOC_TREE_OBJECTID) {
 		/* csum items have already been cloned */
-		if (root->root_key.objectid == BTRFS_DATA_RELOC_TREE_OBJECTID)
-			goto mapit;
+		goto mapit;
+	} else if (async && !skip_sum) {
 		/* we're doing a write, do the async checksumming */
 		ret = btrfs_wq_submit_bio(fs_info, bio, mirror_num, bio_flags,
 					  0, inode, btrfs_submit_bio_start);
@@ -2711,6 +2712,75 @@ void btrfs_writepage_endio_finish_ordered(struct page *page, u64 start,
 	btrfs_queue_work(wq, &ordered_extent->work);
 }
 
+static int __btrfs_debug_csum_failure(struct page *page)
+{
+	struct btrfs_path *path;
+	struct inode_fs_paths *ipath = NULL;
+	struct inode *inode = page->mapping->host;
+	struct btrfs_root *root = BTRFS_I(inode)->root;
+	u64 isize = i_size_read(inode);
+	u64 otime_sec = BTRFS_I(inode)->i_otime.tv_sec;
+	int ret;
+
+	path = btrfs_alloc_path();
+	if (!path)
+		goto out;
+
+	ipath = init_ipath(4096, BTRFS_I(inode)->root, path);
+	if (!ipath)
+		goto out_path;
+
+	ret = paths_from_inode(inode->i_ino, ipath);
+
+	if (ret < 0)
+		goto out_ipath;
+
+	btrfs_crit(root->fs_info, "XXXXXXX csum failed debug ino %lu root %Lu file offset %Lu otime %Lu size %Lu path %s", inode->i_ino, root->root_key.objectid, page_offset(page), otime_sec, isize, (char *)(unsigned long)ipath->fspath->val[0]);
+
+out_ipath:
+	free_ipath(ipath);
+out_path:
+	btrfs_free_path(path);
+out:
+	return 0;
+}
+
+static int __data_readpage_endio_check(struct inode *inode,
+				  struct btrfs_io_bio *io_bio,
+				  int icsum, struct page *page,
+				  int pgoff, u64 start, size_t len)
+{
+	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
+	SHASH_DESC_ON_STACK(shash, fs_info->csum_shash);
+	char *kaddr;
+	u16 csum_size = btrfs_super_csum_size(fs_info->super_copy);
+	u8 *csum_expected;
+	u8 csum[BTRFS_CSUM_SIZE];
+
+	csum_expected = ((u8 *)io_bio->csum) + icsum * csum_size;
+
+	kaddr = kmap_atomic(page);
+	shash->tfm = fs_info->csum_shash;
+
+	crypto_shash_init(shash);
+	crypto_shash_update(shash, kaddr + pgoff, len);
+	crypto_shash_final(shash, csum);
+
+	if (memcmp(csum, csum_expected, csum_size))
+		goto zeroit;
+
+	kunmap_atomic(kaddr);
+	return 0;
+zeroit:
+	btrfs_print_data_csum_error(BTRFS_I(inode), start, csum, csum_expected,
+				    io_bio->mirror_num);
+	memset(kaddr + pgoff, 1, len);
+	flush_dcache_page(page);
+	kunmap_atomic(kaddr);
+	__btrfs_debug_csum_failure(page);
+	return -EIO;
+}
+
 static int __readpage_endio_check(struct inode *inode,
 				  struct btrfs_io_bio *io_bio,
 				  int icsum, struct page *page,
@@ -2775,7 +2845,7 @@ static int btrfs_readpage_end_io_hook(struct btrfs_io_bio *io_bio,
 	}
 
 	phy_offset >>= inode->i_sb->s_blocksize_bits;
-	return __readpage_endio_check(inode, io_bio, phy_offset, page, offset,
+	return __data_readpage_endio_check(inode, io_bio, phy_offset, page, offset,
 				      start, (size_t)(end - start + 1));
 }
 
@@ -9532,6 +9602,7 @@ static int btrfs_rename2(struct inode *old_dir, struct dentry *old_dentry,
 
 struct btrfs_delalloc_work {
 	struct inode *inode;
+	int sync_mode;
 	struct completion completion;
 	struct list_head list;
 	struct btrfs_work work;
@@ -9541,20 +9612,28 @@ static void btrfs_run_delalloc_work(struct btrfs_work *work)
 {
 	struct btrfs_delalloc_work *delalloc_work;
 	struct inode *inode;
+	int (*flush_func)(struct address_space *);
 
 	delalloc_work = container_of(work, struct btrfs_delalloc_work,
 				     work);
 	inode = delalloc_work->inode;
-	filemap_flush(inode->i_mapping);
+
+	if (delalloc_work->sync_mode == WB_SYNC_NONE)
+		flush_func = filemap_flush;
+	else
+		flush_func = filemap_fdatawrite;
+
+	flush_func(inode->i_mapping);
 	if (test_bit(BTRFS_INODE_HAS_ASYNC_EXTENT,
 				&BTRFS_I(inode)->runtime_flags))
-		filemap_flush(inode->i_mapping);
+		flush_func(inode->i_mapping);
 
 	iput(inode);
 	complete(&delalloc_work->completion);
 }
 
-static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode)
+static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode,
+							     int sync_mode)
 {
 	struct btrfs_delalloc_work *work;
 
@@ -9565,6 +9644,7 @@ static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode
 	init_completion(&work->completion);
 	INIT_LIST_HEAD(&work->list);
 	work->inode = inode;
+	work->sync_mode = sync_mode;
 	btrfs_init_work(&work->work, btrfs_run_delalloc_work, NULL, NULL);
 
 	return work;
@@ -9574,7 +9654,8 @@ static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode
  * some fairly slow code that needs optimization. This walks the list
  * of all the inodes with pending delalloc and forces them to disk.
  */
-static int start_delalloc_inodes(struct btrfs_root *root, int nr, bool snapshot)
+static int start_delalloc_inodes(struct btrfs_root *root, int nr, bool snapshot,
+				 int sync_mode)
 {
 	struct btrfs_inode *binode;
 	struct inode *inode;
@@ -9605,7 +9686,7 @@ static int start_delalloc_inodes(struct btrfs_root *root, int nr, bool snapshot)
 		if (snapshot)
 			set_bit(BTRFS_INODE_SNAPSHOT_FLUSH,
 				&binode->runtime_flags);
-		work = btrfs_alloc_delalloc_work(inode);
+		work = btrfs_alloc_delalloc_work(inode, sync_mode);
 		if (!work) {
 			iput(inode);
 			ret = -ENOMEM;
@@ -9646,13 +9727,14 @@ int btrfs_start_delalloc_snapshot(struct btrfs_root *root)
 	if (test_bit(BTRFS_FS_STATE_ERROR, &fs_info->fs_state))
 		return -EROFS;
 
-	ret = start_delalloc_inodes(root, -1, true);
+	ret = start_delalloc_inodes(root, -1, true, WB_SYNC_ALL);
 	if (ret > 0)
 		ret = 0;
 	return ret;
 }
 
-int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, int nr)
+int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, int nr,
+			       int sync_mode)
 {
 	struct btrfs_root *root;
 	struct list_head splice;
@@ -9675,7 +9757,7 @@ int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, int nr)
 			       &fs_info->delalloc_roots);
 		spin_unlock(&fs_info->delalloc_root_lock);
 
-		ret = start_delalloc_inodes(root, nr, false);
+		ret = start_delalloc_inodes(root, nr, false, sync_mode);
 		btrfs_put_fs_root(root);
 		if (ret < 0)
 			goto out;

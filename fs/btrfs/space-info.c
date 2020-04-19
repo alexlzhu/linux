@@ -266,10 +266,11 @@ static void __btrfs_dump_space_info(struct btrfs_fs_info *fs_info,
 		   info->total_bytes - btrfs_space_info_used(info, true),
 		   info->full ? "" : "not ");
 	btrfs_info(fs_info,
-		"space_info total=%llu, used=%llu, pinned=%llu, reserved=%llu, may_use=%llu, readonly=%llu",
+		"space_info total=%llu, used=%llu, pinned=%llu, reserved=%llu, may_use=%llu, readonly=%llu, disk_used=%llu, total_bytes_pinned=%llu",
 		info->total_bytes, info->bytes_used, info->bytes_pinned,
 		info->bytes_reserved, info->bytes_may_use,
-		info->bytes_readonly);
+		info->bytes_readonly, info->disk_used,
+		percpu_counter_sum_positive(&info->total_bytes_pinned));
 
 	DUMP_BLOCK_RSV(fs_info, global_block_rsv);
 	DUMP_BLOCK_RSV(fs_info, trans_block_rsv);
@@ -325,7 +326,7 @@ static void btrfs_writeback_inodes_sb_nr(struct btrfs_fs_info *fs_info,
 		 * the filesystem is readonly(all dirty pages are written to
 		 * the disk).
 		 */
-		btrfs_start_delalloc_roots(fs_info, nr_items);
+		btrfs_start_delalloc_roots(fs_info, nr_items, WB_SYNC_NONE);
 		if (!current->journal_info)
 			btrfs_wait_ordered_roots(fs_info, nr_items, 0, (u64)-1);
 	}
@@ -756,6 +757,7 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 	u64 to_reclaim;
 	int flush_state;
 	int commit_cycles = 0;
+	int should_force_chunk = 0;
 	u64 last_tickets_id;
 
 	fs_info = container_of(work, struct btrfs_fs_info, async_reclaim_work);
@@ -801,12 +803,24 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		 * commit the transaction.  If nothing has changed the next go
 		 * around then we can force a chunk allocation.
 		 */
-		if (flush_state == ALLOC_CHUNK_FORCE && !commit_cycles)
+		if (flush_state == ALLOC_CHUNK_FORCE && !should_force_chunk) {
 			flush_state++;
+
+			/*
+			 * We are skipping the forced chunk this time, but next
+			 * time we should definitely do it.
+			 */
+			should_force_chunk = 1;
+		}
 
 		if (flush_state > COMMIT_TRANS) {
 			commit_cycles++;
 			if (commit_cycles > 2) {
+				if (btrfs_test_opt(fs_info, ENOSPC_DEBUG)) {
+					btrfs_err(fs_info,
+						  "reserve metadata bytes failed, possible early enospc");
+					__btrfs_dump_space_info(fs_info, space_info);
+				}
 				if (maybe_fail_all_tickets(fs_info, space_info)) {
 					flush_state = FLUSH_DELAYED_ITEMS_NR;
 					commit_cycles--;

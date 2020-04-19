@@ -685,8 +685,9 @@ int __clear_extent_bit(struct extent_io_tree *tree, u64 start, u64 end,
 	struct extent_state *prealloc = NULL;
 	struct rb_node *node;
 	u64 last_end;
-	int err;
+	int err = 0;
 	int clear = 0;
+	bool need_prealloc = false;
 
 	btrfs_debug_check_extent_io_range(tree, start, end);
 	trace_btrfs_clear_extent_bit(tree, start, end - start + 1, bits);
@@ -709,6 +710,9 @@ again:
 		 * If we end up needing a new extent state we allocate it later.
 		 */
 		prealloc = alloc_extent_state(mask);
+		if (!prealloc && need_prealloc)
+			return -ENOMEM;
+		need_prealloc = false;
 	}
 
 	spin_lock(&tree->lock);
@@ -768,7 +772,15 @@ hit_next:
 
 	if (state->start < start) {
 		prealloc = alloc_extent_state_atomic(prealloc);
-		BUG_ON(!prealloc);
+		if (!prealloc) {
+			if (gfpflags_allow_blocking(mask)) {
+				need_prealloc = true;
+				spin_unlock(&tree->lock);
+				goto again;
+			}
+			err = -ENOMEM;
+			goto out;
+		}
 		err = split_state(tree, state, prealloc, start);
 		if (err)
 			extent_io_tree_panic(tree, err);
@@ -791,7 +803,15 @@ hit_next:
 	 */
 	if (state->start <= end && state->end > end) {
 		prealloc = alloc_extent_state_atomic(prealloc);
-		BUG_ON(!prealloc);
+		if (!prealloc) {
+			if (gfpflags_allow_blocking(mask)) {
+				need_prealloc = true;
+				spin_unlock(&tree->lock);
+				goto again;
+			}
+			err = -ENOMEM;
+			goto out;
+		}
 		err = split_state(tree, state, prealloc, end + 1);
 		if (err)
 			extent_io_tree_panic(tree, err);
@@ -826,7 +846,7 @@ out:
 	if (prealloc)
 		free_extent_state(prealloc);
 
-	return 0;
+	return err;
 
 }
 
@@ -1794,17 +1814,19 @@ static noinline int lock_delalloc_pages(struct inode *inode,
  */
 EXPORT_FOR_TESTS
 noinline_for_stack bool find_lock_delalloc_range(struct inode *inode,
-				    struct page *locked_page, u64 *start,
-				    u64 *end)
+				    struct page *locked_page,
+				    struct writeback_control *wbc, u64 *start,
+				    u64 *end, loff_t i_size,
+				    bool skip_last_page)
 {
 	struct extent_io_tree *tree = &BTRFS_I(inode)->io_tree;
 	u64 max_bytes = BTRFS_MAX_EXTENT_SIZE;
 	u64 delalloc_start;
 	u64 delalloc_end;
-	bool found;
 	struct extent_state *cached_state = NULL;
 	int ret;
 	int loops = 0;
+	bool found;
 
 again:
 	/* step one, find a bunch of delalloc bytes starting at start */
@@ -1832,6 +1854,13 @@ again:
 	 */
 	if (delalloc_end + 1 - delalloc_start > max_bytes)
 		delalloc_end = delalloc_start + max_bytes - 1;
+
+	/*
+	 * Don't include the last page if it is a partial page and we're
+	 * O_APPEND.
+	 */
+	if (skip_last_page && delalloc_end >= i_size)
+		delalloc_end = round_down(i_size, PAGE_SIZE) - 1;
 
 	/* step two, lock all the pages after the page that has start */
 	ret = lock_delalloc_pages(inode, locked_page,
@@ -3340,7 +3369,8 @@ static void update_nr_written(struct writeback_control *wbc,
  */
 static noinline_for_stack int writepage_delalloc(struct inode *inode,
 		struct page *page, struct writeback_control *wbc,
-		u64 delalloc_start, unsigned long *nr_written)
+		u64 delalloc_start, unsigned long *nr_written,
+		loff_t i_size, bool skip_last_page)
 {
 	u64 page_end = delalloc_start + PAGE_SIZE - 1;
 	bool found;
@@ -3351,9 +3381,10 @@ static noinline_for_stack int writepage_delalloc(struct inode *inode,
 
 
 	while (delalloc_end < page_end) {
-		found = find_lock_delalloc_range(inode, page,
+		found = find_lock_delalloc_range(inode, page, wbc,
 					       &delalloc_start,
-					       &delalloc_end);
+					       &delalloc_end,
+					       i_size, skip_last_page);
 		if (!found) {
 			delalloc_start = delalloc_end + 1;
 			continue;
@@ -3549,6 +3580,14 @@ static int __extent_writepage(struct page *page, struct writeback_control *wbc,
 	loff_t i_size = i_size_read(inode);
 	unsigned long end_index = i_size >> PAGE_SHIFT;
 	unsigned long nr_written = 0;
+	/*
+	 * Skip writing out the last page for background writeback of O_APPEND,
+	 * unless we're explictly trying to free space.
+	 */
+	bool skip_last_page = (wbc->sync_mode == WB_SYNC_NONE &&
+			       wbc->reason != WB_REASON_FS_FREE_SPACE &&
+			       test_bit(BTRFS_INODE_APPEND_WRITE,
+					&BTRFS_I(inode)->runtime_flags));
 
 	trace___extent_writepage(page, inode, wbc);
 
@@ -3564,7 +3603,7 @@ static int __extent_writepage(struct page *page, struct writeback_control *wbc,
 		return 0;
 	}
 
-	if (page->index == end_index) {
+	if (page->index == end_index && !skip_last_page) {
 		char *userpage;
 
 		userpage = kmap_atomic(page);
@@ -3572,12 +3611,17 @@ static int __extent_writepage(struct page *page, struct writeback_control *wbc,
 		       PAGE_SIZE - pg_offset);
 		kunmap_atomic(userpage);
 		flush_dcache_page(page);
+	} else if (page->index == end_index) {
+		redirty_page_for_writepage(wbc, page);
+		unlock_page(page);
+		return 0;
 	}
 
 	set_page_extent_mapped(page);
 
 	if (!epd->extent_locked) {
-		ret = writepage_delalloc(inode, page, wbc, start, &nr_written);
+		ret = writepage_delalloc(inode, page, wbc, start, &nr_written,
+					 i_size, skip_last_page);
 		if (ret == 1)
 			return 0;
 		if (ret)
