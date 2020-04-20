@@ -1,0 +1,76 @@
+load(":defs.bzl", "buildinfo", "kernel")
+load("//facebook/build:container.bzl", "container_genrule")
+load("//facebook/config:defs.bzl", "DEBUG_OPTIONS", "FLAVORS")
+
+# hack to just bind the repo root into the container - this is somewhat
+# against buck's idea of explicit dependencies, but we can reasonably
+# treat the entire tree as one dependency for the purpose of being able
+# to simply invoke `make`, and it is mounted readonly, so nothing bad
+# can really happen
+genrule(
+    name = "sources",
+    cmd = """mkdir -p $OUT
+cd `git rev-parse --show-toplevel`
+git ls-files | awk -F'/' '{ print $1 }' | grep -v .bzl | sort -u | xargs -I '{}' cp -R --reflink=auto '{}' $OUT
+cd $OUT
+make mrproper
+""",
+    # it is faster to simply re-copy than for buck to check what changed
+    cacheable = False,
+    out = "kernel",
+)
+
+# build flavorless, no debug
+kernel(
+    arch = "x86_64",
+    flavor = None,
+    debug = None,
+)
+
+# build flavored kernels
+[
+    kernel(
+        arch = "x86_64",
+        flavor = flavor,
+        debug = None,
+    )
+    for flavor in FLAVORS
+    if flavor != "lol2" and flavor != "kdump"
+]
+
+# build debug configs only for flavorless kernel
+[
+    kernel(
+        arch = "x86_64",
+        flavor = None,
+        debug = debug,
+        labels = ["debug"],
+    )
+    for debug in DEBUG_OPTIONS
+]
+
+kernel(
+    arch = "x86_64",
+    flavor = "lol2",
+    debug = None,
+    build_modules = False,
+    extra_srcs = [("//facebook:lol2-initramfs", "/ro/lol2-initramfs.cpio")],
+    headers_rpm = False,
+    devel_rpm = False,
+)
+
+kernel(
+    arch = "x86_64",
+    flavor = "kdump",
+    debug = None,
+    build_modules = False,
+    headers_rpm = False,
+    devel_rpm = False,
+)
+
+# eg 5.2.9
+genrule(
+    name = "kernelversion",
+    cmd = "echo {} > $OUT".format(buildinfo().kernelversion),
+    out = "kernelversion",
+)
