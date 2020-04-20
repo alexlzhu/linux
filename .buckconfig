@@ -1,0 +1,22 @@
+# include some fake git info so that local builds are fast, if missing
+# information - this is mostly just useful for testing changes to build
+# scripts, test builds that are going to be installed on real machines should
+# be completed with the facebook/build/buck wrapper which will set proper git information
+[build_info]
+  kernelversion = 99
+  gittish = 00_g000000000000
+  fbk_tag = v99.0-fbk99
+  rpm_number = 0
+
+[parser]
+  default_build_file_syntax = SKYLARK
+
+[buildfile]
+  name = TARGETS
+
+[download]
+  in_build = true
+
+[log]
+  rule_key_logger_enabled = True
+  repository = linux-kernel

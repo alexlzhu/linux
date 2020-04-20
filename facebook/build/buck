@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -e
+
+root="$(git rev-parse --show-toplevel)"
+
+cd "$root" || { echo "must run from somewhere in the linux tree"; exit 1; }
+
+# buck should be idempotent, so we wrap it in this script so that we
+# can hint to buck about changes that it cannot observe, notably commit hash if
+# HEAD has not changed, we can leverage buck caching as normal, but buck
+# caching can miss commit hash changes when source files don't change, which
+# makes our release name prone to caching issues (eg commit message changes ->
+# hash changes ->kernel built uname changes)
+kernelversion="$(make kernelversion EXTRAVERSION=)"
+gittish="$(git describe | cut -f2,3 -d- | tr - _)"
+# git tag --match is very slow, so see if we can get lucky without --match,
+# otherwise we need to fallback on the slow method
+fbk_tag="$(git describe --abbrev=0 --tags)"
+if [[ $fbk_tag != *"fbk"* ]]; then
+    fbk_tag="$(git describe --abbrev=0 --tags --match '*fbk*')"
+fi
+
+# modules definitions come from configerator because they need to be built on
+# older kernels and without editing code in the kernel tree, so replace
+# facebook/modules/modules.bzl now with contents from configerator
+# TODO(T60329259) this will soon be replaced by having this config checked in
+# directly to the kernel repo, so the build is perfect repo hermetic
+configeratorc -minloglevel=2 getConfig kernel/build/modules.bzl > "$root/facebook/build/modules.bzl"
+
+if [ ! -f "$root/.buckversion" ]; then
+  # use buck version from checked-out fbcode if it exists (fbsource will always
+  # be symlinked here on Sandcastle because fbcode is a secondary repo for
+  # linux-kernel-git
+  if [ -f "$root/fbsource/fbcode/.buckversion" ]; then
+      cp "$root/fbsource/fbcode/.buckversion" "$root/.buckversion"
+  else
+      echo "latest" > "$root/.buckversion"
+  fi
+fi
+
+subcmd="$1"
+shift
+
+# pass the variable config options to buck as cli configs, so that we don't
+# pollute any local files with runtime build info
+buck "$subcmd" -c build_info.fakegit=false -c build_info.kernelversion="$kernelversion" -c build_info.gittish="$gittish" -c build_info.fbk_tag="$fbk_tag" "$@"

@@ -1,0 +1,20 @@
+export_file(
+    name = "fb-kernel.spec.template",
+    src = "fb-kernel.spec.template",
+    visibility = ["PUBLIC"],
+)
+
+http_file(
+    name = "build-image",
+    urls = [
+        "https://interncache-all.fbcdn.net/manifold/linux_kernel/tree/build_images/D19770678",
+    ],
+    sha256 = "dc0c66a2365449a5bf69cf8e501d56cd391500198819bdf6502f283b6e70899c",
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "nspawn.sh",
+    src = "nspawn.sh",
+    visibility = ["PUBLIC"],
+)

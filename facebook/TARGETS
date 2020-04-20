@@ -1,0 +1,12 @@
+go_binary(
+    name = "template",
+    srcs = ["template.go"],
+    visibility = ["PUBLIC"],
+)
+
+genrule(
+    name = "lol2-initramfs",
+    out = "initramfs.cpio",
+    cmd = "fbpkg.fetch --dest $TMP osprov.lol2_initramfs && mv $TMP/initramfs.cpio $OUT",
+    visibility = ["PUBLIC"],
+)
