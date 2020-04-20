@@ -3940,7 +3940,7 @@ static noinline int find_free_extent(struct btrfs_fs_info *fs_info,
 	ffe_ctl.search_start = max(ffe_ctl.search_start,
 				   first_logical_byte(fs_info, 0));
 	ffe_ctl.search_start = max(ffe_ctl.search_start, hint_byte);
-	if (btrfs_test_opt(fs_info, SSD_SPREAD) && (!last_ptr || !use_cluster)) {
+	if (btrfs_test_opt(fs_info, SSD) && (!last_ptr || !use_cluster)) {
 		down_read(&space_info->groups_sem);
 		block_group = get_first_block_group(space_info, ffe_ctl.index,
 						    delalloc);

@@ -808,6 +808,8 @@ static int __load_free_space_cache(struct btrfs_root *root, struct inode *inode,
 				      GFP_NOFS);
 		if (!e)
 			goto free_cache;
+		RB_CLEAR_NODE(&e->offset_index);
+		RB_CLEAR_NODE(&e->size_index);
 
 		ret = io_ctl_read_entry(&io_ctl, e, &type);
 		if (ret) {
@@ -1575,6 +1577,37 @@ static int tree_insert_offset(struct rb_root *root, u64 offset,
 	return 0;
 }
 
+static inline int space_size(struct btrfs_free_space *info)
+{
+	if (info->bitmap && info->max_extent_size)
+		return info->max_extent_size;
+	return info->bytes;
+}
+
+static void tree_insert_size(struct rb_root_cached *root,
+			     struct btrfs_free_space *info)
+{
+	struct rb_node **p = &root->rb_root.rb_node;
+	struct rb_node *parent_node = NULL;
+	struct btrfs_free_space *tmp;
+	bool leftmost = true;
+
+	while (*p) {
+		parent_node = *p;
+		tmp = rb_entry(parent_node, struct btrfs_free_space,
+			       size_index);
+		if (space_size(info) < space_size(tmp)) {
+			p = &(*p)->rb_right;
+			leftmost = false;
+		} else {
+			p = &(*p)->rb_left;
+		}
+	}
+
+	rb_link_node(&info->size_index, parent_node, p);
+	rb_insert_color_cached(&info->size_index, root, leftmost);
+}
+
 /*
  * searches the tree for the given offset.
  *
@@ -1702,8 +1735,16 @@ static inline void
 __unlink_free_space(struct btrfs_free_space_ctl *ctl,
 		    struct btrfs_free_space *info)
 {
-	rb_erase(&info->offset_index, &ctl->free_space_offset);
+	if (!RB_EMPTY_NODE(&info->offset_index)) {
+		rb_erase(&info->offset_index, &ctl->free_space_offset);
+		RB_CLEAR_NODE(&info->offset_index);
+	}
 	ctl->free_extents--;
+
+	if (ctl->index_by_size && !RB_EMPTY_NODE(&info->size_index)) {
+		rb_erase_cached(&info->size_index, &ctl->free_space_size);
+		RB_CLEAR_NODE(&info->size_index);
+	}
 
 	if (!info->bitmap && !btrfs_free_space_trimmed(info)) {
 		ctl->discardable_extents[BTRFS_STAT_CURR]--;
@@ -1728,6 +1769,9 @@ static int link_free_space(struct btrfs_free_space_ctl *ctl,
 				 &info->offset_index, (info->bitmap != NULL));
 	if (ret)
 		return ret;
+
+	if (ctl->index_by_size)
+		tree_insert_size(&ctl->free_space_size, info);
 
 	if (!info->bitmap && !btrfs_free_space_trimmed(info)) {
 		ctl->discardable_extents[BTRFS_STAT_CURR]++;
@@ -1921,18 +1965,33 @@ find_free_space(struct btrfs_free_space_ctl *ctl, u64 *offset, u64 *bytes,
 	u64 align_off;
 	int ret;
 
-	if (!ctl->free_space_offset.rb_node)
-		goto out;
+	if (ctl->index_by_size) {
+		node = rb_first_cached(&ctl->free_space_size);
+		if (!node)
+			goto out;
+	} else {
+		if (!ctl->free_space_offset.rb_node)
+			goto out;
 
-	entry = tree_search_offset(ctl, offset_to_bitmap(ctl, *offset), 0, 1);
-	if (!entry)
-		goto out;
+		entry = tree_search_offset(ctl, offset_to_bitmap(ctl, *offset),
+					   0, 1);
+		if (!entry)
+			goto out;
+		node = &entry->offset_index;
+	}
 
-	for (node = &entry->offset_index; node; node = rb_next(node)) {
-		entry = rb_entry(node, struct btrfs_free_space, offset_index);
+	for (; node; node = rb_next(node)) {
+		if (ctl->index_by_size)
+			entry = rb_entry(node, struct btrfs_free_space,
+					 size_index);
+		else
+			entry = rb_entry(node, struct btrfs_free_space,
+					 offset_index);
 		if (entry->bytes < *bytes) {
 			*max_extent_size = max(get_max_extent_size(entry),
 					       *max_extent_size);
+			if (ctl->index_by_size)
+				break;
 			continue;
 		}
 
@@ -2302,6 +2361,8 @@ new_bitmap:
 				ret = -ENOMEM;
 				goto out;
 			}
+			RB_CLEAR_NODE(&info->size_index);
+			RB_CLEAR_NODE(&info->offset_index);
 		}
 
 		/* allocate the bitmap */
@@ -2542,6 +2603,7 @@ int __btrfs_add_free_space(struct btrfs_fs_info *fs_info,
 	info->bytes = bytes;
 	info->trim_state = trim_state;
 	RB_CLEAR_NODE(&info->offset_index);
+	RB_CLEAR_NODE(&info->size_index);
 
 	spin_lock(&ctl->tree_lock);
 
@@ -2754,6 +2816,8 @@ void btrfs_init_free_space_ctl(struct btrfs_block_group *block_group)
 	ctl->private = block_group;
 	ctl->op = &free_space_op;
 	ctl->max_extent_size = 0;
+	ctl->free_space_size = RB_ROOT_CACHED;
+	ctl->index_by_size = true;
 	INIT_LIST_HEAD(&ctl->trimming_ranges);
 	mutex_init(&ctl->cache_writeout_mutex);
 
@@ -2818,6 +2882,8 @@ __btrfs_return_cluster_to_free_space(
 		}
 		tree_insert_offset(&ctl->free_space_offset,
 				   entry->offset, &entry->offset_index, bitmap);
+		if (ctl->index_by_size)
+			tree_insert_size(&ctl->free_space_size, entry);
 	}
 	cluster->root = RB_ROOT;
 
@@ -2931,13 +2997,20 @@ u64 btrfs_find_space_for_alloc(struct btrfs_block_group *block_group,
 
 	ret = offset;
 	if (entry->bitmap) {
-		bitmap_clear_bits(ctl, entry, offset, bytes);
+		if (ctl->index_by_size) {
+			unlink_free_space(ctl, entry);
+			__bitmap_clear_bits(ctl, entry, offset, bytes);
+		} else {
+			bitmap_clear_bits(ctl, entry, offset, bytes);
+		}
 
 		if (!btrfs_free_space_trimmed(entry))
 			atomic64_add(bytes, &discard_ctl->discard_bytes_saved);
 
 		if (!entry->bytes)
 			free_bitmap(ctl, entry);
+		else if (ctl->index_by_size)
+			link_free_space(ctl, entry);
 	} else {
 		unlink_free_space(ctl, entry);
 		align_gap_len = offset - entry->offset;
@@ -3208,6 +3281,11 @@ again:
 
 	cluster->window_start = start * ctl->unit + entry->offset;
 	rb_erase(&entry->offset_index, &ctl->free_space_offset);
+	if (ctl->index_by_size) {
+		rb_erase_cached(&entry->size_index, &ctl->free_space_size);
+		RB_CLEAR_NODE(&entry->size_index);
+	}
+
 	ret = tree_insert_offset(&cluster->root, entry->offset,
 				 &entry->offset_index, 1);
 	ASSERT(!ret); /* -EEXIST; Logic error */
@@ -3298,6 +3376,11 @@ setup_cluster_no_bitmap(struct btrfs_block_group *block_group,
 			continue;
 
 		rb_erase(&entry->offset_index, &ctl->free_space_offset);
+		if (ctl->index_by_size) {
+			rb_erase_cached(&entry->size_index,
+					&ctl->free_space_size);
+			RB_CLEAR_NODE(&entry->size_index);
+		}
 		ret = tree_insert_offset(&cluster->root, entry->offset,
 					 &entry->offset_index, 0);
 		total_size += entry->bytes;
@@ -4191,6 +4274,8 @@ again:
 		info = kmem_cache_zalloc(btrfs_free_space_cachep, GFP_NOFS);
 		if (!info)
 			return -ENOMEM;
+		RB_CLEAR_NODE(&info->offset_index);
+		RB_CLEAR_NODE(&info->size_index);
 	}
 
 	if (!bitmap) {
