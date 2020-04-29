@@ -238,6 +238,18 @@ static u8 tpm_tis_status(struct tpm_chip *chip)
 	rc = tpm_tis_read8(priv, TPM_STS(priv->locality), &status);
 	if (rc < 0)
 		return 0;
+	/*
+	 * The STMicroelectronics TPM in the HP G10 machines has a bug that the
+	 * status register is sometimes bogus (all 1s) if read immediately after
+	 * the access register is written to. Bits 0, 1, and 5 are always
+	 * supposed to read as 0, so this is clearly invalid. Reading the
+	 * register a second time returns a valid value.
+	 */
+	if (unlikely(status == 0xff)) {
+		rc = tpm_tis_read8(priv, TPM_STS(priv->locality), &status);
+		if (rc < 0)
+			return 0;
+	}
 
 	return status;
 }
