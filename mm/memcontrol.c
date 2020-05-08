@@ -1520,29 +1520,29 @@ void mem_cgroup_print_oom_meminfo(struct mem_cgroup *memcg)
 {
 	char *buf;
 
-	pr_info("memory: usage %llukB, limit %llukB, failcnt %lu\n",
+	pr_warn("memory: usage %llukB, limit %llukB, failcnt %lu\n",
 		K((u64)page_counter_read(&memcg->memory)),
 		K((u64)memcg->memory.max), memcg->memory.failcnt);
 	if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
-		pr_info("swap: usage %llukB, limit %llukB, failcnt %lu\n",
+		pr_warn("swap: usage %llukB, limit %llukB, failcnt %lu\n",
 			K((u64)page_counter_read(&memcg->swap)),
 			K((u64)memcg->swap.max), memcg->swap.failcnt);
 	else {
-		pr_info("memory+swap: usage %llukB, limit %llukB, failcnt %lu\n",
+		pr_warn("memory+swap: usage %llukB, limit %llukB, failcnt %lu\n",
 			K((u64)page_counter_read(&memcg->memsw)),
 			K((u64)memcg->memsw.max), memcg->memsw.failcnt);
-		pr_info("kmem: usage %llukB, limit %llukB, failcnt %lu\n",
+		pr_warn("kmem: usage %llukB, limit %llukB, failcnt %lu\n",
 			K((u64)page_counter_read(&memcg->kmem)),
 			K((u64)memcg->kmem.max), memcg->kmem.failcnt);
 	}
 
-	pr_info("Memory cgroup stats for ");
+	pr_warn("Memory cgroup stats for ");
 	pr_cont_cgroup_path(memcg->css.cgroup);
 	pr_cont(":");
 	buf = memory_stat_format(memcg);
 	if (!buf)
 		return;
-	pr_info("%s", buf);
+	pr_warn("%s", buf);
 	kfree(buf);
 }
 
