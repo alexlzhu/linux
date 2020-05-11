@@ -35,9 +35,10 @@ def buildinfo():
         fbk = fbk_pieces[1],
         # eg: rc1
         rc_version = rc_version,
-        # rpm_number is a semi-arbitrary user-chosen integer (it should be
-        # unique, but afaik not strictly necessary)
-        rpm_number = native.read_config("build_info", "rpm_number"),
+        # Historically the rpm_number was a monotonically increasing integer.
+        # Starting with 5.6 this is constantly set to 0, because it is not
+        # required anymore.
+        rpm_number = 0,
         # custom_tag allows a user to inject an arbitrary string into the
         # EXTRAVERSION, for example to indicate -debug
         custom_tag = native.read_config("build_info", "custom_tag", ""),
