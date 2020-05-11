@@ -1,0 +1,68 @@
+repository_config(
+    name = "linux-kernel",
+    type = "git",
+    path = ".",
+)
+
+SANDCASTLE_PRIORITY = struct(
+    HIGH = 3,
+    LOW = 7,
+    NORMAL = 5,
+    UTMOST = 0,
+    WISHLIST = 9,
+)
+
+def _set_default_capabilities(output):
+    caps = {
+        "type": "lego",
+        "vcs": "linux-kernel-git",
+        "tenant": "kernel",
+    }
+    caps.update(output.get("capabilities", {}))
+    output_with_caps = dict(output)
+    output_with_caps["capabilities"] = caps
+    return output_with_caps
+
+def _default_capabilities_decorator():
+    return output_decorator(
+        impl = _set_default_capabilities,
+        args = {"output": output()},
+        name = "default_capabilities",
+    )
+
+default_capabilities_decorator = derive(
+    impl = _default_capabilities_decorator,
+    args = {},
+)
+
+def _set_priority(output, run_context):
+    if "priority" in output and output["priority"]:
+        return output
+    output_with_priority = dict(output)
+    if run_context.user != "kerneltest":
+        output_with_priority["priority"] = SANDCASTLE_PRIORITY.HIGH
+    else:
+        output_with_priority["priority"] = SANDCASTLE_PRIORITY.NORMAL
+    return output_with_priority
+
+def _set_priority_decorator():
+    return output_decorator(
+        impl = _set_priority,
+        args = {"output": output(), "run_context": source.run_context()},
+        name = "set_priority",
+    )
+
+set_priority_decorator = derive(
+    impl = _set_priority_decorator,
+    args = {},
+)
+
+output_rule(
+    validators = [
+    ],
+    decorators = [
+        default_capabilities_decorator,
+        set_priority_decorator,
+    ],
+    type = sandcastleOutputType(),
+)
