@@ -38,7 +38,7 @@ def buildinfo():
         # Historically the rpm_number was a monotonically increasing integer.
         # Starting with 5.6 this is constantly set to 0, because it is not
         # required anymore.
-        rpm_number = 0,
+        rpm_number = "0",
         # custom_tag allows a user to inject an arbitrary string into the
         # EXTRAVERSION, for example to indicate -debug
         custom_tag = native.read_config("build_info", "custom_tag", ""),
