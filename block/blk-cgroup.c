@@ -752,6 +752,7 @@ static int blkcg_print_stat(struct seq_file *sf, void *v)
 		const char *dname;
 		char *buf;
 		u64 rbytes, wbytes, rios, wios, dbytes, dios;
+		u64 rrandbytes, wrandbytes, rrandios, wrandios;
 		size_t size = seq_get_buf(sf, &buf), off = 0;
 		int i;
 		bool has_stats = false;
@@ -780,9 +781,13 @@ static int blkcg_print_stat(struct seq_file *sf, void *v)
 			rbytes = bis->cur.bytes[BLKG_IOSTAT_READ];
 			wbytes = bis->cur.bytes[BLKG_IOSTAT_WRITE];
 			dbytes = bis->cur.bytes[BLKG_IOSTAT_DISCARD];
+			rrandbytes = bis->cur.bytes[BLKG_IOSTAT_READ_RAND];
+			wrandbytes = bis->cur.bytes[BLKG_IOSTAT_WRITE_RAND];
 			rios = bis->cur.ios[BLKG_IOSTAT_READ];
 			wios = bis->cur.ios[BLKG_IOSTAT_WRITE];
 			dios = bis->cur.ios[BLKG_IOSTAT_DISCARD];
+			rrandios = bis->cur.ios[BLKG_IOSTAT_READ_RAND];
+			wrandios = bis->cur.ios[BLKG_IOSTAT_WRITE_RAND];
 		} while (u64_stats_fetch_retry(&bis->sync, seq));
 
 		if (rbytes || wbytes || rios || wios) {
@@ -791,6 +796,11 @@ static int blkcg_print_stat(struct seq_file *sf, void *v)
 					 "rbytes=%llu wbytes=%llu rios=%llu wios=%llu dbytes=%llu dios=%llu",
 					 rbytes, wbytes, rios, wios,
 					 dbytes, dios);
+			if (rrandbytes || wrandbytes || rrandios || wrandios)
+				off += scnprintf(buf+off, size-off,
+						 " rrandbytes=%llu wrandbytes=%llu rrandios=%llu wrandios=%llu",
+						 rrandbytes, wrandbytes,
+						 rrandios, wrandios);
 		}
 
 		if (blkcg_debug_stats && atomic_read(&blkg->use_delay)) {
@@ -833,7 +843,6 @@ static int blkcg_print_stat(struct seq_file *sf, void *v)
 static struct cftype blkcg_files[] = {
 	{
 		.name = "stat",
-		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = blkcg_print_stat,
 	},
 	{ }	/* terminate */
@@ -883,8 +892,8 @@ static void blkcg_css_offline(struct cgroup_subsys_state *css)
 	/* this prevents anyone from attaching or migrating to this blkcg */
 	wb_blkcg_offline(blkcg);
 
-	/* put the base cgwb reference allowing step 2 to be triggered */
-	blkcg_cgwb_put(blkcg);
+	/* put the base online pin allowing step 2 to be triggered */
+	blkcg_unpin_online(blkcg);
 }
 
 /**
@@ -983,11 +992,11 @@ blkcg_css_alloc(struct cgroup_subsys_state *parent_css)
 	}
 
 	spin_lock_init(&blkcg->lock);
+	refcount_set(&blkcg->online_pin, 1);
 	INIT_RADIX_TREE(&blkcg->blkg_tree, GFP_NOWAIT | __GFP_NOWARN);
 	INIT_HLIST_HEAD(&blkcg->blkg_list);
 #ifdef CONFIG_CGROUP_WRITEBACK
 	INIT_LIST_HEAD(&blkcg->cgwb_list);
-	refcount_set(&blkcg->cgwb_refcnt, 1);
 #endif
 	list_add_tail(&blkcg->all_blkcgs_node, &all_blkcgs);
 
@@ -1004,6 +1013,21 @@ free_pd_blkcg:
 unlock:
 	mutex_unlock(&blkcg_pol_mutex);
 	return ret;
+}
+
+static int blkcg_css_online(struct cgroup_subsys_state *css)
+{
+	struct blkcg *blkcg = css_to_blkcg(css);
+	struct blkcg *parent = blkcg_parent(blkcg);
+
+	/*
+	 * blkcg_pin_online() is used to delay blkcg offline so that blkgs
+	 * don't go offline while cgwbs are still active on them.  Pin the
+	 * parent so that offline always happens towards the root.
+	 */
+	if (parent)
+		blkcg_pin_online(parent);
+	return 0;
 }
 
 /**
@@ -1199,6 +1223,7 @@ static void blkcg_exit(struct task_struct *tsk)
 
 struct cgroup_subsys io_cgrp_subsys = {
 	.css_alloc = blkcg_css_alloc,
+	.css_online = blkcg_css_online,
 	.css_offline = blkcg_css_offline,
 	.css_free = blkcg_css_free,
 	.can_attach = blkcg_can_attach,
