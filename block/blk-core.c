@@ -38,6 +38,7 @@
 #include <linux/debugfs.h>
 #include <linux/bpf.h>
 #include <linux/psi.h>
+#include <linux/sched/signal.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/block.h>
@@ -1158,6 +1159,12 @@ blk_qc_t submit_bio(struct bio *bio)
 	 */
 	if (bio_has_data(bio)) {
 		unsigned int count;
+
+		if (unlikely((bio->bi_opf & REQ_RAHEAD) &&
+		    fatal_signal_pending(current))) {
+			bio_wouldblock_error(bio);
+			return BLK_QC_T_NONE;
+		}
 
 		if (unlikely(bio_op(bio) == REQ_OP_WRITE_SAME))
 			count = queue_logical_block_size(bio->bi_disk->queue) >> 9;

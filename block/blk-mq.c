@@ -1987,6 +1987,12 @@ static blk_qc_t blk_mq_make_request(struct request_queue *q, struct bio *bio)
 
 	rq_qos_throttle(q, bio);
 
+	if ((bio->bi_opf & REQ_RAHEAD) &&
+	    (fatal_signal_pending(current) || blk_cgroup_congested())) {
+		bio_wouldblock_error(bio);
+		return BLK_QC_T_NONE;
+	}
+
 	data.cmd_flags = bio->bi_opf;
 	rq = blk_mq_get_request(q, bio, &data);
 	if (unlikely(!rq)) {
