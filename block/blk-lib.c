@@ -10,13 +10,19 @@
 
 #include "blk.h"
 
-struct bio *blk_next_bio(struct bio *bio, unsigned int nr_pages, gfp_t gfp)
+struct bio *blk_next_bio(struct bio *bio, unsigned int nr_pages,
+			 gfp_t gfp, bool do_sync)
 {
 	struct bio *new = bio_alloc(gfp, nr_pages);
 
 	if (bio) {
-		bio_chain(bio, new);
-		submit_bio(bio);
+		if (do_sync) {
+			submit_bio_wait(bio);
+			bio_put(bio);
+		} else {
+			bio_chain(bio, new);
+			submit_bio(bio);
+		}
 	}
 
 	return new;
@@ -28,7 +34,7 @@ int __blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 {
 	struct request_queue *q = bdev_get_queue(bdev);
 	struct bio *bio = *biop;
-	unsigned int op;
+	unsigned int max_sectors, op;
 	sector_t bs_mask;
 
 	if (!q)
@@ -54,13 +60,23 @@ int __blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 	if (!nr_sects)
 		return -EINVAL;
 
+	if (flags & BLKDEV_DISCARD_SYNC)
+		max_sectors = q->limits.max_discard_sectors;
+	else
+		max_sectors = UINT_MAX >> 9;
+
 	while (nr_sects) {
-		sector_t req_sects = min_t(sector_t, nr_sects,
-				bio_allowed_max_sectors(q));
+		unsigned int req_sects;
+
+		/* Make sure bi_size doesn't overflow */
+		req_sects = min_t(sector_t, nr_sects, max_sectors);
+		if (req_sects > UINT_MAX >> 9)
+			req_sects = UINT_MAX >> 9;
 
 		WARN_ON_ONCE((req_sects << 9) > UINT_MAX);
 
-		bio = blk_next_bio(bio, 0, gfp_mask);
+		bio = blk_next_bio(bio, 0, gfp_mask,
+					flags & BLKDEV_DISCARD_SYNC);
 		bio->bi_iter.bi_sector = sector;
 		bio_set_dev(bio, bdev);
 		bio_set_op_attrs(bio, op, 0);
@@ -78,6 +94,11 @@ int __blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 		cond_resched();
 	}
 
+	if (bio && (flags & BLKDEV_DISCARD_SYNC)) {
+		submit_bio_wait(bio);
+		bio_put(bio);
+		bio = NULL;
+	}
 	*biop = bio;
 	return 0;
 }
@@ -154,7 +175,7 @@ static int __blkdev_issue_write_same(struct block_device *bdev, sector_t sector,
 	max_write_same_sectors = bio_allowed_max_sectors(q);
 
 	while (nr_sects) {
-		bio = blk_next_bio(bio, 1, gfp_mask);
+		bio = blk_next_bio(bio, 1, gfp_mask, false);
 		bio->bi_iter.bi_sector = sector;
 		bio_set_dev(bio, bdev);
 		bio->bi_vcnt = 1;
@@ -230,7 +251,7 @@ static int __blkdev_issue_write_zeroes(struct block_device *bdev,
 		return -EOPNOTSUPP;
 
 	while (nr_sects) {
-		bio = blk_next_bio(bio, 0, gfp_mask);
+		bio = blk_next_bio(bio, 0, gfp_mask, false);
 		bio->bi_iter.bi_sector = sector;
 		bio_set_dev(bio, bdev);
 		bio->bi_opf = REQ_OP_WRITE_ZEROES;
@@ -282,7 +303,7 @@ static int __blkdev_issue_zero_pages(struct block_device *bdev,
 
 	while (nr_sects != 0) {
 		bio = blk_next_bio(bio, __blkdev_sectors_to_bio_pages(nr_sects),
-				   gfp_mask);
+				   gfp_mask, false);
 		bio->bi_iter.bi_sector = sector;
 		bio_set_dev(bio, bdev);
 		bio_set_op_attrs(bio, REQ_OP_WRITE, 0);

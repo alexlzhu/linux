@@ -3693,8 +3693,15 @@ void tcp_send_delayed_ack(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	int ato = icsk->icsk_ack.ato;
+	int max_delack = msecs_to_jiffies(
+		sock_net(sk)->ipv4.sysctl_tcp_max_delack_ms);
 	unsigned long timeout;
 
+	if (max_delack <= 1) {
+		/* max_delack too small, send ack now */
+		tcp_send_ack(sk);
+		return;
+	}
 	if (ato > TCP_DELACK_MIN) {
 		const struct tcp_sock *tp = tcp_sk(sk);
 		int max_ato = HZ / 2;
@@ -3719,6 +3726,9 @@ void tcp_send_delayed_ack(struct sock *sk)
 
 		ato = min(ato, max_ato);
 	}
+
+	/* Bound ato if bound was specified */
+	ato = min(ato, max_delack);
 
 	/* Stay within the limit we were given */
 	timeout = jiffies + ato;
