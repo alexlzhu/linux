@@ -901,6 +901,7 @@ static int __remove_mapping(struct address_space *mapping, struct page *page,
 	} else {
 		void (*freepage)(struct page *);
 		void *shadow = NULL;
+		bool empty;
 
 		freepage = mapping->a_ops->freepage;
 		/*
@@ -922,8 +923,11 @@ static int __remove_mapping(struct address_space *mapping, struct page *page,
 		if (reclaimed && page_is_file_cache(page) &&
 		    !mapping_exiting(mapping) && !dax_mapping(mapping))
 			shadow = workingset_eviction(page, target_memcg);
-		__delete_from_page_cache(page, shadow);
+		empty = __delete_from_page_cache(page, shadow);
 		xa_unlock_irqrestore(&mapping->i_pages, flags);
+
+		if (empty)
+			inode_pages_clear(mapping->host);
 
 		if (freepage != NULL)
 			freepage(page);
@@ -1933,7 +1937,10 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	__mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, nr_taken);
 	reclaim_stat->recent_scanned[file] += nr_taken;
 
-	item = current_is_kswapd() ? PGSCAN_KSWAPD : PGSCAN_DIRECT;
+	if (current_is_kswapd() || (cgroup_reclaim(sc) && current_work()))
+		item = PGSCAN_KSWAPD;
+	else
+		item = PGSCAN_DIRECT;
 	if (!cgroup_reclaim(sc))
 		__count_vm_events(item, nr_scanned);
 	__count_memcg_events(lruvec_memcg(lruvec), item, nr_scanned);
@@ -1947,7 +1954,10 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 
 	spin_lock_irq(&pgdat->lru_lock);
 
-	item = current_is_kswapd() ? PGSTEAL_KSWAPD : PGSTEAL_DIRECT;
+	if (current_is_kswapd() || (cgroup_reclaim(sc) && current_work()))
+		item = PGSTEAL_KSWAPD;
+	else
+		item = PGSTEAL_DIRECT;
 	if (!cgroup_reclaim(sc))
 		__count_vm_events(item, nr_reclaimed);
 	__count_memcg_events(lruvec_memcg(lruvec), item, nr_reclaimed);
