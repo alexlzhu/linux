@@ -88,6 +88,8 @@ struct nbd_config {
 	u32 flags;
 	unsigned long runtime_flags;
 	u64 dead_conn_timeout;
+	u64 retransmit_timeout;
+	u64 deadline;
 
 	struct nbd_sock **socks;
 	int num_connections;
@@ -123,6 +125,7 @@ struct nbd_device {
 };
 
 #define NBD_CMD_REQUEUED	1
+#define NBD_CMD_INITIAL_ISSUE	2
 
 struct nbd_cmd {
 	struct nbd_device *nbd;
@@ -133,6 +136,7 @@ struct nbd_cmd {
 	blk_status_t status;
 	unsigned long flags;
 	u32 cmd_cookie;
+	unsigned long issue_time;
 };
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
@@ -162,12 +166,44 @@ static inline struct device *nbd_to_dev(struct nbd_device *nbd)
 	return disk_to_dev(nbd->disk);
 }
 
-static void nbd_requeue_cmd(struct nbd_cmd *cmd)
+static int nbd_requeue_cmd(struct nbd_cmd *cmd)
 {
 	struct request *req = blk_mq_rq_from_pdu(cmd);
+	struct nbd_config *config = cmd->nbd->config;
+	unsigned long deadline = config->deadline;
+
+	if (deadline) {
+		unsigned long now = jiffies;
+		unsigned long elapsed = now - cmd->issue_time;
+		unsigned long remaining;
+
+		if (time_after(cmd->issue_time, now)) {
+			dev_warn(nbd_to_dev(cmd->nbd),
+				 "req %p was started in the future??",
+				 req);
+			elapsed = 0;
+		}
+
+		if (elapsed >= deadline) {
+			dev_warn(nbd_to_dev(cmd->nbd),
+				"NOT requeuing %p: deadline expired (started %lu, elapsed %lu, deadline %lu)\n",
+				req, cmd->issue_time, elapsed, deadline);
+			return -EIO;
+		}
+
+		remaining = deadline - elapsed;
+		req->timeout = min_t(unsigned long, remaining,
+				     config->retransmit_timeout);
+		dev_dbg(nbd_to_dev(cmd->nbd),
+			"requeued req %p with timeout = %u (started %lu elapsed %lu remaining %lu deadline %lu rxmt %llu)\n",
+			req, req->timeout, cmd->issue_time, elapsed, remaining,
+			deadline, config->retransmit_timeout);
+	}
 
 	if (!test_and_set_bit(NBD_CMD_REQUEUED, &cmd->flags))
 		blk_mq_requeue_request(req, true);
+
+	return 0;
 }
 
 #define NBD_COOKIE_BITS 32
@@ -337,6 +373,7 @@ static void nbd_complete_rq(struct request *req)
 	dev_dbg(nbd_to_dev(cmd->nbd), "request %p: %s\n", req,
 		cmd->status ? "failed" : "done");
 
+	clear_bit(NBD_CMD_INITIAL_ISSUE, &cmd->flags);
 	blk_mq_end_request(req, cmd->status);
 }
 
@@ -420,9 +457,10 @@ static enum blk_eh_timer_return nbd_xmit_timeout(struct request *req,
 				mutex_unlock(&nsock->tx_lock);
 			}
 			mutex_unlock(&cmd->lock);
-			nbd_requeue_cmd(cmd);
-			nbd_config_put(nbd);
-			return BLK_EH_DONE;
+			if (!nbd_requeue_cmd(cmd)) {
+				nbd_config_put(nbd);
+				return BLK_EH_DONE;
+			}
 		}
 	}
 
@@ -925,8 +963,7 @@ again:
 	 */
 	blk_mq_start_request(req);
 	if (unlikely(nsock->pending && nsock->pending != req)) {
-		nbd_requeue_cmd(cmd);
-		ret = 0;
+		ret = nbd_requeue_cmd(cmd);
 		goto out;
 	}
 	/*
@@ -938,8 +975,7 @@ again:
 		dev_err_ratelimited(disk_to_dev(nbd->disk),
 				    "Request send failed, requeueing\n");
 		nbd_mark_nsock_dead(nbd, nsock, 1);
-		nbd_requeue_cmd(cmd);
-		ret = 0;
+		ret = nbd_requeue_cmd(cmd);
 	}
 out:
 	mutex_unlock(&nsock->tx_lock);
@@ -952,6 +988,18 @@ static blk_status_t nbd_queue_rq(struct blk_mq_hw_ctx *hctx,
 {
 	struct nbd_cmd *cmd = blk_mq_rq_to_pdu(bd->rq);
 	int ret;
+
+	if (!test_and_set_bit(NBD_CMD_INITIAL_ISSUE, &cmd->flags)) {
+		cmd->issue_time = jiffies;
+		dev_dbg(nbd_to_dev(cmd->nbd),
+			"request %p: issued @ %lu\n",
+			bd->rq,
+			cmd->issue_time);
+	} else {
+		dev_dbg(nbd_to_dev(cmd->nbd),
+			"request %p: reissue @ %lu (original @ %lu).\n",
+			bd->rq, jiffies, cmd->issue_time);
+	}
 
 	/*
 	 * Since we look at the bio's to send the request over the network we
@@ -1084,8 +1132,8 @@ static int nbd_reconnect_socket(struct nbd_device *nbd, unsigned long arg)
 			continue;
 		}
 		sk_set_memalloc(sock->sk);
-		if (nbd->tag_set.timeout)
-			sock->sk->sk_sndtimeo = nbd->tag_set.timeout;
+		if (config->retransmit_timeout)
+			sock->sk->sk_sndtimeo = config->retransmit_timeout;
 		atomic_inc(&config->recv_threads);
 		refcount_inc(&nbd->config_refs);
 		old = nsock->sock;
@@ -1278,9 +1326,9 @@ static int nbd_start_device(struct nbd_device *nbd)
 			return -ENOMEM;
 		}
 		sk_set_memalloc(config->socks[i]->sock->sk);
-		if (nbd->tag_set.timeout)
+		if (config->retransmit_timeout)
 			config->socks[i]->sock->sk->sk_sndtimeo =
-				nbd->tag_set.timeout;
+				config->retransmit_timeout;
 		atomic_inc(&config->recv_threads);
 		refcount_inc(&nbd->config_refs);
 		INIT_WORK(&args->work, recv_work);
@@ -1339,11 +1387,35 @@ static bool nbd_is_valid_blksize(unsigned long blksize)
 	return true;
 }
 
+static u64 rq_timeout(const struct nbd_device *nbd)
+{
+	return min_not_zero(nbd->config->deadline,
+			    nbd->config->retransmit_timeout);
+}
+
+/* Must be called with config_lock held */
 static void nbd_set_cmd_timeout(struct nbd_device *nbd, u64 timeout)
 {
-	nbd->tag_set.timeout = timeout * HZ;
-	if (timeout)
-		blk_queue_rq_timeout(nbd->disk->queue, timeout * HZ);
+	u64 effective_timeout;
+
+	nbd->config->retransmit_timeout = timeout * HZ;
+	effective_timeout = rq_timeout(nbd);
+	nbd->tag_set.timeout = effective_timeout;
+	if (effective_timeout)
+		blk_queue_rq_timeout(nbd->disk->queue, effective_timeout);
+}
+
+/* Must be called with config_lock held */
+static void nbd_set_deadline(struct nbd_device *nbd, u64 deadline)
+{
+	u64 effective_timeout;
+
+	nbd->config->deadline = deadline * HZ;
+	effective_timeout = rq_timeout(nbd);
+
+	nbd->tag_set.timeout = effective_timeout;
+	if (effective_timeout)
+		blk_queue_rq_timeout(nbd->disk->queue, effective_timeout);
 }
 
 /* Must be called with config_lock held */
@@ -1586,7 +1658,10 @@ static int nbd_dev_dbg_init(struct nbd_device *nbd)
 
 	debugfs_create_file("tasks", 0444, dir, nbd, &nbd_dbg_tasks_ops);
 	debugfs_create_u64("size_bytes", 0444, dir, &config->bytesize);
-	debugfs_create_u32("timeout", 0444, dir, &nbd->tag_set.timeout);
+	debugfs_create_u64("dead_conn_timeout", 0644, dir,
+			   &config->dead_conn_timeout);
+	debugfs_create_u64("deadline", 0644, dir, &config->deadline);
+	debugfs_create_u64("timeout", 0644, dir, &config->retransmit_timeout);
 	debugfs_create_u64("blocksize", 0444, dir, &config->blksize);
 	debugfs_create_file("flags", 0444, dir, nbd, &nbd_dbg_flags_ops);
 
@@ -1912,6 +1987,9 @@ again:
 	if (info->attrs[NBD_ATTR_TIMEOUT])
 		nbd_set_cmd_timeout(nbd,
 				    nla_get_u64(info->attrs[NBD_ATTR_TIMEOUT]));
+	if (info->attrs[NBD_ATTR_DEADLINE])
+		nbd_set_deadline(nbd,
+				 nla_get_u64(info->attrs[NBD_ATTR_DEADLINE]));
 	if (info->attrs[NBD_ATTR_DEAD_CONN_TIMEOUT]) {
 		config->dead_conn_timeout =
 			nla_get_u64(info->attrs[NBD_ATTR_DEAD_CONN_TIMEOUT]);
@@ -2091,6 +2169,9 @@ static int nbd_genl_reconfigure(struct sk_buff *skb, struct genl_info *info)
 	if (info->attrs[NBD_ATTR_TIMEOUT])
 		nbd_set_cmd_timeout(nbd,
 				    nla_get_u64(info->attrs[NBD_ATTR_TIMEOUT]));
+	if (info->attrs[NBD_ATTR_DEADLINE])
+		nbd_set_deadline(nbd,
+				 nla_get_u64(info->attrs[NBD_ATTR_DEADLINE]));
 	if (info->attrs[NBD_ATTR_DEAD_CONN_TIMEOUT]) {
 		config->dead_conn_timeout =
 			nla_get_u64(info->attrs[NBD_ATTR_DEAD_CONN_TIMEOUT]);
