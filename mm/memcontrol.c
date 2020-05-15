@@ -2397,7 +2397,7 @@ void mem_cgroup_handle_over_high(void)
 	unsigned long penalty_jiffies;
 	unsigned long pflags;
 	unsigned int nr_pages = current->memcg_nr_pages_over_high;
-	bool tried_direct_reclaim = false;
+	unsigned int nr_retries = MEM_CGROUP_RECLAIM_RETRIES;
 	struct mem_cgroup *memcg;
 
 	if (likely(!nr_pages))
@@ -2421,9 +2421,8 @@ recheck:
 	 * It's possible async reclaim just isn't able to keep
 	 * up. Before we go to sleep, try direct reclaim.
 	 */
-	if (!tried_direct_reclaim) {
+	if (nr_retries--) {
 		reclaim_high(memcg, nr_pages, GFP_KERNEL);
-		tried_direct_reclaim = true;
 		goto recheck;
 	}
 
