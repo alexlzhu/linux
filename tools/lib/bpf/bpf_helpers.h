@@ -12,6 +12,7 @@
 
 #define __uint(name, val) int (*name)[val]
 #define __type(name, val) typeof(val) *name
+#define __array(name, val) typeof(val) *name[]
 
 /* Helper macro to print out debug messages */
 #define bpf_printk(fmt, ...)				\
@@ -33,6 +34,20 @@
 #endif
 #ifndef __weak
 #define __weak __attribute__((weak))
+#endif
+
+/*
+ * Helper macro to manipulate data structures
+ */
+#ifndef offsetof
+#define offsetof(TYPE, MEMBER)  ((size_t)&((TYPE *)0)->MEMBER)
+#endif
+#ifndef container_of
+#define container_of(ptr, type, member)				\
+	({							\
+		void *__mptr = (void *)(ptr);			\
+		((type *)(__mptr - offsetof(type, member)));	\
+	})
 #endif
 
 /*
