@@ -73,6 +73,7 @@ EXPORT_SYMBOL(memory_cgrp_subsys);
 
 struct mem_cgroup *root_mem_cgroup __read_mostly;
 
+/* The number of times we should retry reclaim failures before giving up. */
 #define MEM_CGROUP_RECLAIM_RETRIES	5
 
 /* Socket memory accounting disabled? */
@@ -2238,16 +2239,22 @@ static int memcg_hotplug_cpu_dead(unsigned int cpu)
 	return 0;
 }
 
-static void reclaim_high(struct mem_cgroup *memcg,
-			 unsigned int nr_pages,
-			 gfp_t gfp_mask)
+static unsigned long reclaim_high(struct mem_cgroup *memcg,
+				  unsigned int nr_pages,
+				  gfp_t gfp_mask)
 {
+	unsigned long nr_reclaimed = 0;
+
 	do {
 		if (page_counter_read(&memcg->memory) <= memcg->high)
 			continue;
 		memcg_memory_event(memcg, MEMCG_HIGH);
-		try_to_free_mem_cgroup_pages(memcg, nr_pages, gfp_mask, true);
-	} while ((memcg = parent_mem_cgroup(memcg)));
+		nr_reclaimed += try_to_free_mem_cgroup_pages(memcg, nr_pages,
+							     gfp_mask, true);
+	} while ((memcg = parent_mem_cgroup(memcg)) &&
+		 !mem_cgroup_is_root(memcg));
+
+	return nr_reclaimed;
 }
 
 static void high_work_func(struct work_struct *work)
@@ -2394,10 +2401,11 @@ static unsigned long calculate_high_delay(struct mem_cgroup *memcg,
  */
 void mem_cgroup_handle_over_high(void)
 {
+	unsigned long nr_reclaimed;
 	unsigned long penalty_jiffies;
 	unsigned long pflags;
 	unsigned int nr_pages = current->memcg_nr_pages_over_high;
-	unsigned int nr_retries = MEM_CGROUP_RECLAIM_RETRIES;
+	int nr_retries = MEM_CGROUP_RECLAIM_RETRIES;
 	struct mem_cgroup *memcg;
 
 	if (likely(!nr_pages))
@@ -2405,7 +2413,8 @@ void mem_cgroup_handle_over_high(void)
 
 	memcg = get_mem_cgroup_from_mm(current->mm);
 	current->memcg_nr_pages_over_high = 0;
-recheck:
+
+retry_reclaim:
 	penalty_jiffies = calculate_high_delay(memcg, nr_pages);
 
 	/*
@@ -2421,10 +2430,9 @@ recheck:
 	 * It's possible async reclaim just isn't able to keep
 	 * up. Before we go to sleep, try direct reclaim.
 	 */
-	if (nr_retries--) {
-		reclaim_high(memcg, nr_pages, GFP_KERNEL);
-		goto recheck;
-	}
+	nr_reclaimed = reclaim_high(memcg, nr_pages, GFP_KERNEL);
+	if (nr_reclaimed || nr_retries--)
+		goto retry_reclaim;
 
 	/*
 	 * memory.high is breached and reclaim is unable to keep up. Throttle
