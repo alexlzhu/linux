@@ -3069,7 +3069,7 @@ int btrfs_return_cluster_to_free_space(
 		spin_unlock(&cluster->lock);
 		return 0;
 	}
-	atomic_inc(&block_group->count);
+	btrfs_get_block_group(block_group);
 	spin_unlock(&cluster->lock);
 
 	ctl = block_group->free_space_ctl;
@@ -3510,7 +3510,7 @@ int btrfs_find_space_cluster(struct btrfs_block_group *block_group,
 		list_del_init(&entry->list);
 
 	if (!ret) {
-		atomic_inc(&block_group->count);
+		btrfs_get_block_group(block_group);
 		list_add_tail(&cluster->block_group_list,
 			      &block_group->cluster_list);
 		cluster->block_group = block_group;

@@ -118,7 +118,7 @@ struct btrfs_block_group {
 	struct list_head list;
 
 	/* Usage count */
-	atomic_t count;
+	refcount_t count;
 
 	/*
 	 * List of struct btrfs_free_clusters for this block group.
