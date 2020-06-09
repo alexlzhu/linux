@@ -134,7 +134,7 @@ static int maxolduid = 65535;
 static int minolduid;
 
 static int ngroups_max = NGROUPS_MAX;
-static const int cap_last_cap = CAP_LAST_CAP;
+static const int cap_last_cap = CAP_LAST_CAP - 2;
 
 /*
  * This is needed for proc_doulongvec_minmax of sysctl_hung_task_timeout_secs
