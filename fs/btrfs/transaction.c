@@ -207,6 +207,15 @@ static inline int extwriter_counter_read(struct btrfs_transaction *trans)
 	return atomic_read(&trans->num_extwriters);
 }
 
+static void async_finish_extent_commit(struct work_struct *work)
+{
+	struct btrfs_transaction *trans = container_of(work,
+						       struct btrfs_transaction,
+						       unpin_work);
+	btrfs_finish_extent_commit(trans);
+	btrfs_put_transaction(trans);
+}
+
 /*
  * To be called after all the new block groups attached to the transaction
  * handle have been created (btrfs_create_pending_block_groups()).
@@ -296,6 +305,8 @@ loop:
 	init_waitqueue_head(&cur_trans->writer_wait);
 	init_waitqueue_head(&cur_trans->commit_wait);
 	cur_trans->state = TRANS_STATE_RUNNING;
+	INIT_WORK(&cur_trans->unpin_work, async_finish_extent_commit);
+
 	/*
 	 * One for this trans handle, one so it will live on until we
 	 * commit the transaction.
@@ -2369,7 +2380,12 @@ int btrfs_commit_transaction(struct btrfs_trans_handle *trans)
 	if (ret)
 		goto scrub_continue;
 
-	btrfs_finish_extent_commit(trans);
+	if (btrfs_fs_compat_ro(fs_info, FREE_SPACE_TREE)) {
+		refcount_inc(&cur_trans->use_count);
+		queue_work(fs_info->unpin_workqueue, &cur_trans->unpin_work);
+	} else {
+		btrfs_finish_extent_commit(cur_trans);
+	}
 
 	if (test_bit(BTRFS_TRANS_HAVE_FREE_BGS, &cur_trans->flags))
 		btrfs_clear_space_info_full(fs_info);

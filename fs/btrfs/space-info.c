@@ -495,7 +495,9 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 		goto enospc;
 
 commit:
-	return btrfs_commit_transaction(trans);
+	btrfs_commit_transaction(trans);
+	flush_workqueue(fs_info->unpin_workqueue);
+	return 0;
 enospc:
 	btrfs_end_transaction(trans);
 	return -ENOSPC;

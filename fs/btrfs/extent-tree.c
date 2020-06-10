@@ -2895,7 +2895,7 @@ static int unpin_extent_range(struct btrfs_fs_info *fs_info,
 	return 0;
 }
 
-int btrfs_finish_extent_commit(struct btrfs_trans_handle *trans)
+void btrfs_finish_extent_commit(struct btrfs_transaction *trans)
 {
 	struct btrfs_fs_info *fs_info = trans->fs_info;
 	struct btrfs_block_group *block_group, *tmp;
@@ -2905,7 +2905,7 @@ int btrfs_finish_extent_commit(struct btrfs_trans_handle *trans)
 	u64 end;
 	int ret;
 
-	unpin = &trans->transaction->pinned_extents;
+	unpin = &trans->pinned_extents;
 
 	while (!trans->aborted) {
 		struct extent_state *cached_state = NULL;
@@ -2942,7 +2942,7 @@ int btrfs_finish_extent_commit(struct btrfs_trans_handle *trans)
 	 * do need to clean up the block groups in case of a transaction
 	 * abort.
 	 */
-	deleted_bgs = &trans->transaction->deleted_bgs;
+	deleted_bgs = &trans->deleted_bgs;
 	list_for_each_entry_safe(block_group, tmp, deleted_bgs, bg_list) {
 		u64 trimmed = 0;
 
@@ -2964,8 +2964,6 @@ int btrfs_finish_extent_commit(struct btrfs_trans_handle *trans)
 				   ret, errstr);
 		}
 	}
-
-	return 0;
 }
 
 static int __btrfs_free_extent(struct btrfs_trans_handle *trans,

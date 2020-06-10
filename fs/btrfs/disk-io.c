@@ -1965,6 +1965,7 @@ static void btrfs_stop_all_workers(struct btrfs_fs_info *fs_info)
 	 */
 	btrfs_destroy_workqueue(fs_info->endio_meta_workers);
 	btrfs_destroy_workqueue(fs_info->endio_meta_write_workers);
+	destroy_workqueue(fs_info->unpin_workqueue);
 }
 
 static void free_root_extent_buffers(struct btrfs_root *root)
@@ -2153,6 +2154,8 @@ static int btrfs_init_workqueues(struct btrfs_fs_info *fs_info,
 		btrfs_alloc_workqueue(fs_info, "qgroup-rescan", flags, 1, 0);
 	fs_info->discard_ctl.discard_workers =
 		alloc_workqueue("btrfs_discard", WQ_UNBOUND | WQ_FREEZABLE, 1);
+	fs_info->unpin_workqueue =
+		alloc_workqueue("btrfs_unpin", flags, 0);
 
 	if (!(fs_info->workers && fs_info->delalloc_workers &&
 	      fs_info->flush_workers &&
@@ -2164,7 +2167,8 @@ static int btrfs_init_workqueues(struct btrfs_fs_info *fs_info,
 	      fs_info->caching_workers && fs_info->readahead_workers &&
 	      fs_info->fixup_workers && fs_info->delayed_workers &&
 	      fs_info->qgroup_rescan_workers &&
-	      fs_info->discard_ctl.discard_workers)) {
+	      fs_info->discard_ctl.discard_workers &&
+	      fs_info->unpin_workqueue)) {
 		return -ENOMEM;
 	}
 
@@ -3332,6 +3336,7 @@ fail_qgroup:
 	btrfs_free_qgroup_config(fs_info);
 fail_trans_kthread:
 	kthread_stop(fs_info->transaction_kthread);
+	drain_workqueue(fs_info->unpin_workqueue);
 	btrfs_cleanup_transaction(fs_info);
 	btrfs_free_fs_roots(fs_info);
 fail_cleaner:
@@ -4044,6 +4049,7 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 
 	kthread_stop(fs_info->transaction_kthread);
 	kthread_stop(fs_info->cleaner_kthread);
+	drain_workqueue(fs_info->unpin_workqueue);
 
 	ASSERT(list_empty(&fs_info->delayed_iputs));
 	set_bit(BTRFS_FS_CLOSING_DONE, &fs_info->flags);

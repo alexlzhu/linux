@@ -4221,6 +4221,7 @@ restart:
 		goto out_free;
 	}
 	btrfs_commit_transaction(trans);
+	flush_workqueue(fs_info->unpin_workqueue);
 out_free:
 	ret = clean_dirty_subvols(rc);
 	if (ret < 0 && !err)
