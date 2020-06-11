@@ -6557,15 +6557,12 @@ static int io_sq_thread(void *data)
 {
 	struct io_ring_ctx *ctx = data;
 	const struct cred *old_cred;
-	mm_segment_t old_fs;
 	DEFINE_WAIT(wait);
 	unsigned long timeout;
 	int ret = 0;
 
 	complete(&ctx->sq_thread_comp);
 
-	old_fs = get_fs();
-	set_fs(USER_DS);
 	old_cred = override_creds(ctx->creds);
 
 	timeout = jiffies + ctx->sq_thread_idle;
@@ -6665,7 +6662,6 @@ static int io_sq_thread(void *data)
 
 	io_run_task_work();
 
-	set_fs(old_fs);
 	io_sq_thread_drop_mm();
 	revert_creds(old_cred);
 
