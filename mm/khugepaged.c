@@ -954,7 +954,6 @@ static void collapse_huge_page(struct mm_struct *mm,
 	struct page *new_page;
 	spinlock_t *pmd_ptl, *pte_ptl;
 	int isolated = 0, result = 0;
-	struct mem_cgroup *memcg;
 	struct vm_area_struct *vma;
 	struct mmu_notifier_range range;
 	gfp_t gfp;
@@ -977,15 +976,15 @@ static void collapse_huge_page(struct mm_struct *mm,
 		goto out_nolock;
 	}
 
-	if (unlikely(mem_cgroup_try_charge(new_page, mm, gfp, &memcg, true))) {
+	if (unlikely(mem_cgroup_charge(new_page, mm, gfp))) {
 		result = SCAN_CGROUP_CHARGE_FAIL;
 		goto out_nolock;
 	}
+	count_memcg_page_event(new_page, THP_COLLAPSE_ALLOC);
 
 	down_read(&mm->mmap_sem);
 	result = hugepage_vma_revalidate(mm, address, &vma);
 	if (result) {
-		mem_cgroup_cancel_charge(new_page, memcg, true);
 		up_read(&mm->mmap_sem);
 		goto out_nolock;
 	}
@@ -993,7 +992,6 @@ static void collapse_huge_page(struct mm_struct *mm,
 	pmd = mm_find_pmd(mm, address);
 	if (!pmd) {
 		result = SCAN_PMD_NULL;
-		mem_cgroup_cancel_charge(new_page, memcg, true);
 		up_read(&mm->mmap_sem);
 		goto out_nolock;
 	}
@@ -1004,7 +1002,6 @@ static void collapse_huge_page(struct mm_struct *mm,
 	 * Continuing to collapse causes inconsistency.
 	 */
 	if (!__collapse_huge_page_swapin(mm, vma, address, pmd, referenced)) {
-		mem_cgroup_cancel_charge(new_page, memcg, true);
 		up_read(&mm->mmap_sem);
 		goto out_nolock;
 	}
@@ -1090,8 +1087,6 @@ static void collapse_huge_page(struct mm_struct *mm,
 	spin_lock(pmd_ptl);
 	BUG_ON(!pmd_none(*pmd));
 	page_add_new_anon_rmap(new_page, vma, address, true);
-	mem_cgroup_commit_charge(new_page, memcg, false, true);
-	count_memcg_events(memcg, THP_COLLAPSE_ALLOC, 1);
 	lru_cache_add_active_or_unevictable(new_page, vma);
 	pgtable_trans_huge_deposit(mm, pmd, pgtable);
 	set_pmd_at(mm, address, pmd, _pmd);
@@ -1105,10 +1100,11 @@ static void collapse_huge_page(struct mm_struct *mm,
 out_up_write:
 	up_write(&mm->mmap_sem);
 out_nolock:
+	if (!IS_ERR_OR_NULL(*hpage))
+		mem_cgroup_uncharge(*hpage);
 	trace_mm_collapse_huge_page(mm, isolated, result);
 	return;
 out:
-	mem_cgroup_cancel_charge(new_page, memcg, true);
 	goto out_up_write;
 }
 
@@ -1496,7 +1492,6 @@ static void collapse_file(struct mm_struct *mm,
 	struct address_space *mapping = file->f_mapping;
 	gfp_t gfp;
 	struct page *new_page;
-	struct mem_cgroup *memcg;
 	pgoff_t index, end = start + HPAGE_PMD_NR;
 	LIST_HEAD(pagelist);
 	XA_STATE_ORDER(xas, &mapping->i_pages, start, HPAGE_PMD_ORDER);
@@ -1515,10 +1510,11 @@ static void collapse_file(struct mm_struct *mm,
 		goto out;
 	}
 
-	if (unlikely(mem_cgroup_try_charge(new_page, mm, gfp, &memcg, true))) {
+	if (unlikely(mem_cgroup_charge(new_page, mm, gfp))) {
 		result = SCAN_CGROUP_CHARGE_FAIL;
 		goto out;
 	}
+	count_memcg_page_event(new_page, THP_COLLAPSE_ALLOC);
 
 	/* This will be less messy when we use multi-index entries */
 	do {
@@ -1528,7 +1524,6 @@ static void collapse_file(struct mm_struct *mm,
 			break;
 		xas_unlock_irq(&xas);
 		if (!xas_nomem(&xas, GFP_KERNEL)) {
-			mem_cgroup_cancel_charge(new_page, memcg, true);
 			result = SCAN_FAIL;
 			goto out;
 		}
@@ -1722,12 +1717,9 @@ out_unlock:
 	}
 
 	if (nr_none) {
-		struct zone *zone = page_zone(new_page);
-
-		__mod_node_page_state(zone->zone_pgdat, NR_FILE_PAGES, nr_none);
+		__mod_lruvec_page_state(new_page, NR_FILE_PAGES, nr_none);
 		if (is_shmem)
-			__mod_node_page_state(zone->zone_pgdat,
-					      NR_SHMEM, nr_none);
+			__mod_lruvec_page_state(new_page, NR_SHMEM, nr_none);
 	}
 
 xa_locked:
@@ -1765,15 +1757,9 @@ xa_unlocked:
 
 		SetPageUptodate(new_page);
 		page_ref_add(new_page, HPAGE_PMD_NR - 1);
-		mem_cgroup_commit_charge(new_page, memcg, false, true);
-
-		if (is_shmem) {
+		if (is_shmem)
 			set_page_dirty(new_page);
-			lru_cache_add_anon(new_page);
-		} else {
-			lru_cache_add_file(new_page);
-		}
-		count_memcg_events(memcg, THP_COLLAPSE_ALLOC, 1);
+		lru_cache_add(new_page);
 
 		/*
 		 * Remove pte page tables, so we can re-fault the page as huge.
@@ -1820,13 +1806,14 @@ xa_unlocked:
 		VM_BUG_ON(nr_none);
 		xas_unlock_irq(&xas);
 
-		mem_cgroup_cancel_charge(new_page, memcg, true);
 		new_page->mapping = NULL;
 	}
 
 	unlock_page(new_page);
 out:
 	VM_BUG_ON(!list_empty(&pagelist));
+	if (!IS_ERR_OR_NULL(*hpage))
+		mem_cgroup_uncharge(*hpage);
 	/* TODO: tracepoints */
 }
 
