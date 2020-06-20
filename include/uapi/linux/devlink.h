@@ -431,6 +431,15 @@ enum devlink_attr {
 	DEVLINK_ATTR_NETNS_ID,			/* u32 */
 
 	DEVLINK_ATTR_HEALTH_REPORTER_AUTO_DUMP,	/* u8 */
+
+	DEVLINK_ATTR_TRAP_POLICER_ID,			/* u32 */
+	DEVLINK_ATTR_TRAP_POLICER_RATE,			/* u64 */
+	DEVLINK_ATTR_TRAP_POLICER_BURST,		/* u64 */
+
+	DEVLINK_ATTR_PORT_FUNCTION,			/* nested */
+
+	DEVLINK_ATTR_INFO_BOARD_SERIAL_NUMBER,	/* string */
+
 	/* add new attributes above here, update the policy in devlink.c */
 
 	__DEVLINK_ATTR_MAX,
