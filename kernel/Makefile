@@ -123,6 +123,8 @@ obj-$(CONFIG_GCC_PLUGIN_STACKLEAK) += stackleak.o
 KASAN_SANITIZE_stackleak.o := n
 KCOV_INSTRUMENT_stackleak.o := n
 
+obj-$(CONFIG_SCF_TORTURE_TEST) += scftorture.o
+
 $(obj)/configs.o: $(obj)/config_data.gz
 
 targets += config_data.gz
