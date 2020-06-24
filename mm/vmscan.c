@@ -907,7 +907,6 @@ static int __remove_mapping(struct address_space *mapping, struct page *page,
 	} else {
 		void (*freepage)(struct page *);
 		void *shadow = NULL;
-		bool empty;
 
 		freepage = mapping->a_ops->freepage;
 		/*
@@ -929,11 +928,8 @@ static int __remove_mapping(struct address_space *mapping, struct page *page,
 		if (reclaimed && page_is_file_cache(page) &&
 		    !mapping_exiting(mapping) && !dax_mapping(mapping))
 			shadow = workingset_eviction(page, target_memcg);
-		empty = __delete_from_page_cache(page, shadow);
+		__delete_from_page_cache(page, shadow);
 		xa_unlock_irqrestore(&mapping->i_pages, flags);
-
-		if (empty)
-			inode_pages_clear(mapping->host);
 
 		if (freepage != NULL)
 			freepage(page);

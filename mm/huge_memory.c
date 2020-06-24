@@ -2517,8 +2517,7 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 		/* Some pages can be beyond i_size: drop them from page cache */
 		if (head[i].index >= end) {
 			ClearPageDirty(head + i);
-			/* We know we're not removing the last page */
-			(void)__delete_from_page_cache(head + i, NULL);
+			__delete_from_page_cache(head + i, NULL);
 			if (IS_ENABLED(CONFIG_SHMEM) && PageSwapBacked(head))
 				shmem_uncharge(head->mapping->host, 1);
 			put_page(head + i);
