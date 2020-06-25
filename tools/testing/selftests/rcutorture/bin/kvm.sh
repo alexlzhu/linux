@@ -63,7 +63,7 @@ usage () {
 	echo "       --qemu-args qemu-arguments"
 	echo "       --qemu-cmd qemu-system-..."
 	echo "       --results absolute-pathname"
-	echo "       --torture rcu"
+	echo "       --torture rcu|scf"
 	echo "       --trust-make"
 	exit 1
 }
@@ -172,7 +172,7 @@ do
 		shift
 		;;
 	--torture)
-		checkarg --torture "(suite name)" "$#" "$2" '^\(lock\|rcu\|rcuperf\)$' '^--'
+		checkarg --torture "(suite name)" "$#" "$2" '^\(lock\|rcu\|rcuperf\|scf\)$' '^--'
 		TORTURE_SUITE=$2
 		shift
 		if test "$TORTURE_SUITE" = rcuperf
