@@ -5040,13 +5040,15 @@ static int alloc_mem_cgroup_per_node_info(struct mem_cgroup *memcg, int node)
 	if (!pn)
 		return 1;
 
-	pn->lruvec_stat_local = alloc_percpu(struct lruvec_stat);
+	pn->lruvec_stat_local = alloc_percpu_gfp(struct lruvec_stat,
+						 GFP_KERNEL_ACCOUNT);
 	if (!pn->lruvec_stat_local) {
 		kfree(pn);
 		return 1;
 	}
 
-	pn->lruvec_stat_cpu = alloc_percpu(struct lruvec_stat);
+	pn->lruvec_stat_cpu = alloc_percpu_gfp(struct lruvec_stat,
+					       GFP_KERNEL_ACCOUNT);
 	if (!pn->lruvec_stat_cpu) {
 		free_percpu(pn->lruvec_stat_local);
 		kfree(pn);
@@ -5120,11 +5122,13 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 		goto fail;
 	}
 
-	memcg->vmstats_local = alloc_percpu(struct memcg_vmstats_percpu);
+	memcg->vmstats_local = alloc_percpu_gfp(struct memcg_vmstats_percpu,
+						GFP_KERNEL_ACCOUNT);
 	if (!memcg->vmstats_local)
 		goto fail;
 
-	memcg->vmstats_percpu = alloc_percpu(struct memcg_vmstats_percpu);
+	memcg->vmstats_percpu = alloc_percpu_gfp(struct memcg_vmstats_percpu,
+						 GFP_KERNEL_ACCOUNT);
 	if (!memcg->vmstats_percpu)
 		goto fail;
 
@@ -5170,10 +5174,12 @@ static struct cgroup_subsys_state * __ref
 mem_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 {
 	struct mem_cgroup *parent = mem_cgroup_from_css(parent_css);
-	struct mem_cgroup *memcg;
+	struct mem_cgroup *memcg, *old_memcg;
 	long error = -ENOMEM;
 
+	old_memcg = memalloc_use_memcg(parent);
 	memcg = mem_cgroup_alloc();
+	memalloc_use_memcg(old_memcg);
 	if (IS_ERR(memcg))
 		return ERR_CAST(memcg);
 
