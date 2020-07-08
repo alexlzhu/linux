@@ -764,7 +764,7 @@ do {									\
 	int __kr_err;							\
 									\
 	__get_user_size(*((type *)dst), (__force type __user *)src,	\
-			sizeof(type), __kr_err);			\
+			sizeof(type), __kr_err, -EFAULT);		\
 	if (unlikely(__kr_err))						\
 		goto err_label;						\
 } while (0)
