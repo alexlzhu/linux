@@ -3556,7 +3556,7 @@ static int memcg_online_kmem(struct mem_cgroup *memcg)
 	objcg->memcg = memcg;
 	rcu_assign_pointer(memcg->objcg, objcg);
 
-	static_branch_inc(&memcg_kmem_enabled_key);
+	static_branch_enable(&memcg_kmem_enabled_key);
 	/*
 	 * A memory cgroup is considered kmem-online as soon as it gets
 	 * kmemcg_id. Setting the id after enabling static branching will
@@ -3617,9 +3617,6 @@ static void memcg_free_kmem(struct mem_cgroup *memcg)
 	/* css_alloc() failed, offlining didn't happen */
 	if (unlikely(memcg->kmem_state == KMEM_ONLINE))
 		memcg_offline_kmem(memcg);
-
-	if (memcg->kmem_state == KMEM_ALLOCATED)
-		static_branch_dec(&memcg_kmem_enabled_key);
 }
 #else
 static int memcg_online_kmem(struct mem_cgroup *memcg)
