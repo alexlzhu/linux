@@ -1,7 +1,7 @@
 # all of the debug options that we support building with
 # the strings in these dict values will be appended to the .config file
 # generated, overriding earlier declarations disabling these debug options
-DEBUG_OPTIONS = {
+DEBUG_OPTIONS_DEF = {
     "DEBUG_PAGEALLOC": "CONFIG_DEBUG_PAGEALLOC=y",
     "DEBUG_SLUB": "CONFIG_DEBUG_SLUB_DEBUG_ON=y",
     "DEBUG_KASAN": "CONFIG_DEBUG_KASAN=y",

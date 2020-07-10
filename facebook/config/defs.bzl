@@ -1,11 +1,11 @@
-load(":debug.td.bzl", "COMMON_DEBUG_OPTS", "DEBUG_OPTIONS")
-load(":flavors.td.bzl", "FLAVORS")
+load(":debug.td.bzl", "COMMON_DEBUG_OPTS", "DEBUG_OPTIONS_DEF")
+load(":flavors.td.bzl", "FLAVORS_DEF")
 
 # TODO(vmagro): we should probably follow the fs_image and others style of
 # exporting a `struct` in each .bzl file that contains just the members we want
 # exported
-DEBUG_OPTIONS = DEBUG_OPTIONS
-FLAVORS = FLAVORS
+DEBUG_OPTIONS = DEBUG_OPTIONS_DEF
+FLAVORS = FLAVORS_DEF
 
 def config_name(arch, flavor = None, debug = None):
     name = arch

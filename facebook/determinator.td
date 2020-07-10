@@ -1,7 +1,7 @@
 load("@builtins//:test_utils.td.bzl", "true")
 load("@builtins//:schedule_type.td.bzl", "schedule_type_is")
-load("//config:debug.td.bzl", "DEBUG_OPTIONS")
-load("//config:flavors.td.bzl", "FLAVORS")
+load("//config:debug.td.bzl", "DEBUG_OPTIONS_DEF")
+load("//config:flavors.td.bzl", "FLAVORS_DEF")
 
 td_rule(
     name = "lint",
@@ -111,7 +111,7 @@ td_rule(
             ),
         ),
     )
-    for flavor in FLAVORS
+    for flavor in FLAVORS_DEF
 ]
 
 [
@@ -128,5 +128,5 @@ td_rule(
             tags = ["debug"],
         ),
     )
-    for debug in DEBUG_OPTIONS
+    for debug in DEBUG_OPTIONS_DEF
 ]
