@@ -1,0 +1,16 @@
+{
+ "php_interpreter": "/usr/bin/php",
+ "project_id" : "linux-kernel",
+ "conduit_uri" : "https://phabricator.fb.com/api/",
+ "remote_hooks_installed" : true,
+ "lint.engine": "ArcanistSingleLintEngine",
+ "lint.engine.single.linter": "ArcanistScriptAndRegexLinter",
+ "linter.scriptandregex.script" :
+   "sh -c 'scripts/checkpatch.pl --terse --no-summary --show-types -f -- \"$0\" || true'",
+ "linter.scriptandregex.regex" :
+   "/^(?P<file>[^:]*):(?P<line>\\d+): ((?P<warning>ERROR)|(?P<advice>WARNING|CHECK)):(?P<name>[^:]*): (?P<message>.*)$/m",
+ "git.default-relative-commit" : "origin/v5.2-fb",
+ "arc.diff.parse-labels" :
+   ["Title", "Summary", "Test Plan", "Reviewers", "Reviewed By", "Subscribers",
+    "Differential Revision", "Tasks", "Signature", "Blame Revision"]
+}
