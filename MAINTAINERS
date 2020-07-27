@@ -13479,6 +13479,11 @@ S:	Maintained
 F:	kernel/printk/
 F:	include/linux/printk.h
 
+PRINTK INDEXING
+R:	Chris Down <chris@chrisdown.name>
+S:	Maintained
+F:	kernel/printk/index.c
+
 PRISM54 WIRELESS DRIVER
 M:	Luis Chamberlain <mcgrof@kernel.org>
 L:	linux-wireless@vger.kernel.org
