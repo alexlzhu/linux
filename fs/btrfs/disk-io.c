@@ -519,11 +519,11 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct page *page)
 	u8 result[BTRFS_CSUM_SIZE];
 	u16 csum_size = btrfs_super_csum_size(fs_info->super_copy);
 	struct extent_buffer *eb;
-	int ret;
+	int ret = 0;
 
 	eb = (struct extent_buffer *)page->private;
 	if (page != eb->pages[0])
-		return 0;
+		return ret;
 
 	found_start = btrfs_header_bytenr(eb);
 	/*
@@ -541,6 +541,7 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct page *page)
 	if (csum_tree_block(eb, result))
 		return -EINVAL;
 
+#ifdef CONFIG_BTRFS_FS_CHECK_INTEGRITY
 	if (btrfs_header_level(eb))
 		ret = btrfs_check_node(eb);
 	else
@@ -554,9 +555,10 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct page *page)
 		WARN_ON(IS_ENABLED(CONFIG_BTRFS_DEBUG));
 		return ret;
 	}
+#endif
 	write_extent_buffer(eb, result, 0, csum_size);
 
-	return 0;
+	return ret;
 }
 
 static int check_tree_block_fsid(struct extent_buffer *eb)
