@@ -468,6 +468,13 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
 	 * ~1.8% of available memory:
 	 *
 	 * PAGE_SIZE / xa_nodes / node_entries * 8 / PAGE_SIZE
+	 *
+	 * To break the circular dependency between inodes, which are
+	 * pinned by shadow entries, and shadow entries, which maximum
+	 * number depends on the size of the slab memory, which depends
+	 * on the number of inodes, exclude slabs from the calculation.
+	 * This is FB-only fix now, as in upstream shadow entries are
+	 * not pinning inodes (yet).
 	 */
 #ifdef CONFIG_MEMCG
 	if (sc->memcg) {
@@ -478,10 +485,6 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
 		for (pages = 0, i = 0; i < NR_LRU_LISTS; i++)
 			pages += lruvec_page_state_local(lruvec,
 							 NR_LRU_BASE + i);
-		pages += lruvec_page_state_local(
-			lruvec, NR_SLAB_RECLAIMABLE_B) >> PAGE_SHIFT;
-		pages += lruvec_page_state_local(
-			lruvec, NR_SLAB_UNRECLAIMABLE_B) >> PAGE_SHIFT;
 	} else
 #endif
 		pages = node_present_pages(sc->nid);
