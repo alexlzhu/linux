@@ -63,9 +63,10 @@ struct btf_ext_header {
 };
 
 LIBBPF_API void btf__free(struct btf *btf);
-LIBBPF_API struct btf *btf__new(__u8 *data, __u32 size);
-LIBBPF_API struct btf *btf__parse_elf(const char *path,
-				      struct btf_ext **btf_ext);
+LIBBPF_API struct btf *btf__new(const void *data, __u32 size);
+LIBBPF_API struct btf *btf__parse(const char *path, struct btf_ext **btf_ext);
+LIBBPF_API struct btf *btf__parse_elf(const char *path, struct btf_ext **btf_ext);
+LIBBPF_API struct btf *btf__parse_raw(const char *path);
 LIBBPF_API int btf__finalize_data(struct bpf_object *obj, struct btf *btf);
 LIBBPF_API int btf__load(struct btf *btf);
 LIBBPF_API __s32 btf__find_by_name(const struct btf *btf,
@@ -144,8 +145,10 @@ struct btf_dump_emit_type_decl_opts {
 	 * necessary indentation already
 	 */
 	int indent_level;
+	/* strip all the const/volatile/restrict mods */
+	bool strip_mods;
 };
-#define btf_dump_emit_type_decl_opts__last_field indent_level
+#define btf_dump_emit_type_decl_opts__last_field strip_mods
 
 LIBBPF_API int
 btf_dump__emit_type_decl(struct btf_dump *d, __u32 id,
