@@ -989,15 +989,44 @@ void __init pagecache_init(void)
 
 static int wake_page_function(wait_queue_entry_t *wait, unsigned mode, int sync, void *arg)
 {
+	int ret;
 	struct wait_page_key *key = arg;
 	struct wait_page_queue *wait_page
 		= container_of(wait, struct wait_page_queue, wait);
-	int ret;
 
-	ret = wake_page_match(wait_page, key);
-	if (ret != 1)
-		return ret;
-	return autoremove_wake_function(wait, mode, sync, key);
+	if (!wake_page_match(wait_page, key))
+		return 0;
+
+	/*
+	 * If it's an exclusive wait, we get the bit for it, and
+	 * stop walking if we can't.
+	 *
+	 * If it's a non-exclusive wait, then the fact that this
+	 * wake function was called means that the bit already
+	 * was cleared, and we don't care if somebody then
+	 * re-took it.
+	 */
+	ret = 0;
+	if (wait->flags & WQ_FLAG_EXCLUSIVE) {
+		if (test_and_set_bit(key->bit_nr, &key->page->flags))
+			return -1;
+		ret = 1;
+	}
+	wait->flags |= WQ_FLAG_WOKEN;
+
+	wake_up_state(wait->private, mode);
+
+	/*
+	 * Ok, we have successfully done what we're waiting for,
+	 * and we can unconditionally remove the wait entry.
+	 *
+	 * Note that this has to be the absolute last thing we do,
+	 * since after list_del_init(&wait->entry) the wait entry
+	 * might be de-allocated and the process might even have
+	 * exited.
+	 */
+	list_del_init_careful(&wait->entry);
+	return ret;
 }
 
 static void wake_up_page_bit(struct page *page, int bit_nr)
@@ -1076,16 +1105,31 @@ enum behavior {
 			 */
 };
 
+/*
+ * Attempt to check (or get) the page bit, and mark the
+ * waiter woken if successful.
+ */
+static inline bool trylock_page_bit_common(struct page *page, int bit_nr,
+					struct wait_queue_entry *wait)
+{
+	if (wait->flags & WQ_FLAG_EXCLUSIVE) {
+		if (test_and_set_bit(bit_nr, &page->flags))
+			return false;
+	} else if (test_bit(bit_nr, &page->flags))
+		return false;
+
+	wait->flags |= WQ_FLAG_WOKEN;
+	return true;
+}
+
 static inline int wait_on_page_bit_common(wait_queue_head_t *q,
 	struct page *page, int bit_nr, int state, enum behavior behavior)
 {
 	struct wait_page_queue wait_page;
 	wait_queue_entry_t *wait = &wait_page.wait;
-	bool bit_is_set;
 	bool thrashing = false;
 	bool delayacct = false;
 	unsigned long pflags;
-	int ret = 0;
 
 	if (bit_nr == PG_locked &&
 	    !PageUptodate(page) && PageWorkingset(page)) {
@@ -1103,48 +1147,47 @@ static inline int wait_on_page_bit_common(wait_queue_head_t *q,
 	wait_page.page = page;
 	wait_page.bit_nr = bit_nr;
 
+	/*
+	 * Do one last check whether we can get the
+	 * page bit synchronously.
+	 *
+	 * Do the SetPageWaiters() marking before that
+	 * to let any waker we _just_ missed know they
+	 * need to wake us up (otherwise they'll never
+	 * even go to the slow case that looks at the
+	 * page queue), and add ourselves to the wait
+	 * queue if we need to sleep.
+	 *
+	 * This part needs to be done under the queue
+	 * lock to avoid races.
+	 */
+	spin_lock_irq(&q->lock);
+	SetPageWaiters(page);
+	if (!trylock_page_bit_common(page, bit_nr, wait))
+		__add_wait_queue_entry_tail(q, wait);
+	spin_unlock_irq(&q->lock);
+
+	/*
+	 * From now on, all the logic will be based on
+	 * the WQ_FLAG_WOKEN flag, and the and the page
+	 * bit testing (and setting) will be - or has
+	 * already been - done by the wake function.
+	 *
+	 * We can drop our reference to the page.
+	 */
+	if (behavior == DROP)
+		put_page(page);
+
 	for (;;) {
-		spin_lock_irq(&q->lock);
-
-		if (likely(list_empty(&wait->entry))) {
-			__add_wait_queue_entry_tail(q, wait);
-			SetPageWaiters(page);
-		}
-
 		set_current_state(state);
 
-		spin_unlock_irq(&q->lock);
-
-		bit_is_set = test_bit(bit_nr, &page->flags);
-		if (behavior == DROP)
-			put_page(page);
-
-		if (likely(bit_is_set))
-			io_schedule();
-
-		if (behavior == EXCLUSIVE) {
-			if (!test_and_set_bit_lock(bit_nr, &page->flags))
-				break;
-		} else if (behavior == SHARED) {
-			if (!test_bit(bit_nr, &page->flags))
-				break;
-		}
-
-		if (signal_pending_state(state, current)) {
-			ret = -EINTR;
+		if (signal_pending_state(state, current))
 			break;
-		}
 
-		if (behavior == DROP) {
-			/*
-			 * We can no longer safely access page->flags:
-			 * even if CONFIG_MEMORY_HOTREMOVE is not enabled,
-			 * there is a risk of waiting forever on a page reused
-			 * for something that keeps it locked indefinitely.
-			 * But best check for -EINTR above before breaking.
-			 */
+		if (wait->flags & WQ_FLAG_WOKEN)
 			break;
-		}
+
+		io_schedule();
 	}
 
 	finish_wait(q, wait);
@@ -1163,7 +1206,7 @@ static inline int wait_on_page_bit_common(wait_queue_head_t *q,
 	 * bother with signals either.
 	 */
 
-	return ret;
+	return wait->flags & WQ_FLAG_WOKEN ? 0 : -EINTR;
 }
 
 void wait_on_page_bit(struct page *page, int bit_nr)
@@ -2037,6 +2080,8 @@ find_page:
 
 		page = find_get_page(mapping, index);
 		if (!page) {
+			if (iocb->ki_flags & IOCB_NOIO)
+				goto would_block;
 			page_cache_sync_readahead(mapping,
 					ra, filp,
 					index, last_index - index);
@@ -2045,6 +2090,10 @@ find_page:
 				goto no_cached_page;
 		}
 		if (PageReadahead(page)) {
+			if (iocb->ki_flags & IOCB_NOIO) {
+				put_page(page);
+				goto out;
+			}
 			page_cache_async_readahead(mapping,
 					ra, filp, page,
 					index, last_index - index);
@@ -2178,7 +2227,7 @@ page_not_up_to_date_locked:
 		}
 
 readpage:
-		if (iocb->ki_flags & IOCB_NOWAIT) {
+		if (iocb->ki_flags & (IOCB_NOIO | IOCB_NOWAIT)) {
 			unlock_page(page);
 			put_page(page);
 			goto would_block;
@@ -2271,9 +2320,19 @@ out:
  *
  * This is the "read_iter()" routine for all filesystems
  * that can use the page cache directly.
+ *
+ * The IOCB_NOWAIT flag in iocb->ki_flags indicates that -EAGAIN shall
+ * be returned when no data can be read without waiting for I/O requests
+ * to complete; it doesn't prevent readahead.
+ *
+ * The IOCB_NOIO flag in iocb->ki_flags indicates that no new I/O
+ * requests shall be made for the read or for readahead.  When no data
+ * can be read, -EAGAIN shall be returned.  When readahead would be
+ * triggered, a partial, possibly empty read shall be returned.
+ *
  * Return:
  * * number of bytes copied, even for partial reads
- * * negative error code if nothing was read
+ * * negative error code (or 0 if IOCB_NOIO) if nothing was read
  */
 ssize_t
 generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
