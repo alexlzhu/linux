@@ -43,6 +43,11 @@ static struct frontswap_ops *frontswap_ops __read_mostly;
 static bool frontswap_writethrough_enabled __read_mostly;
 
 /*
+ * Never write to disk. Rejected pages stay in RAM.
+ */
+bool frontswap_writeback_disabled __read_mostly;
+
+/*
  * If enabled, the underlying tmem implementation is capable of doing
  * exclusive gets, so frontswap_load, on a successful tmem_get must
  * mark the page as no longer in frontswap AND mark it dirty.
@@ -175,6 +180,12 @@ void frontswap_writethrough(bool enable)
 }
 EXPORT_SYMBOL(frontswap_writethrough);
 
+void frontswap_writeback(bool enable)
+{
+	frontswap_writeback_disabled = !enable;
+}
+EXPORT_SYMBOL(frontswap_writeback);
+
 /*
  * Enable/disable frontswap exclusive gets (see above).
  */
@@ -277,6 +288,8 @@ int __frontswap_store(struct page *page)
 		__frontswap_set(sis, offset);
 		inc_frontswap_succ_stores();
 	} else {
+		if (frontswap_writeback_disabled)
+			ret = AOP_WRITEPAGE_ACTIVATE;
 		inc_frontswap_failed_stores();
 	}
 	if (frontswap_writethrough_enabled)
