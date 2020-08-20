@@ -267,7 +267,8 @@ void test_sk_assign(void)
 	};
 	int server = -1;
 	int server_map;
-	int i, self_net;
+	int self_net;
+	int i;
 
 	self_net = open(NS_SELF, O_RDONLY);
 	if (CHECK_FAIL(self_net < 0)) {
