@@ -125,6 +125,17 @@ static bool zswap_same_filled_pages_enabled = true;
 module_param_named(same_filled_pages_enabled, zswap_same_filled_pages_enabled,
 		   bool, 0644);
 
+/* Enable/disable writing to disk (enabled by default) */
+static bool zswap_writeback_disabled;
+static int zswap_writeback_disabled_param_set(const char *,
+					      const struct kernel_param *);
+static struct kernel_param_ops zswap_writeback_disabled_param_ops = {
+	.set		= zswap_writeback_disabled_param_set,
+	.get		= param_get_bool,
+};
+module_param_cb(writeback_disabled, &zswap_writeback_disabled_param_ops,
+		&zswap_writeback_disabled, 0644);
+
 /*********************************
 * data structures
 **********************************/
@@ -816,6 +827,25 @@ static int zswap_enabled_param_set(const char *val,
 	return param_set_bool(val, kp);
 }
 
+static int zswap_writeback_disabled_param_set(const char *val,
+					      const struct kernel_param *kp)
+{
+	int ret;
+
+	if (zswap_init_failed) {
+		pr_err("can't set param, initialization failed\n");
+		return -ENODEV;
+	}
+
+	ret = param_set_bool(val, kp);
+	if (ret < 0)
+		return ret;
+
+	frontswap_writeback(!zswap_writeback_disabled);
+
+	return 0;
+}
+
 /*********************************
 * writeback code
 **********************************/
@@ -883,6 +913,9 @@ static int zswap_writeback_entry(struct zpool *pool, unsigned long handle)
 	struct writeback_control wbc = {
 		.sync_mode = WB_SYNC_NONE,
 	};
+
+	if (zswap_writeback_disabled)
+		return -EBUSY;
 
 	/* extract swpentry from data */
 	zhdr = zpool_map_handle(pool, handle, ZPOOL_MM_RO);

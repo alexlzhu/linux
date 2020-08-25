@@ -253,12 +253,17 @@ int swap_writepage(struct page *page, struct writeback_control *wbc)
 		unlock_page(page);
 		goto out;
 	}
-	if (frontswap_store(page) == 0) {
-		set_page_writeback(page);
-		unlock_page(page);
-		end_page_writeback(page);
+
+	ret = frontswap_store(page);
+	if (ret >= 0) {
+		if (ret == 0) {
+			set_page_writeback(page);
+			unlock_page(page);
+			end_page_writeback(page);
+		}
 		goto out;
 	}
+
 	ret = __swap_writepage(page, wbc, end_swap_bio_write);
 out:
 	return ret;
