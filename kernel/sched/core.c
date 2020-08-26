@@ -1554,10 +1554,17 @@ static void migrate_disable_switch(struct rq *rq, struct task_struct *p)
 
 void migrate_disable(void)
 {
-	if (current->migration_disabled++)
-		return;
+	struct task_struct *p = current;
 
-	barrier();
+	if (p->migration_disabled) {
+		p->migration_disabled++;
+		return;
+	}
+
+	preempt_disable();
+	this_rq()->nr_pinned++;
+	p->migration_disabled = 1;
+	preempt_enable();
 }
 EXPORT_SYMBOL_GPL(migrate_disable);
 
@@ -1584,6 +1591,7 @@ void migrate_enable(void)
 	 */
 	barrier();
 	p->migration_disabled = 0;
+	this_rq()->nr_pinned--;
 	preempt_enable();
 }
 EXPORT_SYMBOL_GPL(migrate_enable);
@@ -1591,6 +1599,11 @@ EXPORT_SYMBOL_GPL(migrate_enable);
 static inline bool is_migration_disabled(struct task_struct *p)
 {
 	return p->migration_disabled;
+}
+
+static inline bool rq_has_pinned_tasks(struct rq *rq)
+{
+	return rq->nr_pinned;
 }
 
 #endif
@@ -2517,6 +2530,11 @@ static inline int __set_cpus_allowed_ptr(struct task_struct *p,
 static inline void migrate_disable_switch(struct rq *rq, struct task_struct *p) { }
 
 static inline bool is_migration_disabled(struct task_struct *p)
+{
+	return false;
+}
+
+static inline bool rq_has_pinned_tasks(struct rq *rq)
 {
 	return false;
 }
@@ -7025,7 +7043,7 @@ int sched_cpu_dying(unsigned int cpu)
 		set_rq_offline(rq);
 	}
 	migrate_tasks(rq, &rf);
-	BUG_ON(rq->nr_running != 1);
+	BUG_ON(rq->nr_running != 1 || rq_has_pinned_tasks(rq));
 	rq_unlock_irqrestore(rq, &rf);
 
 	calc_load_migrate(rq);
