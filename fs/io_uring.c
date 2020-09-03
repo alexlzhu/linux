@@ -6712,10 +6712,16 @@ static int io_sq_thread(void *data)
 	set_fs(USER_DS);
 
 	start_jiffies = jiffies;
-	while (!kthread_should_park()) {
+	while (!kthread_should_stop()) {
 		enum sq_ret ret = 0;
 
-		mutex_lock(&sqd->ctx_lock);
+		/*
+		 * Any changes to the sqd lists are synchronized through the
+		 * kthread parking. This synchronizes the thread vs users,
+		 * the users are synchronized on the sqd->ctx_lock.
+		 */
+		if (kthread_should_park())
+			kthread_parkme();
 
 		if (unlikely(!list_empty(&sqd->ctx_new_list)))
 			io_sqd_init_new(sqd);
@@ -6737,8 +6743,6 @@ static int io_sq_thread(void *data)
 
 			io_sq_thread_drop_mm();
 		}
-
-		mutex_unlock(&sqd->ctx_lock);
 
 		if (ret & SQT_SPIN) {
 			io_run_task_work();
@@ -7012,11 +7016,16 @@ static void io_sq_thread_stop(struct io_ring_ctx *ctx)
 			wake_up_process(sqd->thread);
 
 			wait_for_completion(&ctx->sq_thread_comp);
+
+			kthread_park(sqd->thread);
 		}
 
 		mutex_lock(&sqd->ctx_lock);
 		list_del(&ctx->sqd_list);
 		mutex_unlock(&sqd->ctx_lock);
+
+		if (sqd->thread)
+			kthread_unpark(sqd->thread);
 
 		io_put_sq_data(sqd);
 		ctx->sq_data = NULL;
