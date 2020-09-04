@@ -49,7 +49,7 @@ configure_stack(void)
 	sprintf(tc_cmd, "%s %s %s %s", "tc filter add dev lo ingress bpf",
 		       "direct-action object-file ./test_sk_assign.o",
 		       "section classifier/sk_assign_test",
-		       (env.verbosity < VERBOSE_VERY) ? " 2>/dev/null" : "");
+		       (env.verbosity < VERBOSE_VERY) ? " 2>/dev/null" : "verbose");
 	if (CHECK(system(tc_cmd), "BPF load failed;",
 		  "run with -vv for more info\n"))
 		return false;
@@ -267,7 +267,8 @@ void test_sk_assign(void)
 	};
 	int server = -1;
 	int server_map;
-	int i, self_net;
+	int self_net;
+	int i;
 
 	self_net = open(NS_SELF, O_RDONLY);
 	if (CHECK_FAIL(self_net < 0)) {
