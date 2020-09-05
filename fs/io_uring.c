@@ -871,6 +871,7 @@ static const struct io_op_def io_op_defs[] __read_mostly = {
 		.needs_blkcg		= 1,
 	},
 	[IORING_OP_OPENAT] = {
+		.needs_mm		= 1,
 		.file_table		= 1,
 		.needs_fs		= 1,
 		.needs_blkcg		= 1,
@@ -933,6 +934,7 @@ static const struct io_op_def io_op_defs[] __read_mostly = {
 		.needs_blkcg		= 1,
 	},
 	[IORING_OP_OPENAT2] = {
+		.needs_mm		= 1,
 		.file_table		= 1,
 		.needs_fs		= 1,
 		.needs_blkcg		= 1,
@@ -3775,7 +3777,7 @@ static int io_openat_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
 	u64 flags, mode;
 
-	if (unlikely(req->ctx->flags & (IORING_SETUP_IOPOLL|IORING_SETUP_SQPOLL)))
+	if (unlikely(req->ctx->flags & IORING_SETUP_IOPOLL))
 		return -EINVAL;
 	mode = READ_ONCE(sqe->len);
 	flags = READ_ONCE(sqe->open_flags);
@@ -3789,7 +3791,7 @@ static int io_openat2_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	size_t len;
 	int ret;
 
-	if (unlikely(req->ctx->flags & (IORING_SETUP_IOPOLL|IORING_SETUP_SQPOLL)))
+	if (unlikely(req->ctx->flags & IORING_SETUP_IOPOLL))
 		return -EINVAL;
 	how = u64_to_user_ptr(READ_ONCE(sqe->addr2));
 	len = READ_ONCE(sqe->len);
@@ -4168,7 +4170,7 @@ static int io_close_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	io_req_init_async(req);
 	req->work.flags |= IO_WQ_WORK_NO_CANCEL;
 
-	if (unlikely(req->ctx->flags & (IORING_SETUP_IOPOLL|IORING_SETUP_SQPOLL)))
+	if (unlikely(req->ctx->flags & IORING_SETUP_IOPOLL))
 		return -EINVAL;
 	if (sqe->ioprio || sqe->off || sqe->addr || sqe->len ||
 	    sqe->rw_flags || sqe->buf_index)
@@ -4648,7 +4650,7 @@ static int io_accept_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
 	struct io_accept *accept = &req->accept;
 
-	if (unlikely(req->ctx->flags & (IORING_SETUP_IOPOLL|IORING_SETUP_SQPOLL)))
+	if (unlikely(req->ctx->flags & IORING_SETUP_IOPOLL))
 		return -EINVAL;
 	if (sqe->ioprio || sqe->len || sqe->buf_index)
 		return -EINVAL;
@@ -4689,7 +4691,7 @@ static int io_connect_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	struct io_connect *conn = &req->connect;
 	struct io_async_connect *io = req->async_data;
 
-	if (unlikely(req->ctx->flags & (IORING_SETUP_IOPOLL|IORING_SETUP_SQPOLL)))
+	if (unlikely(req->ctx->flags & IORING_SETUP_IOPOLL))
 		return -EINVAL;
 	if (sqe->ioprio || sqe->len || sqe->buf_index || sqe->rw_flags)
 		return -EINVAL;
