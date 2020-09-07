@@ -6748,8 +6748,6 @@ again:
 			goto again;
 		}
 
-		io_ring_set_wakeup_flag(ctx);
-
 		to_submit = io_sqring_entries(ctx);
 		if (!to_submit || ret == -EBUSY)
 			return SQT_IDLE;
@@ -6830,6 +6828,8 @@ static int io_sq_thread(void *data)
 			io_run_task_work();
 			cond_resched();
 		} else if (ret == SQT_IDLE) {
+			list_for_each_entry(ctx, &sqd->ctx_list, sqd_list)
+				io_ring_set_wakeup_flag(ctx);
 			schedule();
 			start_jiffies = jiffies;
 		}
