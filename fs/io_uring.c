@@ -6758,7 +6758,7 @@ again:
 
 	mutex_lock(&ctx->uring_lock);
 	if (likely(!percpu_ref_is_dying(&ctx->refs)))
-		ret = io_submit_sqes(ctx, to_submit, NULL, -1);
+		ret = io_submit_sqes(ctx, to_submit, ctx->ring_file, ctx->ring_fd);
 	mutex_unlock(&ctx->uring_lock);
 
 	if (!io_sqring_full(ctx) && wq_has_sleeper(&ctx->sqo_sq_wait))
@@ -8923,6 +8923,11 @@ static int io_uring_create(unsigned entries, struct io_uring_params *p,
 	if (fd < 0) {
 		ret = fd;
 		goto err;
+	}
+
+	if (p->flags & IORING_SETUP_SQPOLL) {
+		ctx->ring_fd = fd;
+		ctx->ring_file = file;
 	}
 
 	ret = io_sq_offload_create(ctx, p);
