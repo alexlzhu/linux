@@ -7132,6 +7132,12 @@ static void io_sq_thread_stop(struct io_ring_ctx *ctx)
 			wait_for_completion(&ctx->sq_thread_comp);
 
 			io_sq_thread_park(sqd);
+
+			if (!list_empty_careful(&ctx->sqo_wait_entry.entry)) {
+				spin_lock_irq(&sqd->wait.lock);
+				list_del_init(&ctx->sqo_wait_entry.entry);
+				spin_unlock_irq(&sqd->wait.lock);
+			}
 		}
 
 		mutex_lock(&sqd->ctx_lock);
