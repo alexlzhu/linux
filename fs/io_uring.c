@@ -6737,7 +6737,7 @@ again:
 		 * reap events and wake us up.
 		 */
 		if (!list_empty(&ctx->iopoll_list) || need_resched() ||
-		    (!time_after(start_jiffies, timeout) && ret != -EBUSY &&
+		    (!time_after(jiffies, timeout) && ret != -EBUSY &&
 		    !percpu_ref_is_dying(&ctx->refs)))
 			return SQT_SPIN;
 
