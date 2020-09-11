@@ -1899,7 +1899,7 @@ static void transfer_surpluses(struct list_head *surpluses, struct ioc_now *now)
 	 */
 	gamma = DIV_ROUND_UP(
 		(WEIGHT_ONE - root_iocg->hweight_after_donation) * WEIGHT_ONE,
-		WEIGHT_ONE - min_t(root_iocg->hweight_donating, WEIGHT_ONE - 1));
+		WEIGHT_ONE - min_t(u32, root_iocg->hweight_donating, WEIGHT_ONE - 1));
 
 	/*
 	 * Calculate adjusted hwi, child_adjusted_sum and inuse for the inner
