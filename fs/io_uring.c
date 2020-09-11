@@ -232,7 +232,7 @@ struct io_restriction {
 
 struct io_sq_data {
 	refcount_t		refs;
-	atomic_t		parks;
+	struct mutex		lock;
 
 	/* ctx's that are using this sqd */
 	struct list_head	ctx_list;
@@ -7094,25 +7094,31 @@ static struct io_sq_data *io_get_sq_data(struct io_uring_params *p)
 		return ERR_PTR(-ENOMEM);
 
 	refcount_set(&sqd->refs, 1);
-	atomic_set(&sqd->parks, 0);
 	INIT_LIST_HEAD(&sqd->ctx_list);
 	INIT_LIST_HEAD(&sqd->ctx_new_list);
 	mutex_init(&sqd->ctx_lock);
+	mutex_init(&sqd->lock);
 	init_waitqueue_head(&sqd->wait);
 
 	return sqd;
 }
 
 static void io_sq_thread_unpark(struct io_sq_data *sqd)
+	__releases(&sqd->lock)
 {
-	if (sqd->thread && atomic_dec_and_test(&sqd->parks))
-		kthread_unpark(sqd->thread);
+	if (!sqd->thread)
+		return;
+	kthread_unpark(sqd->thread);
+	mutex_unlock(&sqd->lock);
 }
 
 static void io_sq_thread_park(struct io_sq_data *sqd)
+	__acquires(&sqd->lock)
 {
-	if (sqd->thread && atomic_inc_return(&sqd->parks) == 1)
-		kthread_park(sqd->thread);
+	if (!sqd->thread)
+		return;
+	mutex_lock(&sqd->lock);
+	kthread_park(sqd->thread);
 }
 
 static void io_sq_thread_stop(struct io_ring_ctx *ctx)
@@ -7132,19 +7138,17 @@ static void io_sq_thread_stop(struct io_ring_ctx *ctx)
 			wait_for_completion(&ctx->sq_thread_comp);
 
 			io_sq_thread_park(sqd);
-
-			if (!list_empty_careful(&ctx->sqo_wait_entry.entry)) {
-				spin_lock_irq(&sqd->wait.lock);
-				list_del_init(&ctx->sqo_wait_entry.entry);
-				spin_unlock_irq(&sqd->wait.lock);
-			}
 		}
 
 		mutex_lock(&sqd->ctx_lock);
 		list_del(&ctx->sqd_list);
 		mutex_unlock(&sqd->ctx_lock);
 
-		io_sq_thread_unpark(sqd);
+		if (sqd->thread) {
+			finish_wait(&sqd->wait, &ctx->sqo_wait_entry);
+			io_sq_thread_unpark(sqd);
+		}
+
 		io_put_sq_data(sqd);
 		ctx->sq_data = NULL;
 	}
@@ -7798,10 +7802,13 @@ static int io_sq_offload_create(struct io_ring_ctx *ctx,
 			ret = PTR_ERR(sqd);
 			goto err;
 		}
+
+		io_sq_thread_park(sqd);
 		ctx->sq_data = sqd;
 		mutex_lock(&sqd->ctx_lock);
 		list_add(&ctx->sqd_list, &sqd->ctx_new_list);
 		mutex_unlock(&sqd->ctx_lock);
+		io_sq_thread_unpark(sqd);
 
 		/*
 		 * We will exit the sqthread before current exits, so we can
