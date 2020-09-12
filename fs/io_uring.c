@@ -5450,6 +5450,8 @@ static int io_req_defer_prep(struct io_kiocb *req,
 	if (unlikely(ret))
 		return ret;
 
+	io_prep_async_work(req);
+
 	switch (req->opcode) {
 	case IORING_OP_NOP:
 		break;
