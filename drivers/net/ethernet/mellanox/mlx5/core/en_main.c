@@ -5794,6 +5794,11 @@ rollback:
 	return err;
 }
 
+void mlx5e_netdev_attach_nic_profile(struct mlx5e_priv *priv)
+{
+	mlx5e_netdev_change_profile(priv, &mlx5e_nic_profile, NULL);
+}
+
 void mlx5e_destroy_netdev(struct mlx5e_priv *priv)
 {
 	struct net_device *netdev = priv->netdev;
@@ -5904,6 +5909,7 @@ static int mlx5e_probe(struct auxiliary_device *adev,
 	mlx5e_devlink_port_type_eth_set(priv);
 
 	mlx5e_dcbnl_init_app(priv);
+	mlx5_uplink_netdev_set(mdev, netdev);
 	return 0;
 
 err_resume:
