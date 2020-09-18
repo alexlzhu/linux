@@ -30,6 +30,7 @@
 static unsigned long efi_chunk_size = EFI_READ_CHUNK_SIZE;
 
 static bool __efistub_global efi_nokaslr;
+static bool __efistub_global efi_notpm;
 static bool __efistub_global efi_quiet;
 static bool __efistub_global efi_novamap;
 static bool __efistub_global efi_nosoftreserve;
@@ -39,6 +40,10 @@ static bool __efistub_global efi_disable_pci_dma =
 bool __pure nokaslr(void)
 {
 	return efi_nokaslr;
+}
+bool __pure notpm(void)
+{
+	return efi_notpm;
 }
 bool __pure is_quiet(void)
 {
@@ -459,6 +464,10 @@ efi_status_t efi_parse_options(char const *cmdline)
 	str = strstr(cmdline, "quiet");
 	if (str == cmdline || (str && str > cmdline && *(str - 1) == ' '))
 		efi_quiet = true;
+
+	str = strstr(cmdline, "notpm");
+	if (str == cmdline || (str && str > cmdline && *(str - 1) == ' '))
+		efi_notpm = true;
 
 	/*
 	 * If no EFI parameters were specified on the cmdline we've got
