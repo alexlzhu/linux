@@ -2849,7 +2849,9 @@ static int devlink_nl_flash_update_fill(struct sk_buff *msg,
 					enum devlink_command cmd,
 					const char *status_msg,
 					const char *component,
-					unsigned long done, unsigned long total)
+					unsigned long done,
+					unsigned long total,
+					unsigned long timeout)
 {
 	void *hdr;
 
@@ -2877,6 +2879,9 @@ static int devlink_nl_flash_update_fill(struct sk_buff *msg,
 	if (nla_put_u64_64bit(msg, DEVLINK_ATTR_FLASH_UPDATE_STATUS_TOTAL,
 			      total, DEVLINK_ATTR_PAD))
 		goto nla_put_failure;
+	if (nla_put_u64_64bit(msg, DEVLINK_ATTR_FLASH_UPDATE_STATUS_TIMEOUT,
+			      timeout, DEVLINK_ATTR_PAD))
+		goto nla_put_failure;
 
 out:
 	genlmsg_end(msg, hdr);
@@ -2892,7 +2897,8 @@ static void __devlink_flash_update_notify(struct devlink *devlink,
 					  const char *status_msg,
 					  const char *component,
 					  unsigned long done,
-					  unsigned long total)
+					  unsigned long total,
+					  unsigned long timeout)
 {
 	struct sk_buff *msg;
 	int err;
@@ -2906,7 +2912,7 @@ static void __devlink_flash_update_notify(struct devlink *devlink,
 		return;
 
 	err = devlink_nl_flash_update_fill(msg, devlink, cmd, status_msg,
-					   component, done, total);
+					   component, done, total, timeout);
 	if (err)
 		goto out_free_msg;
 
@@ -2922,7 +2928,7 @@ void devlink_flash_update_begin_notify(struct devlink *devlink)
 {
 	__devlink_flash_update_notify(devlink,
 				      DEVLINK_CMD_FLASH_UPDATE,
-				      NULL, NULL, 0, 0);
+				      NULL, NULL, 0, 0, 0);
 }
 EXPORT_SYMBOL_GPL(devlink_flash_update_begin_notify);
 
@@ -2930,7 +2936,7 @@ void devlink_flash_update_end_notify(struct devlink *devlink)
 {
 	__devlink_flash_update_notify(devlink,
 				      DEVLINK_CMD_FLASH_UPDATE_END,
-				      NULL, NULL, 0, 0);
+				      NULL, NULL, 0, 0, 0);
 }
 EXPORT_SYMBOL_GPL(devlink_flash_update_end_notify);
 
@@ -2942,9 +2948,20 @@ void devlink_flash_update_status_notify(struct devlink *devlink,
 {
 	__devlink_flash_update_notify(devlink,
 				      DEVLINK_CMD_FLASH_UPDATE_STATUS,
-				      status_msg, component, done, total);
+				      status_msg, component, done, total, 0);
 }
 EXPORT_SYMBOL_GPL(devlink_flash_update_status_notify);
+
+void devlink_flash_update_timeout_notify(struct devlink *devlink,
+					 const char *status_msg,
+					 const char *component,
+					 unsigned long timeout)
+{
+	__devlink_flash_update_notify(devlink,
+				      DEVLINK_CMD_FLASH_UPDATE_STATUS,
+				      status_msg, component, 0, 0, timeout);
+}
+EXPORT_SYMBOL_GPL(devlink_flash_update_timeout_notify);
 
 static int devlink_nl_cmd_flash_update(struct sk_buff *skb,
 				       struct genl_info *info)
