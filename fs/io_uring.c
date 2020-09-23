@@ -960,7 +960,7 @@ static void io_sq_thread_drop_mm(void)
 	struct mm_struct *mm = current->mm;
 
 	if (mm) {
-		unuse_mm(mm);
+		kthread_unuse_mm(mm);
 		mmput(mm);
 	}
 }
@@ -971,7 +971,7 @@ static int __io_sq_thread_acquire_mm(struct io_ring_ctx *ctx)
 		if (unlikely(!(ctx->flags & IORING_SETUP_SQPOLL) ||
 			     !mmget_not_zero(ctx->sqo_mm)))
 			return -EFAULT;
-		use_mm(ctx->sqo_mm);
+		kthread_use_mm(ctx->sqo_mm);
 	}
 
 	return 0;
