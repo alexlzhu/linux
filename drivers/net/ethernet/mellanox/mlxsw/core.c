@@ -862,6 +862,294 @@ static struct mlxsw_driver *mlxsw_core_driver_get(const char *kind)
 	return mlxsw_driver;
 }
 
+struct mlxsw_core_fw_info {
+	struct mlxfw_dev mlxfw_dev;
+	struct mlxsw_core *mlxsw_core;
+};
+
+static int mlxsw_core_fw_component_query(struct mlxfw_dev *mlxfw_dev,
+					 u16 component_index, u32 *p_max_size,
+					 u8 *p_align_bits, u16 *p_max_write_size)
+{
+	struct mlxsw_core_fw_info *mlxsw_core_fw_info =
+		container_of(mlxfw_dev, struct mlxsw_core_fw_info, mlxfw_dev);
+	struct mlxsw_core *mlxsw_core = mlxsw_core_fw_info->mlxsw_core;
+	char mcqi_pl[MLXSW_REG_MCQI_LEN];
+	int err;
+
+	mlxsw_reg_mcqi_pack(mcqi_pl, component_index);
+	err = mlxsw_reg_query(mlxsw_core, MLXSW_REG(mcqi), mcqi_pl);
+	if (err)
+		return err;
+	mlxsw_reg_mcqi_unpack(mcqi_pl, p_max_size, p_align_bits, p_max_write_size);
+
+	*p_align_bits = max_t(u8, *p_align_bits, 2);
+	*p_max_write_size = min_t(u16, *p_max_write_size, MLXSW_REG_MCDA_MAX_DATA_LEN);
+	return 0;
+}
+
+static int mlxsw_core_fw_fsm_lock(struct mlxfw_dev *mlxfw_dev, u32 *fwhandle)
+{
+	struct mlxsw_core_fw_info *mlxsw_core_fw_info =
+		container_of(mlxfw_dev, struct mlxsw_core_fw_info, mlxfw_dev);
+	struct mlxsw_core *mlxsw_core = mlxsw_core_fw_info->mlxsw_core;
+	char mcc_pl[MLXSW_REG_MCC_LEN];
+	u8 control_state;
+	int err;
+
+	mlxsw_reg_mcc_pack(mcc_pl, 0, 0, 0, 0);
+	err = mlxsw_reg_query(mlxsw_core, MLXSW_REG(mcc), mcc_pl);
+	if (err)
+		return err;
+
+	mlxsw_reg_mcc_unpack(mcc_pl, fwhandle, NULL, &control_state);
+	if (control_state != MLXFW_FSM_STATE_IDLE)
+		return -EBUSY;
+
+	mlxsw_reg_mcc_pack(mcc_pl, MLXSW_REG_MCC_INSTRUCTION_LOCK_UPDATE_HANDLE, 0, *fwhandle, 0);
+	return mlxsw_reg_write(mlxsw_core, MLXSW_REG(mcc), mcc_pl);
+}
+
+static int mlxsw_core_fw_fsm_component_update(struct mlxfw_dev *mlxfw_dev, u32 fwhandle,
+					      u16 component_index, u32 component_size)
+{
+	struct mlxsw_core_fw_info *mlxsw_core_fw_info =
+		container_of(mlxfw_dev, struct mlxsw_core_fw_info, mlxfw_dev);
+	struct mlxsw_core *mlxsw_core = mlxsw_core_fw_info->mlxsw_core;
+	char mcc_pl[MLXSW_REG_MCC_LEN];
+
+	mlxsw_reg_mcc_pack(mcc_pl, MLXSW_REG_MCC_INSTRUCTION_UPDATE_COMPONENT,
+			   component_index, fwhandle, component_size);
+	return mlxsw_reg_write(mlxsw_core, MLXSW_REG(mcc), mcc_pl);
+}
+
+static int mlxsw_core_fw_fsm_block_download(struct mlxfw_dev *mlxfw_dev, u32 fwhandle,
+					    u8 *data, u16 size, u32 offset)
+{
+	struct mlxsw_core_fw_info *mlxsw_core_fw_info =
+		container_of(mlxfw_dev, struct mlxsw_core_fw_info, mlxfw_dev);
+	struct mlxsw_core *mlxsw_core = mlxsw_core_fw_info->mlxsw_core;
+	char mcda_pl[MLXSW_REG_MCDA_LEN];
+
+	mlxsw_reg_mcda_pack(mcda_pl, fwhandle, offset, size, data);
+	return mlxsw_reg_write(mlxsw_core, MLXSW_REG(mcda), mcda_pl);
+}
+
+static int mlxsw_core_fw_fsm_component_verify(struct mlxfw_dev *mlxfw_dev, u32 fwhandle,
+					      u16 component_index)
+{
+	struct mlxsw_core_fw_info *mlxsw_core_fw_info =
+		container_of(mlxfw_dev, struct mlxsw_core_fw_info, mlxfw_dev);
+	struct mlxsw_core *mlxsw_core = mlxsw_core_fw_info->mlxsw_core;
+	char mcc_pl[MLXSW_REG_MCC_LEN];
+
+	mlxsw_reg_mcc_pack(mcc_pl, MLXSW_REG_MCC_INSTRUCTION_VERIFY_COMPONENT,
+			   component_index, fwhandle, 0);
+	return mlxsw_reg_write(mlxsw_core, MLXSW_REG(mcc), mcc_pl);
+}
+
+static int mlxsw_core_fw_fsm_activate(struct mlxfw_dev *mlxfw_dev, u32 fwhandle)
+{
+	struct mlxsw_core_fw_info *mlxsw_core_fw_info =
+		container_of(mlxfw_dev, struct mlxsw_core_fw_info, mlxfw_dev);
+	struct mlxsw_core *mlxsw_core = mlxsw_core_fw_info->mlxsw_core;
+	char mcc_pl[MLXSW_REG_MCC_LEN];
+
+	mlxsw_reg_mcc_pack(mcc_pl, MLXSW_REG_MCC_INSTRUCTION_ACTIVATE, 0, fwhandle, 0);
+	return mlxsw_reg_write(mlxsw_core, MLXSW_REG(mcc), mcc_pl);
+}
+
+static int mlxsw_core_fw_fsm_query_state(struct mlxfw_dev *mlxfw_dev, u32 fwhandle,
+					 enum mlxfw_fsm_state *fsm_state,
+					 enum mlxfw_fsm_state_err *fsm_state_err)
+{
+	struct mlxsw_core_fw_info *mlxsw_core_fw_info =
+		container_of(mlxfw_dev, struct mlxsw_core_fw_info, mlxfw_dev);
+	struct mlxsw_core *mlxsw_core = mlxsw_core_fw_info->mlxsw_core;
+	char mcc_pl[MLXSW_REG_MCC_LEN];
+	u8 control_state;
+	u8 error_code;
+	int err;
+
+	mlxsw_reg_mcc_pack(mcc_pl, 0, 0, fwhandle, 0);
+	err = mlxsw_reg_query(mlxsw_core, MLXSW_REG(mcc), mcc_pl);
+	if (err)
+		return err;
+
+	mlxsw_reg_mcc_unpack(mcc_pl, NULL, &error_code, &control_state);
+	*fsm_state = control_state;
+	*fsm_state_err = min_t(enum mlxfw_fsm_state_err, error_code, MLXFW_FSM_STATE_ERR_MAX);
+	return 0;
+}
+
+static void mlxsw_core_fw_fsm_cancel(struct mlxfw_dev *mlxfw_dev, u32 fwhandle)
+{
+	struct mlxsw_core_fw_info *mlxsw_core_fw_info =
+		container_of(mlxfw_dev, struct mlxsw_core_fw_info, mlxfw_dev);
+	struct mlxsw_core *mlxsw_core = mlxsw_core_fw_info->mlxsw_core;
+	char mcc_pl[MLXSW_REG_MCC_LEN];
+
+	mlxsw_reg_mcc_pack(mcc_pl, MLXSW_REG_MCC_INSTRUCTION_CANCEL, 0, fwhandle, 0);
+	mlxsw_reg_write(mlxsw_core, MLXSW_REG(mcc), mcc_pl);
+}
+
+static void mlxsw_core_fw_fsm_release(struct mlxfw_dev *mlxfw_dev, u32 fwhandle)
+{
+	struct mlxsw_core_fw_info *mlxsw_core_fw_info =
+		container_of(mlxfw_dev, struct mlxsw_core_fw_info, mlxfw_dev);
+	struct mlxsw_core *mlxsw_core = mlxsw_core_fw_info->mlxsw_core;
+	char mcc_pl[MLXSW_REG_MCC_LEN];
+
+	mlxsw_reg_mcc_pack(mcc_pl, MLXSW_REG_MCC_INSTRUCTION_RELEASE_UPDATE_HANDLE, 0, fwhandle, 0);
+	mlxsw_reg_write(mlxsw_core, MLXSW_REG(mcc), mcc_pl);
+}
+
+static const struct mlxfw_dev_ops mlxsw_core_fw_mlxsw_dev_ops = {
+	.component_query	= mlxsw_core_fw_component_query,
+	.fsm_lock		= mlxsw_core_fw_fsm_lock,
+	.fsm_component_update	= mlxsw_core_fw_fsm_component_update,
+	.fsm_block_download	= mlxsw_core_fw_fsm_block_download,
+	.fsm_component_verify	= mlxsw_core_fw_fsm_component_verify,
+	.fsm_activate		= mlxsw_core_fw_fsm_activate,
+	.fsm_query_state	= mlxsw_core_fw_fsm_query_state,
+	.fsm_cancel		= mlxsw_core_fw_fsm_cancel,
+	.fsm_release		= mlxsw_core_fw_fsm_release,
+};
+
+static int mlxsw_core_fw_flash(struct mlxsw_core *mlxsw_core, const struct firmware *firmware,
+			       struct netlink_ext_ack *extack)
+{
+	struct mlxsw_core_fw_info mlxsw_core_fw_info = {
+		.mlxfw_dev = {
+			.ops = &mlxsw_core_fw_mlxsw_dev_ops,
+			.psid = mlxsw_core->bus_info->psid,
+			.psid_size = strlen(mlxsw_core->bus_info->psid),
+			.devlink = priv_to_devlink(mlxsw_core),
+		},
+		.mlxsw_core = mlxsw_core
+	};
+	int err;
+
+	mlxsw_core->fw_flash_in_progress = true;
+	err = mlxfw_firmware_flash(&mlxsw_core_fw_info.mlxfw_dev, firmware, extack);
+	mlxsw_core->fw_flash_in_progress = false;
+
+	return err;
+}
+
+static int mlxsw_core_fw_rev_validate(struct mlxsw_core *mlxsw_core,
+				      const struct mlxsw_bus_info *mlxsw_bus_info,
+				      const struct mlxsw_fw_rev *req_rev,
+				      const char *filename)
+{
+	const struct mlxsw_fw_rev *rev = &mlxsw_bus_info->fw_rev;
+	union devlink_param_value value;
+	const struct firmware *firmware;
+	int err;
+
+	/* Don't check if driver does not require it */
+	if (!req_rev || !filename)
+		return 0;
+
+	/* Don't check if devlink 'fw_load_policy' param is 'flash' */
+	err = devlink_param_driverinit_value_get(priv_to_devlink(mlxsw_core),
+						 DEVLINK_PARAM_GENERIC_ID_FW_LOAD_POLICY,
+						 &value);
+	if (err)
+		return err;
+	if (value.vu8 == DEVLINK_PARAM_FW_LOAD_POLICY_VALUE_FLASH)
+		return 0;
+
+	/* Validate driver & FW are compatible */
+	if (rev->major != req_rev->major) {
+		WARN(1, "Mismatch in major FW version [%d:%d] is never expected; Please contact support\n",
+		     rev->major, req_rev->major);
+		return -EINVAL;
+	}
+	if (mlxsw_core_fw_rev_minor_subminor_validate(rev, req_rev))
+		return 0;
+
+	dev_err(mlxsw_bus_info->dev, "The firmware version %d.%d.%d is incompatible with the driver (required >= %d.%d.%d)\n",
+		rev->major, rev->minor, rev->subminor, req_rev->major,
+		req_rev->minor, req_rev->subminor);
+	dev_info(mlxsw_bus_info->dev, "Flashing firmware using file %s\n", filename);
+
+	err = request_firmware_direct(&firmware, filename, mlxsw_bus_info->dev);
+	if (err) {
+		dev_err(mlxsw_bus_info->dev, "Could not request firmware file %s\n", filename);
+		return err;
+	}
+
+	err = mlxsw_core_fw_flash(mlxsw_core, firmware, NULL);
+	release_firmware(firmware);
+	if (err)
+		dev_err(mlxsw_bus_info->dev, "Could not upgrade firmware\n");
+
+	/* On FW flash success, tell the caller FW reset is needed
+	 * if current FW supports it.
+	 */
+	if (rev->minor >= req_rev->can_reset_minor)
+		return err ? err : -EAGAIN;
+	else
+		return 0;
+}
+
+static int mlxsw_core_fw_flash_update(struct mlxsw_core *mlxsw_core,
+				      const char *file_name, const char *component,
+				      struct netlink_ext_ack *extack)
+{
+	const struct firmware *firmware;
+	int err;
+
+	err = request_firmware_direct(&firmware, file_name, mlxsw_core->bus_info->dev);
+	if (err)
+		return err;
+	err = mlxsw_core_fw_flash(mlxsw_core, firmware, extack);
+	release_firmware(firmware);
+
+	return err;
+}
+
+static int mlxsw_core_devlink_param_fw_load_policy_validate(struct devlink *devlink, u32 id,
+							    union devlink_param_value val,
+							    struct netlink_ext_ack *extack)
+{
+	if (val.vu8 != DEVLINK_PARAM_FW_LOAD_POLICY_VALUE_DRIVER &&
+	    val.vu8 != DEVLINK_PARAM_FW_LOAD_POLICY_VALUE_FLASH) {
+		NL_SET_ERR_MSG_MOD(extack, "'fw_load_policy' must be 'driver' or 'flash'");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static const struct devlink_param mlxsw_core_fw_devlink_params[] = {
+	DEVLINK_PARAM_GENERIC(FW_LOAD_POLICY, BIT(DEVLINK_PARAM_CMODE_DRIVERINIT), NULL, NULL,
+			      mlxsw_core_devlink_param_fw_load_policy_validate),
+};
+
+static int mlxsw_core_fw_params_register(struct mlxsw_core *mlxsw_core)
+{
+	struct devlink *devlink = priv_to_devlink(mlxsw_core);
+	union devlink_param_value value;
+	int err;
+
+	err = devlink_params_register(devlink, mlxsw_core_fw_devlink_params,
+				      ARRAY_SIZE(mlxsw_core_fw_devlink_params));
+	if (err)
+		return err;
+
+	value.vu8 = DEVLINK_PARAM_FW_LOAD_POLICY_VALUE_DRIVER;
+	devlink_param_driverinit_value_set(devlink, DEVLINK_PARAM_GENERIC_ID_FW_LOAD_POLICY, value);
+	return 0;
+}
+
+static void mlxsw_core_fw_params_unregister(struct mlxsw_core *mlxsw_core)
+{
+	devlink_params_unregister(priv_to_devlink(mlxsw_core), mlxsw_core_fw_devlink_params,
+				  ARRAY_SIZE(mlxsw_core_fw_devlink_params));
+}
+
 static int mlxsw_devlink_port_split(struct devlink *devlink,
 				    unsigned int port_index,
 				    unsigned int count,
