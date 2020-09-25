@@ -17,6 +17,7 @@
 #include <linux/refcount.h>
 #include <net/net_namespace.h>
 #include <uapi/linux/devlink.h>
+#include <linux/xarray.h>
 
 struct devlink_ops;
 
@@ -28,13 +29,13 @@ struct devlink {
 	struct list_head resource_list;
 	struct list_head param_list;
 	struct list_head region_list;
-	u32 snapshot_id;
 	struct list_head reporter_list;
 	struct mutex reporters_lock; /* protects reporter_list */
 	struct devlink_dpipe_headers *dpipe_headers;
 	struct list_head trap_list;
 	struct list_head trap_group_list;
 	const struct devlink_ops *ops;
+	struct xarray snapshot_ids;
 	struct device *dev;
 	possible_net_t _net;
 	struct mutex lock;
@@ -497,7 +498,21 @@ enum devlink_param_generic_id {
 struct devlink_region;
 struct devlink_info_req;
 
-typedef void devlink_snapshot_data_dest_t(const void *data);
+/**
+ * struct devlink_region_ops - Region operations
+ * @name: region name
+ * @destructor: callback used to free snapshot memory when deleting
+ * @snapshot: callback to request an immediate snapshot. On success,
+ *            the data variable must be updated to point to the snapshot data.
+ *            The function will be called while the devlink instance lock is
+ *            held.
+ */
+struct devlink_region_ops {
+	const char *name;
+	void (*destructor)(const void *data);
+	int (*snapshot)(struct devlink *devlink, struct netlink_ext_ack *extack,
+			u8 **data);
+};
 
 struct devlink_fmsg;
 struct devlink_health_reporter;
@@ -601,6 +616,8 @@ enum devlink_trap_generic_id {
 	DEVLINK_TRAP_GENERIC_ID_NON_ROUTABLE,
 	DEVLINK_TRAP_GENERIC_ID_DECAP_ERROR,
 	DEVLINK_TRAP_GENERIC_ID_OVERLAY_SMAC_MC,
+	DEVLINK_TRAP_GENERIC_ID_INGRESS_FLOW_ACTION_DROP,
+	DEVLINK_TRAP_GENERIC_ID_EGRESS_FLOW_ACTION_DROP,
 
 	/* Add new generic trap IDs above */
 	__DEVLINK_TRAP_GENERIC_ID_MAX,
@@ -615,6 +632,7 @@ enum devlink_trap_group_generic_id {
 	DEVLINK_TRAP_GROUP_GENERIC_ID_L3_DROPS,
 	DEVLINK_TRAP_GROUP_GENERIC_ID_BUFFER_DROPS,
 	DEVLINK_TRAP_GROUP_GENERIC_ID_TUNNEL_DROPS,
+	DEVLINK_TRAP_GROUP_GENERIC_ID_ACL_DROPS,
 
 	/* Add new generic trap group IDs above */
 	__DEVLINK_TRAP_GROUP_GENERIC_ID_MAX,
@@ -676,6 +694,10 @@ enum devlink_trap_group_generic_id {
 	"decap_error"
 #define DEVLINK_TRAP_GENERIC_NAME_OVERLAY_SMAC_MC \
 	"overlay_smac_is_mc"
+#define DEVLINK_TRAP_GENERIC_NAME_INGRESS_FLOW_ACTION_DROP \
+	"ingress_flow_action_drop"
+#define DEVLINK_TRAP_GENERIC_NAME_EGRESS_FLOW_ACTION_DROP \
+	"egress_flow_action_drop"
 
 #define DEVLINK_TRAP_GROUP_GENERIC_NAME_L2_DROPS \
 	"l2_drops"
@@ -685,6 +707,8 @@ enum devlink_trap_group_generic_id {
 	"buffer_drops"
 #define DEVLINK_TRAP_GROUP_GENERIC_NAME_TUNNEL_DROPS \
 	"tunnel_drops"
+#define DEVLINK_TRAP_GROUP_GENERIC_NAME_ACL_DROPS \
+	"acl_drops"
 
 #define DEVLINK_TRAP_GENERIC(_type, _init_action, _id, _group, _metadata_cap) \
 	{								      \
@@ -954,15 +978,15 @@ void devlink_port_param_value_changed(struct devlink_port *devlink_port,
 				      u32 param_id);
 void devlink_param_value_str_fill(union devlink_param_value *dst_val,
 				  const char *src);
-struct devlink_region *devlink_region_create(struct devlink *devlink,
-					     const char *region_name,
-					     u32 region_max_snapshots,
-					     u64 region_size);
+struct devlink_region *
+devlink_region_create(struct devlink *devlink,
+		      const struct devlink_region_ops *ops,
+		      u32 region_max_snapshots, u64 region_size);
 void devlink_region_destroy(struct devlink_region *region);
-u32 devlink_region_snapshot_id_get(struct devlink *devlink);
+int devlink_region_snapshot_id_get(struct devlink *devlink, u32 *id);
+void devlink_region_snapshot_id_put(struct devlink *devlink, u32 id);
 int devlink_region_snapshot_create(struct devlink_region *region,
-				   u8 *data, u32 snapshot_id,
-				   devlink_snapshot_data_dest_t *data_destructor);
+				   u8 *data, u32 snapshot_id);
 int devlink_info_serial_number_put(struct devlink_info_req *req,
 				   const char *sn);
 int devlink_info_driver_name_put(struct devlink_info_req *req,
@@ -1050,6 +1074,12 @@ void devlink_trap_report(struct devlink *devlink,
 			 struct sk_buff *skb, void *trap_ctx,
 			 struct devlink_port *in_devlink_port);
 void *devlink_trap_ctx_priv(void *trap_ctx);
+int devlink_trap_groups_register(struct devlink *devlink,
+				 const struct devlink_trap_group *groups,
+				 size_t groups_count);
+void devlink_trap_groups_unregister(struct devlink *devlink,
+				    const struct devlink_trap_group *groups,
+				    size_t groups_count);
 
 #if IS_ENABLED(CONFIG_NET_DEVLINK)
 

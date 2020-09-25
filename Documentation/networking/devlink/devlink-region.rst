@@ -20,6 +20,13 @@ address regions that are otherwise inaccessible to the user.
 Regions may also be used to provide an additional way to debug complex error
 states, but see also :doc:`devlink-health`
 
+Regions may optionally support capturing a snapshot on demand via the
+``DEVLINK_CMD_REGION_NEW`` netlink message. A driver wishing to allow
+requested snapshots must implement the ``.snapshot`` callback for the region
+in its ``devlink_region_ops`` structure. If snapshot id is not set in
+the ``DEVLINK_CMD_REGION_NEW`` request kernel will allocate one and send
+the snapshot information to user space.
+
 example usage
 -------------
 
@@ -39,6 +46,10 @@ example usage
 
     # Delete a snapshot using:
     $ devlink region del pci/0000:00:05.0/cr-space snapshot 1
+
+    # Request an immediate snapshot, if supported by the region
+    $ devlink region new pci/0000:00:05.0/cr-space
+    pci/0000:00:05.0/cr-space: snapshot 5
 
     # Dump a snapshot:
     $ devlink region dump pci/0000:00:05.0/fw-health snapshot 1

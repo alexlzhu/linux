@@ -405,9 +405,9 @@ static inline void mlx5_fpga_conn_cqes(struct mlx5_fpga_conn *conn,
 	mlx5_fpga_conn_arm_cq(conn);
 }
 
-static void mlx5_fpga_conn_cq_tasklet(unsigned long data)
+static void mlx5_fpga_conn_cq_tasklet(struct tasklet_struct *t)
 {
-	struct mlx5_fpga_conn *conn = (void *)data;
+	struct mlx5_fpga_conn *conn = from_tasklet(conn, t, cq.tasklet);
 
 	if (unlikely(!conn->qp.active))
 		return;
@@ -496,8 +496,7 @@ static int mlx5_fpga_conn_create_cq(struct mlx5_fpga_conn *conn, int cq_size)
 	conn->cq.mcq.event      = mlx5_fpga_conn_cq_event;
 	conn->cq.mcq.irqn       = irqn;
 	conn->cq.mcq.uar        = fdev->conn_res.uar;
-	tasklet_init(&conn->cq.tasklet, mlx5_fpga_conn_cq_tasklet,
-		     (unsigned long)conn);
+	tasklet_setup(&conn->cq.tasklet, mlx5_fpga_conn_cq_tasklet);
 
 	mlx5_fpga_dbg(fdev, "Created CQ #0x%x\n", conn->cq.mcq.cqn);
 
