@@ -492,7 +492,7 @@ fw_get_filesystem_firmware(struct device *device, struct fw_priv *fw_priv,
 		}
 
 		fw_priv->size = 0;
-		rc = kernel_read_file_from_path(path, &buffer, msize,
+		rc = kernel_read_file_from_path(path, 0, &buffer, msize,
 						NULL, READING_FIRMWARE);
 		if (rc < 0) {
 			if (rc != -ENOENT)
