@@ -1286,6 +1286,8 @@ struct bpf_sockopt_kern {
 struct bpf_sk_lookup_kern {
 	u16		family;
 	u16		protocol;
+	__be16		sport;
+	u16		dport;
 	struct {
 		__be32 saddr;
 		__be32 daddr;
@@ -1294,8 +1296,6 @@ struct bpf_sk_lookup_kern {
 		const struct in6_addr *saddr;
 		const struct in6_addr *daddr;
 	} v6;
-	__be16		sport;
-	u16		dport;
 	struct sock	*selected_sk;
 	bool		no_reuseport;
 };
