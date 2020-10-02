@@ -492,8 +492,8 @@ fw_get_filesystem_firmware(struct device *device, struct fw_priv *fw_priv,
 		}
 
 		fw_priv->size = 0;
-		rc = kernel_read_file_from_path(path, &buffer, &size,
-						msize, READING_FIRMWARE);
+		rc = kernel_read_file_from_path(path, &buffer, msize,
+						NULL, READING_FIRMWARE);
 		if (rc < 0) {
 			if (rc != -ENOENT)
 				dev_warn(device, "loading %s failed with error %d\n",
