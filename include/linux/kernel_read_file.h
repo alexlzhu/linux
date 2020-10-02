@@ -41,9 +41,6 @@ int kernel_read_file(struct file *file,
 int kernel_read_file_from_path(const char *path,
 			       void **buf, loff_t *size, loff_t max_size,
 			       enum kernel_read_file_id id);
-int kernel_read_file_from_path_initns(const char *path,
-				      void **buf, loff_t *size, loff_t max_size,
-				      enum kernel_read_file_id id);
 int kernel_read_file_from_fd(int fd,
 			     void **buf, loff_t *size, loff_t max_size,
 			     enum kernel_read_file_id id);
