@@ -50,6 +50,7 @@ struct ib_umem {
 	u32 is_odp : 1;
 	/* Placing at the end of the bitfield list is ABI preserving on LE */
 	u32 is_peer : 1;
+	u32 limit_mem : 1;
 	struct work_struct	work;
 	struct sg_table sg_head;
 	int             nmap;
@@ -94,6 +95,9 @@ void ib_umem_activate_invalidation_notifier(struct ib_umem *umem,
 					   umem_invalidate_func_t func,
 					   void *cookie);
 
+void ib_umem_unaccount_mem(struct ib_umem *umem, unsigned long nr_pages);
+int ib_umem_account_mem(struct ib_umem *umem, unsigned long nr_pages);
+
 #else /* CONFIG_INFINIBAND_USER_MEM */
 
 #include <linux/err.h>
@@ -125,6 +129,11 @@ static inline struct ib_umem *ib_umem_get_peer(struct ib_device *device,
 static inline void ib_umem_activate_invalidation_notifier(
 	struct ib_umem *umem, umem_invalidate_func_t func, void *cookie)
 {
+}
+static inline void ib_umem_unaccount_mem(struct ib_umem *umem, unsigned long nr_pages) { }
+static inline int ib_umem_account_mem(struct ib_umem *umem, unsigned long nr_pages)
+{
+	return -EINVAL;
 }
 
 #endif /* CONFIG_INFINIBAND_USER_MEM */

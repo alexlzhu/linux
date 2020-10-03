@@ -497,8 +497,10 @@ void ib_peer_umem_release(struct ib_umem *umem)
 	umem_p->ib_peer_client = NULL;
 
 	/* Must match ib_umem_release() */
-	atomic64_sub(ib_umem_num_pages(umem), &umem->owning_mm->pinned_vm);
-	mmdrop(umem->owning_mm);
-
+	if (umem->owning_mm) {
+		ib_umem_unaccount_mem(umem, ib_umem_num_pages(umem));
+		mmdrop(umem->owning_mm);
+		umem->owning_mm = NULL;
+	}
 	kref_put(&umem_p->kref, ib_peer_umem_kref_release);
 }
