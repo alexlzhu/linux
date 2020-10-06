@@ -183,6 +183,103 @@ unsigned long ib_umem_find_best_pgsz(struct ib_umem *umem,
 }
 EXPORT_SYMBOL(ib_umem_find_best_pgsz);
 
+static inline void __ib_umem_unaccount_mem(struct ib_umem *umem, unsigned long nr_pages)
+{
+	atomic_long_sub(nr_pages, &umem->owning_mm->pinned_vm);
+}
+
+static inline int __ib_umem_account_mem(struct ib_umem *umem, unsigned long nr_pages)
+{
+	unsigned long lock_limit, new_pinned, old_pinned;
+
+	/* Don't allow more pages than we can safely lock */
+	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
+
+	do {
+		old_pinned = atomic_long_read(&umem->owning_mm->pinned_vm);
+		new_pinned = old_pinned + nr_pages;
+		if (new_pinned > lock_limit && umem->limit_mem) {
+			return -ENOMEM;
+		}
+	} while (atomic_long_cmpxchg(&umem->owning_mm->pinned_vm, old_pinned,
+					new_pinned) != old_pinned);
+
+	return 0;
+}
+
+void ib_umem_unaccount_mem(struct ib_umem *umem, unsigned long nr_pages)
+{
+	__ib_umem_unaccount_mem(umem, nr_pages);
+}
+EXPORT_SYMBOL(ib_umem_unaccount_mem);
+
+int ib_umem_account_mem(struct ib_umem *umem, unsigned long nr_pages)
+{
+	return (__ib_umem_account_mem(umem, nr_pages));
+}
+EXPORT_SYMBOL(ib_umem_account_mem);
+
+static int ib_umem_map_pages(struct ib_umem *umem, unsigned long nr_pages)
+{
+	struct page **page_list;
+	struct scatterlist *sg;
+	unsigned long cur_base;
+	unsigned int gup_flags = FOLL_WRITE;
+	int ret;
+
+	page_list = (struct page **) __get_free_page(GFP_KERNEL);
+	if (!page_list)
+		return -ENOMEM;
+
+	ret = sg_alloc_table(&umem->sg_head, nr_pages, GFP_KERNEL);
+	if (ret) {
+		free_page((unsigned long) page_list);
+		return ret;
+	}
+
+	if (!umem->writable)
+		gup_flags |= FOLL_FORCE;
+
+	sg = umem->sg_head.sgl;
+
+	cur_base = umem->address & PAGE_MASK;
+
+	while (nr_pages) {
+		ret = pin_user_pages_fast(cur_base,
+					  min_t(unsigned long, nr_pages,
+						PAGE_SIZE /
+						sizeof(struct page *)),
+					  gup_flags | FOLL_LONGTERM, page_list);
+		if (ret < 0)
+			goto umem_release;
+
+		cur_base += ret * PAGE_SIZE;
+		nr_pages   -= ret;
+
+		sg = ib_umem_add_sg_table(sg, page_list, ret,
+			dma_get_max_seg_size(umem->ibdev->dma_device),
+			&umem->sg_nents);
+	}
+
+	sg_mark_end(sg);
+
+	umem->nmap = ib_dma_map_sg(umem->ibdev,
+				   umem->sg_head.sgl,
+				   umem->sg_nents,
+				   DMA_BIDIRECTIONAL);
+	if (!umem->nmap)
+		ret = -ENOMEM;
+
+	ret = 0;
+
+umem_release:
+	if (ret)
+		__ib_umem_release(umem->ibdev, umem, 0);
+
+	free_page((unsigned long) page_list);
+	return ret;
+}
+
 /**
  * __ib_umem_get - Pin and DMA map userspace memory.
  *
@@ -196,16 +293,9 @@ static struct ib_umem *__ib_umem_get(struct ib_device *device,
 				    unsigned long addr, size_t size, int access,
 				    unsigned long peer_mem_flags)
 {
-	struct ib_umem *umem;
-	struct page **page_list;
-	unsigned long lock_limit;
-	unsigned long new_pinned;
-	unsigned long cur_base;
-	struct mm_struct *mm;
+	struct ib_umem *umem, *new_umem;
 	unsigned long npages;
 	int ret;
-	struct scatterlist *sg;
-	unsigned int gup_flags = FOLL_WRITE;
 
 	/*
 	 * If the combination of the addr and size requested for this memory
@@ -228,99 +318,49 @@ static struct ib_umem *__ib_umem_get(struct ib_device *device,
 	umem->length     = size;
 	umem->address    = addr;
 	umem->writable   = ib_access_writable(access);
-	umem->owning_mm = mm = current->mm;
-	mmgrab(mm);
-
-	page_list = (struct page **) __get_free_page(GFP_KERNEL);
-	if (!page_list) {
-		ret = -ENOMEM;
-		goto umem_kfree;
-	}
+	umem->owning_mm = current->mm;
+	mmgrab(umem->owning_mm);
 
 	npages = ib_umem_num_pages(umem);
 	if (npages == 0 || npages > UINT_MAX) {
 		ret = -EINVAL;
-		goto out;
+		goto umem_kfree;
 	}
 
-	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
+	umem->limit_mem = !capable(CAP_IPC_LOCK);
 
-	new_pinned = atomic64_add_return(npages, &mm->pinned_vm);
-	if (new_pinned > lock_limit && !capable(CAP_IPC_LOCK)) {
-		atomic64_sub(npages, &mm->pinned_vm);
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	cur_base = addr & PAGE_MASK;
-
-	ret = sg_alloc_table(&umem->sg_head, npages, GFP_KERNEL);
+	ret = ib_umem_account_mem(umem, npages);
 	if (ret)
-		goto vma;
+		goto umem_kfree;
 
-	if (!umem->writable)
-		gup_flags |= FOLL_FORCE;
-
-	sg = umem->sg_head.sgl;
-
-	while (npages) {
-		ret = pin_user_pages_fast(cur_base,
-					  min_t(unsigned long, npages,
-						PAGE_SIZE /
-						sizeof(struct page *)),
-					  gup_flags | FOLL_LONGTERM, page_list);
-		if (ret < 0)
-			goto umem_release;
-
-		cur_base += ret * PAGE_SIZE;
-		npages   -= ret;
-
-		sg = ib_umem_add_sg_table(sg, page_list, ret,
-			dma_get_max_seg_size(device->dma_device),
-			&umem->sg_nents);
-	}
-
-	sg_mark_end(sg);
-
-	umem->nmap = ib_dma_map_sg(device,
-				   umem->sg_head.sgl,
-				   umem->sg_nents,
-				   DMA_BIDIRECTIONAL);
-
-	if (!umem->nmap) {
-		ret = -ENOMEM;
-		goto umem_release;
-	}
-
-	ret = 0;
-	goto out;
-
-umem_release:
-	__ib_umem_release(device, umem, 0);
-vma:
-	atomic64_sub(ib_umem_num_pages(umem), &mm->pinned_vm);
-out:
-	free_page((unsigned long) page_list);
-	/*
-	 * If the address belongs to peer memory client, then the first
-	 * call to get_user_pages will fail. In this case, try to get
-	 * these pages from the peers.
-	 */
-	//FIXME: this placement is horrible
-	if (ret < 0 && peer_mem_flags & IB_PEER_MEM_ALLOW) {
-		struct ib_umem *new_umem;
-
-		new_umem = ib_peer_umem_get(umem, ret, peer_mem_flags);
-		if (IS_ERR(new_umem)) {
-			ret = PTR_ERR(new_umem);
-		} else {
-			umem = new_umem;
-			ret = 0;
+	ret = ib_umem_map_pages(umem, npages);
+	if (ret) {
+		/*
+		 * If the address belongs to peer memory client, then ib_umem_map_pages
+		 * will fail. In this case, and if (peer_mem_flags & IB_PEER_MEM_ALLOW)
+		 * try to get these pages from the peers.
+		 */
+		if (peer_mem_flags & IB_PEER_MEM_ALLOW) {
+			new_umem = ib_peer_umem_get(umem, ret, peer_mem_flags);
+			if (IS_ERR(new_umem)) {
+				ret = PTR_ERR(new_umem);
+			} else {
+				umem = new_umem;
+				ret = 0;
+			}
 		}
 	}
+
+	/* If we failed to map umem or peer memory then account the memory. */
+	if (ret)
+		ib_umem_unaccount_mem(umem, npages);
+
 umem_kfree:
 	if (ret) {
-		mmdrop(umem->owning_mm);
+		if (umem->owning_mm) {
+			mmdrop(umem->owning_mm);
+			umem->owning_mm = NULL;
+		}
 		kfree(umem);
 	}
 	return ret ? ERR_PTR(ret) : umem;
@@ -355,10 +395,14 @@ void ib_umem_release(struct ib_umem *umem)
 
 	if (umem->is_peer)
 		return ib_peer_umem_release(umem);
+
 	__ib_umem_release(umem->ibdev, umem, 1);
 
-	atomic64_sub(ib_umem_num_pages(umem), &umem->owning_mm->pinned_vm);
-	mmdrop(umem->owning_mm);
+	if (umem->owning_mm) {
+		ib_umem_unaccount_mem(umem, ib_umem_num_pages(umem));
+		mmdrop(umem->owning_mm);
+		umem->owning_mm = NULL;
+	}
 	kfree(umem);
 }
 EXPORT_SYMBOL(ib_umem_release);
