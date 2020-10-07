@@ -6428,8 +6428,6 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	/* one is dropped after submission, the other at completion */
 	refcount_set(&req->refs, 2);
 	req->task = current;
-	get_task_struct(req->task);
-	atomic_long_inc(&req->task->io_uring->req_issue);
 	req->result = 0;
 
 	if (unlikely(req->opcode >= IORING_OP_LAST))
@@ -6487,6 +6485,9 @@ static int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 	if (!percpu_ref_tryget_many(&ctx->refs, nr))
 		return -EAGAIN;
 
+	atomic_long_add(nr, &current->io_uring->req_issue);
+	refcount_add(nr, &current->usage);
+
 	io_submit_state_start(&state, ctx, nr);
 
 	for (i = 0; i < nr; i++) {
@@ -6529,6 +6530,8 @@ fail_req:
 		int ref_used = (submitted == -EAGAIN) ? 0 : submitted;
 
 		percpu_ref_put_many(&ctx->refs, nr - ref_used);
+		atomic_long_sub(nr - ref_used, &current->io_uring->req_issue);
+		put_task_struct_many(current, nr - ref_used);
 	}
 	if (link)
 		io_queue_link_head(link, &state.comp);
