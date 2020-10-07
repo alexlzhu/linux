@@ -3050,6 +3050,7 @@ static int io_async_buf_func(struct wait_queue_entry *wait, unsigned mode,
 	if (!wake_page_match(wpq, key))
 		return 0;
 
+	req->rw.kiocb.ki_flags &= ~IOCB_WAITQ;
 	list_del_init(&wait->entry);
 
 	init_task_work(&req->task_work, io_req_task_submit);
