@@ -32,7 +32,7 @@
 #endif
 
 extern bool __pure nokaslr(void);
-extern bool __pure notpm(void);
+extern bool __pure tpm12(void);
 extern bool __pure is_quiet(void);
 extern bool __pure novamap(void);
 

@@ -58,23 +58,22 @@ void efi_retrieve_tpm2_eventlog(void)
 	unsigned long first_entry_addr, last_entry_addr;
 	size_t log_size, last_entry_size;
 	efi_bool_t truncated;
-	int version = EFI_TCG2_EVENT_LOG_FORMAT_TCG_1_2;
+	int version = EFI_TCG2_EVENT_LOG_FORMAT_TCG_2;
 	efi_tcg2_protocol_t *tcg2_protocol = NULL;
 	int final_events_size = 0;
-
-	if (notpm())
-		return;
 
 	status = efi_bs_call(locate_protocol, &tcg2_guid, NULL,
 			     (void **)&tcg2_protocol);
 	if (status != EFI_SUCCESS)
 		return;
 
-	status = efi_call_proto(tcg2_protocol, get_event_log, version,
-				&log_location, &log_last_entry, &truncated);
+	if (!tpm12())
+		status = efi_call_proto(tcg2_protocol, get_event_log, version,
+					&log_location, &log_last_entry,
+					&truncated);
 
 	if (status != EFI_SUCCESS || !log_location) {
-		version = EFI_TCG2_EVENT_LOG_FORMAT_TCG_2;
+		version = EFI_TCG2_EVENT_LOG_FORMAT_TCG_1_2;
 		status = efi_call_proto(tcg2_protocol, get_event_log, version,
 					&log_location, &log_last_entry,
 					&truncated);
