@@ -7100,7 +7100,7 @@ int btrfs_init_dev_stats(struct btrfs_fs_info *fs_info)
 	path = btrfs_alloc_path();
 	if (!path)
 		return -ENOMEM;
-
+again:
 	mutex_lock(&fs_devices->device_list_mutex);
 	list_for_each_entry(device, &fs_devices->devices, dev_list) {
 		int item_size;
@@ -7137,6 +7137,12 @@ int btrfs_init_dev_stats(struct btrfs_fs_info *fs_info)
 		btrfs_release_path(path);
 	}
 	mutex_unlock(&fs_devices->device_list_mutex);
+
+	/* If we have seed devices we need to init their stats as well. */
+	if (fs_devices->seed) {
+		fs_devices = fs_devices->seed;
+		goto again;
+	}
 
 	btrfs_free_path(path);
 	return ret < 0 ? ret : 0;
