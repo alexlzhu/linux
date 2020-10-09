@@ -39,7 +39,6 @@ static const struct address_space_operations swap_aops = {
 struct address_space *swapper_spaces[MAX_SWAPFILES] __read_mostly;
 static unsigned int nr_swapper_spaces[MAX_SWAPFILES] __read_mostly;
 static bool enable_vma_readahead __read_mostly = true;
-int sysctl_skip_zswap_readahead __read_mostly = 1;
 
 #define SWAP_RA_WIN_SHIFT	(PAGE_SHIFT / 2)
 #define SWAP_RA_HITS_MASK	((1UL << SWAP_RA_WIN_SHIFT) - 1)
@@ -537,28 +536,6 @@ static unsigned long swapin_nr_pages(unsigned long offset)
 	return pages;
 }
 
-static struct page *swap_cluster_read_one(swp_entry_t entry,
-		unsigned long offset, gfp_t gfp_mask,
-		struct vm_area_struct *vma, unsigned long addr, bool readahead)
-{
-	bool page_allocated;
-	struct page *page;
-
-	page = __read_swap_cache_async(swp_entry(swp_type(entry), offset),
-				       gfp_mask, vma, addr, &page_allocated);
-	if (!page)
-		return NULL;
-	if (page_allocated) {
-		swap_readpage(page, false);
-		if (readahead) {
-			SetPageReadahead(page);
-			count_vm_event(SWAP_RA);
-		}
-	}
-	put_page(page);
-	return page;
-}
-
 /**
  * swap_cluster_readahead - swap in pages in hope we need them soon
  * @entry: swap entry of this memory
@@ -587,7 +564,7 @@ struct page *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
 	unsigned long mask;
 	struct swap_info_struct *si = swp_swap_info(entry);
 	struct blk_plug plug;
-	bool do_poll = true;
+	bool do_poll = true, page_allocated;
 	struct vm_area_struct *vma = vmf->vma;
 	unsigned long addr = vmf->address;
 
@@ -612,18 +589,22 @@ struct page *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
 		end_offset = si->max - 1;
 
 	blk_start_plug(&plug);
-	/* If we read the page without waiting on IO, skip readahead. */
-	page = swap_cluster_read_one(entry, offset, gfp_mask, vma, addr, false);
-	if (page && PageUptodate(page) && sysctl_skip_zswap_readahead)
-		goto skip_unplug;
-
-	/* Ok, do the async read-ahead now. */
 	for (offset = start_offset; offset <= end_offset ; offset++) {
-		if (offset == entry_offset)
+		/* Ok, do the async read-ahead now */
+		page = __read_swap_cache_async(
+			swp_entry(swp_type(entry), offset),
+			gfp_mask, vma, addr, &page_allocated);
+		if (!page)
 			continue;
-		swap_cluster_read_one(entry, offset, gfp_mask, vma, addr, true);
+		if (page_allocated) {
+			swap_readpage(page, false);
+			if (offset != entry_offset) {
+				SetPageReadahead(page);
+				count_vm_event(SWAP_RA);
+			}
+		}
+		put_page(page);
 	}
-skip_unplug:
 	blk_finish_plug(&plug);
 
 	lru_add_drain();	/* Push any new pages onto the LRU now */
@@ -765,6 +746,7 @@ static struct page *swap_vma_readahead(swp_entry_t fentry, gfp_t gfp_mask,
 	pte_t *pte, pentry;
 	swp_entry_t entry;
 	unsigned int i;
+	bool page_allocated;
 	struct vma_swap_readahead ra_info = {0,};
 
 	swap_ra_info(vmf, &ra_info);
@@ -772,17 +754,9 @@ static struct page *swap_vma_readahead(swp_entry_t fentry, gfp_t gfp_mask,
 		goto skip;
 
 	blk_start_plug(&plug);
-	/* If we read the page without waiting on IO, skip readahead. */
-	page = swap_cluster_read_one(entry, swp_offset(entry), gfp_mask,
-				     vma, vmf->address, false);
-	if (page && PageUptodate(page) && sysctl_skip_zswap_readahead)
-		goto skip_unplug;
-
 	for (i = 0, pte = ra_info.ptes; i < ra_info.nr_pte;
 	     i++, pte++) {
 		pentry = *pte;
-		if (i == ra_info.offset)
-			continue;
 		if (pte_none(pentry))
 			continue;
 		if (pte_present(pentry))
@@ -790,10 +764,19 @@ static struct page *swap_vma_readahead(swp_entry_t fentry, gfp_t gfp_mask,
 		entry = pte_to_swp_entry(pentry);
 		if (unlikely(non_swap_entry(entry)))
 			continue;
-		swap_cluster_read_one(entry, swp_offset(entry),
-				      gfp_mask, vma, vmf->address, true);
+		page = __read_swap_cache_async(entry, gfp_mask, vma,
+					       vmf->address, &page_allocated);
+		if (!page)
+			continue;
+		if (page_allocated) {
+			swap_readpage(page, false);
+			if (i != ra_info.offset) {
+				SetPageReadahead(page);
+				count_vm_event(SWAP_RA);
+			}
+		}
+		put_page(page);
 	}
-skip_unplug:
 	blk_finish_plug(&plug);
 	lru_add_drain();
 skip:
