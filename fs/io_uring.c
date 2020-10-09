@@ -6809,7 +6809,7 @@ static int io_run_task_work_sig(void)
 		spin_unlock_irq(&current->sighand->siglock);
 		return 1;
 	}
-	return -EINTR;
+	return task_sigpending(current) ? -EINTR : -ERESTARTSYS;
 }
 
 /*
@@ -9488,7 +9488,8 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 			ret = wait_for_completion_interruptible(&ctx->ref_comp);
 			if (!ret)
 				break;
-			if (io_run_task_work_sig() <= 0)
+			ret = io_run_task_work_sig();
+			if (ret < 0)
 				break;
 		} while (1);
 
@@ -9496,7 +9497,6 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 
 		if (ret) {
 			percpu_ref_resurrect(&ctx->refs);
-			ret = -EINTR;
 			goto out_quiesce;
 		}
 	}
