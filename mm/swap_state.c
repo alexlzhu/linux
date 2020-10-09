@@ -611,18 +611,11 @@ struct page *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
 		end_offset = si->max - 1;
 
 	blk_start_plug(&plug);
-	/* If we read the page without waiting on IO, skip readahead. */
-	page = swap_cluster_read_one(entry, offset, gfp_mask, vma, addr, false);
-	if (page && PageUptodate(page))
-		goto skip_unplug;
-
-	/* Ok, do the async read-ahead now. */
 	for (offset = start_offset; offset <= end_offset ; offset++) {
-		if (offset == entry_offset)
-			continue;
-		swap_cluster_read_one(entry, offset, gfp_mask, vma, addr, true);
+		/* Ok, do the async read-ahead now */
+		swap_cluster_read_one(entry, offset, gfp_mask, vma, addr,
+				      offset != entry_offset);
 	}
-skip_unplug:
 	blk_finish_plug(&plug);
 
 	lru_add_drain();	/* Push any new pages onto the LRU now */
@@ -771,17 +764,9 @@ static struct page *swap_vma_readahead(swp_entry_t fentry, gfp_t gfp_mask,
 		goto skip;
 
 	blk_start_plug(&plug);
-	/* If we read the page without waiting on IO, skip readahead. */
-	page = swap_cluster_read_one(entry, swp_offset(entry), gfp_mask,
-				     vma, vmf->address, false);
-	if (page && PageUptodate(page))
-		goto skip_unplug;
-
 	for (i = 0, pte = ra_info.ptes; i < ra_info.nr_pte;
 	     i++, pte++) {
 		pentry = *pte;
-		if (i == ra_info.offset)
-			continue;
 		if (pte_none(pentry))
 			continue;
 		if (pte_present(pentry))
@@ -790,9 +775,9 @@ static struct page *swap_vma_readahead(swp_entry_t fentry, gfp_t gfp_mask,
 		if (unlikely(non_swap_entry(entry)))
 			continue;
 		swap_cluster_read_one(entry, swp_offset(entry),
-				      gfp_mask, vma, vmf->address, true);
+				      gfp_mask, vma, vmf->address,
+				      i != ra_info.offset);
 	}
-skip_unplug:
 	blk_finish_plug(&plug);
 	lru_add_drain();
 skip:
