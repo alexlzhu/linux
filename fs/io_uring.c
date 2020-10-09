@@ -7793,7 +7793,6 @@ void __io_uring_free(struct task_struct *tsk)
 	struct io_uring_task *tctx = tsk->io_uring;
 
 	WARN_ON_ONCE(!xa_empty(&tctx->xa));
-	xa_destroy(&tctx->xa);
 	kfree(tctx);
 	tsk->io_uring = NULL;
 }
@@ -9617,8 +9616,8 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 			ret = wait_for_completion_interruptible(&ctx->ref_comp);
 			if (!ret)
 				break;
-			if (io_run_task_work_sig() > 0)
-				continue;
+			if (io_run_task_work_sig() <= 0)
+				break;
 		} while (1);
 
 		mutex_lock(&ctx->uring_lock);
