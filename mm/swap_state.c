@@ -39,7 +39,6 @@ static const struct address_space_operations swap_aops = {
 struct address_space *swapper_spaces[MAX_SWAPFILES] __read_mostly;
 static unsigned int nr_swapper_spaces[MAX_SWAPFILES] __read_mostly;
 static bool enable_vma_readahead __read_mostly = true;
-int sysctl_skip_zswap_readahead __read_mostly = 1;
 
 #define SWAP_RA_WIN_SHIFT	(PAGE_SHIFT / 2)
 #define SWAP_RA_HITS_MASK	((1UL << SWAP_RA_WIN_SHIFT) - 1)
@@ -614,7 +613,7 @@ struct page *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
 	blk_start_plug(&plug);
 	/* If we read the page without waiting on IO, skip readahead. */
 	page = swap_cluster_read_one(entry, offset, gfp_mask, vma, addr, false);
-	if (page && PageUptodate(page) && sysctl_skip_zswap_readahead)
+	if (page && PageUptodate(page))
 		goto skip_unplug;
 
 	/* Ok, do the async read-ahead now. */
@@ -775,7 +774,7 @@ static struct page *swap_vma_readahead(swp_entry_t fentry, gfp_t gfp_mask,
 	/* If we read the page without waiting on IO, skip readahead. */
 	page = swap_cluster_read_one(entry, swp_offset(entry), gfp_mask,
 				     vma, vmf->address, false);
-	if (page && PageUptodate(page) && sysctl_skip_zswap_readahead)
+	if (page && PageUptodate(page))
 		goto skip_unplug;
 
 	for (i = 0, pte = ra_info.ptes; i < ra_info.nr_pte;
