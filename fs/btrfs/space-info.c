@@ -807,6 +807,7 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 						  "reserve metadata bytes failed, possible early enospc");
 					__btrfs_dump_space_info(fs_info, space_info);
 				}
+				trace_btrfs_fail_tickets(fs_info, space_info);
 				if (maybe_fail_all_tickets(fs_info, space_info)) {
 					flush_state = FLUSH_DELAYED_ITEMS_NR;
 					commit_cycles--;
