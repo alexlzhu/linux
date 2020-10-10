@@ -2637,7 +2637,6 @@ static struct file *__io_file_get(struct io_submit_state *state, int fd)
 	if (state->file) {
 		if (state->fd == fd) {
 			state->has_refs--;
-			state->ios_left--;
 			return state->file;
 		}
 		__io_state_file_put(state);
@@ -2647,8 +2646,7 @@ static struct file *__io_file_get(struct io_submit_state *state, int fd)
 		return NULL;
 
 	state->fd = fd;
-	state->ios_left--;
-	state->has_refs = state->ios_left;
+	state->has_refs = state->ios_left - 1;
 	return state->file;
 }
 
@@ -6478,7 +6476,7 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 		       struct io_submit_state *state)
 {
 	unsigned int sqe_flags;
-	int id;
+	int id, ret;
 
 	req->opcode = READ_ONCE(sqe->opcode);
 	req->user_data = READ_ONCE(sqe->user_data);
@@ -6524,7 +6522,9 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	if (!io_op_defs[req->opcode].needs_file)
 		return 0;
 
-	return io_req_set_file(state, req, READ_ONCE(sqe->fd));
+	ret = io_req_set_file(state, req, READ_ONCE(sqe->fd));
+	state->ios_left--;
+	return ret;
 }
 
 static int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
