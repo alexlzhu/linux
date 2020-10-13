@@ -518,15 +518,21 @@ void page_cache_sync_readahead(struct address_space *mapping,
 			       struct file_ra_state *ra, struct file *filp,
 			       pgoff_t offset, unsigned long req_size)
 {
-	/* no read-ahead */
-	if (!ra->ra_pages)
-		return;
+	bool do_forced_ra = filp && (filp->f_mode & FMODE_RANDOM);
 
-	if (blk_cgroup_congested())
-		return;
+	/*
+	 * Even if read-ahead is disabled, start this request as read-ahead.
+	 * This makes regular read-ahead disabled use the same path as normal
+	 * reads, instead of having to punt to ->readpage() manually. We limit
+	 * ourselves to 1 page for this case, to avoid causing problems if
+	 * we're congested or tight on memory.
+	 */
+	if (!ra->ra_pages || blk_cgroup_congested()) {
+		req_size = 1;
+		do_forced_ra = true;
+	}
 
-	/* be dumb */
-	if (filp && (filp->f_mode & FMODE_RANDOM)) {
+	if (do_forced_ra) {
 		force_page_cache_readahead(mapping, filp, offset, req_size);
 		return;
 	}
