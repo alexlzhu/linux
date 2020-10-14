@@ -1647,12 +1647,19 @@ static void io_submit_flush_completions(struct io_comp_state *cs)
 		req = list_first_entry(&cs->list, struct io_kiocb, compl.list);
 		list_del(&req->compl.list);
 		__io_cqring_fill_event(req, req->result, req->compl.cflags);
-		if (!(req->flags & REQ_F_LINK_HEAD)) {
-			io_put_req_deferred(req, 1);
-		} else {
+
+		/*
+		 * io_free_req() doesn't care about completion_lock unless one
+		 * of these flags is set. REQ_F_WORK_INITIALIZED is in the list
+		 * because of a potential deadlock with req->work.fs->lock
+		 */
+		if (req->flags & (REQ_F_FAIL_LINK|REQ_F_LINK_TIMEOUT
+				 |REQ_F_WORK_INITIALIZED)) {
 			spin_unlock_irq(&ctx->completion_lock);
 			io_put_req(req);
 			spin_lock_irq(&ctx->completion_lock);
+		} else {
+			io_put_req(req);
 		}
 	}
 	io_commit_cqring(ctx);
