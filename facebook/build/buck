@@ -34,9 +34,37 @@ if [ ! -f "$root/.buckversion" ]; then
   if [ -f "$root/fbsource/fbcode/.buckversion" ]; then
       cp "$root/fbsource/fbcode/.buckversion" "$root/.buckversion"
   else
-      echo "latest" > "$root/.buckversion"
+      echo "9bc92ecdb4f0f99ab6682ec080aeb87ed32f44aa" > "$root/.buckversion"
   fi
 fi
+
+if [ ! -f "$root/.buck-java8" ]; then
+  # use buck-java8 from checked-out fbcode if it exists (fbsource will always
+  # be symlinked here on Sandcastle because fbcode is a secondary repo for
+  # linux-kernel-git
+  if [ -f "$root/fbsource/fbcode/.buck-java8" ]; then
+      cp "$root/fbsource/fbcode/.buck-java8" "$root/.buck-java8"
+  else
+    # write dotslash file
+cat << EOF > "$root/.buck-java8"
+#!/usr/bin/env dotslash
+{
+  "name": "buck",
+  "oncall": "oncall+build_infra@xmail.facebook.com",
+  "platforms": {
+    "linux": {
+      "scheme": "manifold",
+      "bucket": "buck_cli",
+      "path": "tree/buckv1-cli/9bc92ecdb4f0f99ab6682ec080aeb87ed32f44aa/java8:linux",
+      "api_key": "buck_cli-key",
+      "etag": "6921895456100428454"
+    }
+  }
+}
+EOF
+  fi
+fi
+
 
 subcmd="$1"
 shift
