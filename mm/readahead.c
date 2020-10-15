@@ -527,7 +527,9 @@ void page_cache_sync_readahead(struct address_space *mapping,
 	 * ourselves to 1 page for this case, to avoid causing problems if
 	 * we're congested or tight on memory.
 	 */
-	if (filp && (!ra->ra_pages || blk_cgroup_congested())) {
+	if (!ra->ra_pages || blk_cgroup_congested()) {
+		if (!filp)
+			return;
 		req_size = 1;
 		do_forced_ra = true;
 	}
