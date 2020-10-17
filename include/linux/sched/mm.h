@@ -309,7 +309,7 @@ static inline void memalloc_nocma_restore(unsigned int flags)
 
 #ifdef CONFIG_MEMCG
 /**
- * memalloc_use_memcg - Starts the remote memcg charging scope.
+ * set_active_memcg - Starts the remote memcg charging scope.
  * @memcg: memcg to charge.
  *
  * This function marks the beginning of the remote memcg charging scope. All the
@@ -317,10 +317,10 @@ static inline void memalloc_nocma_restore(unsigned int flags)
  * given memcg.
  *
  * NOTE: This function can nest. Users must save the return value and
- * reset the previous value after their own charging scope is over
+ * reset the previous value after their own charging scope is over.
  */
 static inline struct mem_cgroup *
-memalloc_use_memcg(struct mem_cgroup *memcg)
+set_active_memcg(struct mem_cgroup *memcg)
 {
 	struct mem_cgroup *old = current->active_memcg;
 	current->active_memcg = memcg;
