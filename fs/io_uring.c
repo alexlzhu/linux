@@ -1979,7 +1979,7 @@ static void __io_fail_links(struct io_kiocb *req)
 		 * but avoid REQ_F_WORK_INITIALIZED because it may deadlock on
 		 * work.fs->lock.
 		 */
-		if (link->flags | REQ_F_WORK_INITIALIZED)
+		if (link->flags & REQ_F_WORK_INITIALIZED)
 			io_put_req_deferred(link, 2);
 		else
 			io_double_put_req(link);
