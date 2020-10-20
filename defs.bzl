@@ -182,12 +182,23 @@ def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = Tr
     kmods = [m for m in kmods if flavor in m.flavors or not m.flavors]
     if build_modules and kmods:
         cmd_str_list = []
+
         for mod in kmods:
+            deps = []
+            d = 0
+            for dep in mod.depends:
+                d += 1
+                tpl = (
+                    "$(location :{}-module_{})".format(name, dep),
+                    "/tmp/dependency-{}-{}".format(d, dep)
+                )
+                deps.append(tpl)
             module(
                 name = "{}-module_{}".format(name, mod.name),
                 module = mod,
                 kernel_devel = "$(location :{}-devel.rpm)".format(name),
                 uname = uname,
+                dependencies = deps,
             )
             cmd_str_list.append("$(location :{}-module_{})/*.rpm".format(name, mod.name))
 
