@@ -796,7 +796,7 @@ static const struct io_op_def io_op_defs[] = {
 		.unbound_nonreg_file	= 1,
 		.pollin			= 1,
 		.async_size		= sizeof(struct io_async_rw),
-		.work_flags		= IO_WQ_WORK_BLKCG,
+		.work_flags		= IO_WQ_WORK_BLKCG | IO_WQ_WORK_MM,
 	},
 	[IORING_OP_WRITE_FIXED] = {
 		.needs_file		= 1,
@@ -804,7 +804,8 @@ static const struct io_op_def io_op_defs[] = {
 		.unbound_nonreg_file	= 1,
 		.pollout		= 1,
 		.async_size		= sizeof(struct io_async_rw),
-		.work_flags		= IO_WQ_WORK_BLKCG | IO_WQ_WORK_FSIZE,
+		.work_flags		= IO_WQ_WORK_BLKCG | IO_WQ_WORK_FSIZE |
+						IO_WQ_WORK_MM,
 	},
 	[IORING_OP_POLL_ADD] = {
 		.needs_file		= 1,
@@ -3174,9 +3175,10 @@ static inline loff_t *io_kiocb_ppos(struct kiocb *kiocb)
  * For files that don't have ->read_iter() and ->write_iter(), handle them
  * by looping over ->read() or ->write() manually.
  */
-static ssize_t loop_rw_iter(int rw, struct file *file, struct kiocb *kiocb,
-			   struct iov_iter *iter)
+static ssize_t loop_rw_iter(int rw, struct io_kiocb *req, struct iov_iter *iter)
 {
+	struct kiocb *kiocb = &req->rw.kiocb;
+	struct file *file = req->file;
 	ssize_t ret = 0;
 
 	/*
@@ -3196,11 +3198,8 @@ static ssize_t loop_rw_iter(int rw, struct file *file, struct kiocb *kiocb,
 		if (!iov_iter_is_bvec(iter)) {
 			iovec = iov_iter_iovec(iter);
 		} else {
-			/* fixed buffers import bvec */
-			iovec.iov_base = kmap(iter->bvec->bv_page)
-						+ iter->iov_offset;
-			iovec.iov_len = min(iter->count,
-					iter->bvec->bv_len - iter->iov_offset);
+			iovec.iov_base = u64_to_user_ptr(req->rw.addr);
+			iovec.iov_len = req->rw.len;
 		}
 
 		if (rw == READ) {
@@ -3211,9 +3210,6 @@ static ssize_t loop_rw_iter(int rw, struct file *file, struct kiocb *kiocb,
 					       iovec.iov_len, io_kiocb_ppos(kiocb));
 		}
 
-		if (iov_iter_is_bvec(iter))
-			kunmap(iter->bvec->bv_page);
-
 		if (nr < 0) {
 			if (!ret)
 				ret = nr;
@@ -3222,6 +3218,8 @@ static ssize_t loop_rw_iter(int rw, struct file *file, struct kiocb *kiocb,
 		ret += nr;
 		if (nr != iovec.iov_len)
 			break;
+		req->rw.len -= nr;
+		req->rw.addr += nr;
 		iov_iter_advance(iter, nr);
 	}
 
@@ -3410,7 +3408,7 @@ static int io_iter_do_read(struct io_kiocb *req, struct iov_iter *iter)
 	if (req->file->f_op->read_iter)
 		return call_read_iter(req->file, &req->rw.kiocb, iter);
 	else if (req->file->f_op->read)
-		return loop_rw_iter(READ, req->file, &req->rw.kiocb, iter);
+		return loop_rw_iter(READ, req, iter);
 	else
 		return -EINVAL;
 }
@@ -3601,7 +3599,7 @@ static int io_write(struct io_kiocb *req, bool force_nonblock,
 	if (req->file->f_op->write_iter)
 		ret2 = call_write_iter(req->file, kiocb, iter);
 	else if (req->file->f_op->write)
-		ret2 = loop_rw_iter(WRITE, req->file, kiocb, iter);
+		ret2 = loop_rw_iter(WRITE, req, iter);
 	else
 		ret2 = -EINVAL;
 
