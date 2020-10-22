@@ -189,7 +189,7 @@ def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = Tr
             for dep in mod.depends:
                 d += 1
                 tpl = (
-                    "$(location :{}-module_{})".format(name, dep),
+                    "$(location :{}-module_{}-rpmbuild)".format(name, dep),
                     "/tmp/dependency-{}-{}".format(d, dep)
                 )
                 deps.append(tpl)
