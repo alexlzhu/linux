@@ -6499,6 +6499,16 @@ struct extent_map *btrfs_get_extent(struct btrfs_inode *inode,
 	 */
 	path->leave_spinning = 1;
 
+	/*
+	 * The same explanation in load_free_space_cache applies here as well,
+	 * we only read when we're loading the free space cache, and at that
+	 * point the commit_root has everything we need.
+	 */
+	if (btrfs_is_free_space_inode(inode)) {
+		path->search_commit_root = 1;
+		path->skip_locking = 1;
+	}
+
 	ret = btrfs_lookup_file_extent(NULL, root, path, objectid, start, 0);
 	if (ret < 0) {
 		err = ret;
