@@ -2016,7 +2016,7 @@ static struct io_kiocb *io_req_find_next(struct io_kiocb *req)
 	return __io_req_find_next(req);
 }
 
-static int io_req_task_work_add(struct io_kiocb *req, bool twa_signal_ok)
+static int io_req_task_work_add(struct io_kiocb *req)
 {
 	struct task_struct *tsk = req->task;
 	struct io_ring_ctx *ctx = req->ctx;
@@ -2025,14 +2025,8 @@ static int io_req_task_work_add(struct io_kiocb *req, bool twa_signal_ok)
 	if (tsk->flags & PF_EXITING)
 		return -ESRCH;
 
-	/*
-	 * SQPOLL kernel thread doesn't need notification, just a wakeup. For
-	 * all other cases, use TWA_SIGNAL unconditionally to ensure we're
-	 * processing task_work. There's no reliable way to tell if TWA_RESUME
-	 * will do the job.
-	 */
 	notify = 0;
-	if (!(ctx->flags & IORING_SETUP_SQPOLL) && twa_signal_ok)
+	if (!(ctx->flags & IORING_SETUP_SQPOLL))
 		notify = TWA_SIGNAL;
 
 	ret = task_work_add(tsk, &req->task_work, notify);
@@ -2095,7 +2089,7 @@ static void io_req_task_queue(struct io_kiocb *req)
 	init_task_work(&req->task_work, io_req_task_submit);
 	percpu_ref_get(&req->ctx->refs);
 
-	ret = io_req_task_work_add(req, true);
+	ret = io_req_task_work_add(req);
 	if (unlikely(ret)) {
 		struct task_struct *tsk;
 
@@ -2217,7 +2211,7 @@ static void io_free_req_deferred(struct io_kiocb *req)
 	int ret;
 
 	init_task_work(&req->task_work, io_put_req_deferred_cb);
-	ret = io_req_task_work_add(req, true);
+	ret = io_req_task_work_add(req);
 	if (unlikely(ret)) {
 		struct task_struct *tsk;
 
@@ -3331,7 +3325,7 @@ static int io_async_buf_func(struct wait_queue_entry *wait, unsigned mode,
 
 	/* submit ref gets dropped, acquire a new one */
 	refcount_inc(&req->refs);
-	ret = io_req_task_work_add(req, true);
+	ret = io_req_task_work_add(req);
 	if (unlikely(ret)) {
 		struct task_struct *tsk;
 
@@ -4906,7 +4900,6 @@ struct io_poll_table {
 static int __io_async_wake(struct io_kiocb *req, struct io_poll_iocb *poll,
 			   __poll_t mask, task_work_func_t func)
 {
-	bool twa_signal_ok;
 	int ret;
 
 	/* for instances that support it check for an event match first: */
@@ -4922,20 +4915,12 @@ static int __io_async_wake(struct io_kiocb *req, struct io_poll_iocb *poll,
 	percpu_ref_get(&req->ctx->refs);
 
 	/*
-	 * If we using the signalfd wait_queue_head for this wakeup, then
-	 * it's not safe to use TWA_SIGNAL as we could be recursing on the
-	 * tsk->sighand->siglock on doing the wakeup. Should not be needed
-	 * either, as the normal wakeup will suffice.
-	 */
-	twa_signal_ok = (poll->head != &req->task->sighand->signalfd_wqh);
-
-	/*
 	 * If this fails, then the task is exiting. When a task exits, the
 	 * work gets canceled, so just cancel this request as well instead
 	 * of executing it. We can't safely execute it anyway, as we may not
 	 * have the needed state needed for it anyway.
 	 */
-	ret = io_req_task_work_add(req, twa_signal_ok);
+	ret = io_req_task_work_add(req);
 	if (unlikely(ret)) {
 		struct task_struct *tsk;
 
@@ -6921,7 +6906,7 @@ static int io_run_task_work_sig(void)
 		spin_unlock_irq(&current->sighand->siglock);
 		return 1;
 	}
-	return -EINTR;
+	return task_sigpending(current) ? -EINTR : -ERESTARTSYS;
 }
 
 /*
@@ -9606,7 +9591,8 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 			ret = wait_for_completion_interruptible(&ctx->ref_comp);
 			if (!ret)
 				break;
-			if (io_run_task_work_sig() <= 0)
+			ret = io_run_task_work_sig();
+			if (ret < 0)
 				break;
 		} while (1);
 
@@ -9614,7 +9600,6 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 
 		if (ret) {
 			percpu_ref_resurrect(&ctx->refs);
-			ret = -EINTR;
 			goto out_quiesce;
 		}
 	}
