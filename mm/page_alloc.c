@@ -315,20 +315,41 @@ compound_page_dtor * const compound_page_dtors[] = {
 
 int min_free_kbytes = 1024;
 int user_min_free_kbytes = -1;
-#ifdef CONFIG_DISCONTIGMEM
 /*
- * DiscontigMem defines memory ranges as separate pg_data_t even if the ranges
- * are not on separate NUMA nodes. Functionally this works but with
- * watermark_boost_factor, it can reclaim prematurely as the ranges can be
- * quite small. By default, do not boost watermarks on discontigmem as in
- * many cases very high-order allocations like THP are likely to be
- * unsupported and the premature reclaim offsets the advantage of long-term
- * fragmentation avoidance.
+ * FB:
+ *
+ * Watermark boosting increases reclaim pressure on zones where we
+ * observe undesirable allocation placement, such as unmovable
+ * allocations landing in movable page blocks. The goal is to stem a
+ * trend of long-term fragmentation that is hard or impossible to fix.
+ *
+ * However, this mechanism has caused several problems in our
+ * production environment:
+ *
+ * 1. It can tie up kswapd in zones with poor reclaim efficiency. This
+ *    burns CPU and causes a sharp increase in direct reclaim rates,
+ *    as the allocating threads now have to pick up the slack. This is
+ *    bad for allocation latencies. This may be fixable with a
+ *    priority scheme that has kswapd always serve user allocations
+ *    first, and relegate fragmentation fights to idle periods.
+ *
+ * 2. It can cause premature reclaim and memory pressure on NUMA
+ *    nodes. Usually, kswapd is woken up when all nodes are full. But
+ *    with watermark boosting, we can wake kswapd on one node while
+ *    there is still plenty of memory available in others. This ends
+ *    up trashing the workingset on the full node and causes refaults
+ *    and pressure. Our NUMA distances are short enough that falling
+ *    back to other nodes earlier would be preferable than trying to
+ *    fight local fragmentation.
+ *
+ * Overall, the trade-off does not seem worth it to us. We may revisit
+ * this if we observe problems with long-term fragmentation - look out
+ * for higher-order allocation success rates (THP fallbacks etc.) with
+ * uptime. Although for THP we'll probably want stricter guarantees to
+ * protect movable blocks than the allocator's best effort grouping
+ * anyway (things like CMA).
  */
 int watermark_boost_factor __read_mostly;
-#else
-int watermark_boost_factor __read_mostly = 15000;
-#endif
 int watermark_scale_factor = 10;
 
 static unsigned long nr_kernel_pages __initdata;
