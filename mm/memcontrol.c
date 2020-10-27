@@ -1517,6 +1517,12 @@ static char *memory_stat_format(struct mem_cgroup *memcg)
 	seq_buf_printf(&s, "anon_thp %llu\n",
 		       (u64)memcg_page_state(memcg, NR_ANON_THPS) *
 		       HPAGE_PMD_SIZE);
+	seq_buf_printf(&s, "file_thp %llu\n",
+		       (u64)memcg_page_state(memcg, NR_FILE_THPS) *
+		       HPAGE_PMD_SIZE);
+	seq_buf_printf(&s, "shmem_thp %llu\n",
+		       (u64)memcg_page_state(memcg, NR_SHMEM_THPS) *
+		       HPAGE_PMD_SIZE);
 #endif
 
 	for (i = 0; i < NR_LRU_LISTS; i++)
