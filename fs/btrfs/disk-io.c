@@ -931,6 +931,14 @@ static int btree_migratepage(struct address_space *mapping,
 			enum migrate_mode mode)
 {
 	/*
+	 * Don't allow to move btree pages into a cma area, because
+	 * we can't reliable move them out (e.g. is the page will
+	 * become dirty). It results in the failures of 1 GB hugepages
+	 * allocations.
+	 */
+	if (is_migrate_cma(get_pageblock_migratetype(newpage)))
+		return -EAGAIN;
+	/*
 	 * we can't safely write a btree page from here,
 	 * we haven't done the locking hook
 	 */
