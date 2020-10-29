@@ -150,7 +150,27 @@ void inet_sock_destruct(struct sock *sk)
 		return;
 	}
 
-	WARN_ON(atomic_read(&sk->sk_rmem_alloc));
+	/* XXX jlemon - debugging */
+	if (atomic_read(&sk->sk_rmem_alloc)) {
+		pr_err("rmem_alloc:%d type:%d state:%d flags:%x shut:%x "
+		       "full:%d acct:%d tcp:%d\n",
+			atomic_read(&sk->sk_rmem_alloc),
+			sk->sk_type, sk->sk_state, sk->sk_flags,
+			sk->sk_shutdown, sk_fullsock(sk), sk_has_account(sk),
+			sk->sk_protocol == IPPROTO_TCP);
+		if (sk->sk_type == SOCK_STREAM && sk_fullsock(sk) &&
+		    sk->sk_protocol == IPPROTO_TCP) {
+			struct tcp_sock *tp = tcp_sk(sk);
+
+			if (!RB_EMPTY_ROOT(&tp->out_of_order_queue)) {
+				pr_err("TCP sk has OOO skb\n");
+			}
+		}
+	}
+
+	if (WARN_ON(atomic_read(&sk->sk_rmem_alloc)))
+		print_hex_dump(KERN_INFO, "sock:", DUMP_PREFIX_OFFSET,
+			       16, 4, sk, sizeof(*sk), false);
 	WARN_ON(refcount_read(&sk->sk_wmem_alloc));
 	WARN_ON(sk->sk_wmem_queued);
 	WARN_ON(sk->sk_forward_alloc);
