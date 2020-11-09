@@ -1216,10 +1216,26 @@ struct bnxt_link_info {
 	u16			force_pam4_link_speed;
 	u32			preemphasis;
 	u8			module_status;
+	u8			active_fec_sig_mode;
 	u16			fec_cfg;
+#define BNXT_FEC_NONE		PORT_PHY_QCFG_RESP_FEC_CFG_FEC_NONE_SUPPORTED
+#define BNXT_FEC_AUTONEG_CAP	PORT_PHY_QCFG_RESP_FEC_CFG_FEC_AUTONEG_SUPPORTED
 #define BNXT_FEC_AUTONEG	PORT_PHY_QCFG_RESP_FEC_CFG_FEC_AUTONEG_ENABLED
+#define BNXT_FEC_ENC_BASE_R_CAP	\
+	PORT_PHY_QCFG_RESP_FEC_CFG_FEC_CLAUSE74_SUPPORTED
 #define BNXT_FEC_ENC_BASE_R	PORT_PHY_QCFG_RESP_FEC_CFG_FEC_CLAUSE74_ENABLED
-#define BNXT_FEC_ENC_RS		PORT_PHY_QCFG_RESP_FEC_CFG_FEC_CLAUSE91_ENABLED
+#define BNXT_FEC_ENC_RS_CAP	\
+	PORT_PHY_QCFG_RESP_FEC_CFG_FEC_CLAUSE91_SUPPORTED
+#define BNXT_FEC_ENC_LLRS_CAP	\
+	(PORT_PHY_QCFG_RESP_FEC_CFG_FEC_RS272_1XN_SUPPORTED |	\
+	 PORT_PHY_QCFG_RESP_FEC_CFG_FEC_RS272_IEEE_SUPPORTED)
+#define BNXT_FEC_ENC_RS		\
+	(PORT_PHY_QCFG_RESP_FEC_CFG_FEC_CLAUSE91_ENABLED |	\
+	 PORT_PHY_QCFG_RESP_FEC_CFG_FEC_RS544_1XN_ENABLED |	\
+	 PORT_PHY_QCFG_RESP_FEC_CFG_FEC_RS544_IEEE_ENABLED)
+#define BNXT_FEC_ENC_LLRS	\
+	(PORT_PHY_QCFG_RESP_FEC_CFG_FEC_RS272_1XN_ENABLED |	\
+	 PORT_PHY_QCFG_RESP_FEC_CFG_FEC_RS272_IEEE_ENABLED)
 
 	/* copy of requested setting from ethtool cmd */
 	u8			autoneg;
@@ -1243,6 +1259,49 @@ struct bnxt_link_info {
 	 */
 	struct hwrm_port_phy_qcfg_output phy_qcfg_resp;
 };
+
+#define BNXT_FEC_RS544_ON					\
+	 (PORT_PHY_CFG_REQ_FLAGS_FEC_RS544_1XN_ENABLE |		\
+	  PORT_PHY_CFG_REQ_FLAGS_FEC_RS544_IEEE_ENABLE)
+
+#define BNXT_FEC_RS544_OFF					\
+	 (PORT_PHY_CFG_REQ_FLAGS_FEC_RS544_1XN_DISABLE |	\
+	  PORT_PHY_CFG_REQ_FLAGS_FEC_RS544_IEEE_DISABLE)
+
+#define BNXT_FEC_RS272_ON					\
+	 (PORT_PHY_CFG_REQ_FLAGS_FEC_RS272_1XN_ENABLE |		\
+	  PORT_PHY_CFG_REQ_FLAGS_FEC_RS272_IEEE_ENABLE)
+
+#define BNXT_FEC_RS272_OFF					\
+	 (PORT_PHY_CFG_REQ_FLAGS_FEC_RS272_1XN_DISABLE |	\
+	  PORT_PHY_CFG_REQ_FLAGS_FEC_RS272_IEEE_DISABLE)
+
+#define BNXT_PAM4_SUPPORTED(link_info)				\
+	((link_info)->support_pam4_speeds)
+
+#define BNXT_FEC_RS_ON(link_info)				\
+	(PORT_PHY_CFG_REQ_FLAGS_FEC_CLAUSE91_ENABLE |		\
+	 PORT_PHY_CFG_REQ_FLAGS_FEC_CLAUSE74_DISABLE |		\
+	 (BNXT_PAM4_SUPPORTED(link_info) ?			\
+	  (BNXT_FEC_RS544_ON | BNXT_FEC_RS272_OFF) : 0))
+
+#define BNXT_FEC_LLRS_ON					\
+	(PORT_PHY_CFG_REQ_FLAGS_FEC_CLAUSE91_ENABLE |		\
+	 PORT_PHY_CFG_REQ_FLAGS_FEC_CLAUSE74_DISABLE |		\
+	 BNXT_FEC_RS272_ON | BNXT_FEC_RS544_OFF)
+
+#define BNXT_FEC_RS_OFF(link_info)				\
+	(PORT_PHY_CFG_REQ_FLAGS_FEC_CLAUSE91_DISABLE |		\
+	 (BNXT_PAM4_SUPPORTED(link_info) ?			\
+	  (BNXT_FEC_RS544_OFF | BNXT_FEC_RS272_OFF) : 0))
+
+#define BNXT_FEC_BASE_R_ON(link_info)				\
+	(PORT_PHY_CFG_REQ_FLAGS_FEC_CLAUSE74_ENABLE |		\
+	 BNXT_FEC_RS_OFF(link_info))
+
+#define BNXT_FEC_ALL_OFF(link_info)				\
+	(PORT_PHY_CFG_REQ_FLAGS_FEC_CLAUSE74_DISABLE |		\
+	 BNXT_FEC_RS_OFF(link_info))
 
 #define BNXT_MAX_QUEUE	8
 
@@ -2126,6 +2185,7 @@ int bnxt_get_avail_msix(struct bnxt *bp, int num);
 int bnxt_reserve_rings(struct bnxt *bp, bool irq_re_init);
 void bnxt_tx_disable(struct bnxt *bp);
 void bnxt_tx_enable(struct bnxt *bp);
+int bnxt_update_link(struct bnxt *bp, bool chng_link_state);
 int bnxt_hwrm_set_pause(struct bnxt *);
 int bnxt_hwrm_set_link_setting(struct bnxt *, bool, bool);
 int bnxt_hwrm_alloc_wol_fltr(struct bnxt *bp);

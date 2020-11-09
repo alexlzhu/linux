@@ -8872,6 +8872,30 @@ void bnxt_tx_enable(struct bnxt *bp)
 		netif_carrier_on(bp->dev);
 }
 
+static char *bnxt_report_fec(struct bnxt_link_info *link_info)
+{
+	u8 active_fec = link_info->active_fec_sig_mode &
+			PORT_PHY_QCFG_RESP_ACTIVE_FEC_MASK;
+
+	switch (active_fec) {
+	default:
+	case PORT_PHY_QCFG_RESP_ACTIVE_FEC_FEC_NONE_ACTIVE:
+		return "None";
+	case PORT_PHY_QCFG_RESP_ACTIVE_FEC_FEC_CLAUSE74_ACTIVE:
+		return "Clause 74 BaseR";
+	case PORT_PHY_QCFG_RESP_ACTIVE_FEC_FEC_CLAUSE91_ACTIVE:
+		return "Clause 91 RS(528,514)";
+	case PORT_PHY_QCFG_RESP_ACTIVE_FEC_FEC_RS544_1XN_ACTIVE:
+		return "Clause 91 RS544_1XN";
+	case PORT_PHY_QCFG_RESP_ACTIVE_FEC_FEC_RS544_IEEE_ACTIVE:
+		return "Clause 91 RS(544,514)";
+	case PORT_PHY_QCFG_RESP_ACTIVE_FEC_FEC_RS272_1XN_ACTIVE:
+		return "Clause 91 RS272_1XN";
+	case PORT_PHY_QCFG_RESP_ACTIVE_FEC_FEC_RS272_IEEE_ACTIVE:
+		return "Clause 91 RS(272,257)";
+	}
+}
+
 static void bnxt_report_link(struct bnxt *bp)
 {
 	if (bp->link_info.link_up) {
@@ -8906,10 +8930,9 @@ static void bnxt_report_link(struct bnxt *bp)
 							 "not active");
 		fec = bp->link_info.fec_cfg;
 		if (!(fec & PORT_PHY_QCFG_RESP_FEC_CFG_FEC_NONE_SUPPORTED))
-			netdev_info(bp->dev, "FEC autoneg %s encodings: %s\n",
+			netdev_info(bp->dev, "FEC autoneg %s encoding: %s\n",
 				    (fec & BNXT_FEC_AUTONEG) ? "on" : "off",
-				    (fec & BNXT_FEC_ENC_BASE_R) ? "BaseR" :
-				     (fec & BNXT_FEC_ENC_RS) ? "RS" : "None");
+				    bnxt_report_fec(&bp->link_info));
 	} else {
 		netif_carrier_off(bp->dev);
 		netdev_err(bp->dev, "NIC Link is Down\n");
@@ -9006,7 +9029,7 @@ static bool bnxt_support_dropped(u16 advertising, u16 supported)
 	return ((supported | diff) != supported);
 }
 
-static int bnxt_update_link(struct bnxt *bp, bool chng_link_state)
+int bnxt_update_link(struct bnxt *bp, bool chng_link_state)
 {
 	int rc = 0;
 	struct bnxt_link_info *link_info = &bp->link_info;
@@ -9099,9 +9122,10 @@ static int bnxt_update_link(struct bnxt *bp, bool chng_link_state)
 	}
 
 	link_info->fec_cfg = PORT_PHY_QCFG_RESP_FEC_CFG_FEC_NONE_SUPPORTED;
-	if (bp->hwrm_spec_code >= 0x10504)
+	if (bp->hwrm_spec_code >= 0x10504) {
 		link_info->fec_cfg = le16_to_cpu(resp->fec_cfg);
-
+		link_info->active_fec_sig_mode = resp->active_fec_signal_mode;
+	}
 	/* TODO: need to add more logic to report VF link */
 	if (chng_link_state) {
 		if (link_info->phy_link_status == BNXT_LINK_LINK)
