@@ -1431,6 +1431,16 @@ retry:
 						private, page, pass > 2, mode,
 						reason);
 
+			if (unlikely(rc && reason == MR_CONTIG_RANGE)) {
+				static int count = 0;
+
+				if (count < 30) {
+					pr_warn("unmap_and_move() failed with err %d\n", rc);
+					dump_page(page, "page migration failed");
+					count++;
+				}
+			}
+
 			switch(rc) {
 			case -ENOMEM:
 				/*
