@@ -8555,7 +8555,21 @@ static bool io_timeout_remove_link(struct io_ring_ctx *ctx,
 
 static bool io_cancel_link_cb(struct io_wq_work *work, void *data)
 {
-	return io_match_link(container_of(work, struct io_kiocb, work), data);
+	struct io_kiocb *req = container_of(work, struct io_kiocb, work);
+	bool ret;
+
+	if (req->flags & REQ_F_LINK_TIMEOUT) {
+		unsigned long flags;
+		struct io_ring_ctx *ctx = req->ctx;
+
+		/* protect against races with linked timeouts */
+		spin_lock_irqsave(&ctx->completion_lock, flags);
+		ret = io_match_link(req, data);
+		spin_unlock_irqrestore(&ctx->completion_lock, flags);
+	} else {
+		ret = io_match_link(req, data);
+	}
+	return ret;
 }
 
 static void io_attempt_cancel(struct io_ring_ctx *ctx, struct io_kiocb *req)
@@ -8581,6 +8595,7 @@ static void io_attempt_cancel(struct io_ring_ctx *ctx, struct io_kiocb *req)
 }
 
 static void io_cancel_defer_files(struct io_ring_ctx *ctx,
+				  struct task_struct *task,
 				  struct files_struct *files)
 {
 	struct io_defer_entry *de = NULL;
@@ -8588,7 +8603,8 @@ static void io_cancel_defer_files(struct io_ring_ctx *ctx,
 
 	spin_lock_irq(&ctx->completion_lock);
 	list_for_each_entry_reverse(de, &ctx->defer_list, list) {
-		if (io_match_files(de->req, files)) {
+		if (io_task_match(de->req, task) &&
+		    io_match_files(de->req, files)) {
 			list_cut_position(&list, &ctx->defer_list, &de->list);
 			break;
 		}
@@ -8614,7 +8630,6 @@ static bool io_uring_cancel_files(struct io_ring_ctx *ctx,
 	if (list_empty_careful(&ctx->inflight_list))
 		return false;
 
-	io_cancel_defer_files(ctx, files);
 	/* cancel all at once, should be faster than doing it one by one*/
 	io_wq_cancel_cb(ctx->io_wq, io_wq_files_match, files, true);
 
@@ -8705,6 +8720,11 @@ static void io_uring_cancel_task_requests(struct io_ring_ctx *ctx,
 		atomic_inc(&task->io_uring->in_idle);
 		io_sq_thread_park(ctx->sq_data);
 	}
+
+	if (files)
+		io_cancel_defer_files(ctx, NULL, files);
+	else
+		io_cancel_defer_files(ctx, task, NULL);
 
 	io_cqring_overflow_flush(ctx, true, task, files);
 
@@ -9053,7 +9073,8 @@ out_fput:
 #ifdef CONFIG_PROC_FS
 static int io_uring_show_cred(int id, void *p, void *data)
 {
-	const struct cred *cred = p;
+	struct io_identity *iod = p;
+	const struct cred *cred = iod->creds;
 	struct seq_file *m = data;
 	struct user_namespace *uns = seq_user_ns(m);
 	struct group_info *gi;
@@ -9290,6 +9311,7 @@ static int io_uring_create(unsigned entries, struct io_uring_params *p,
 		 * to a power-of-two, if it isn't already. We do NOT impose
 		 * any cq vs sq ring sizing.
 		 */
+		p->cq_entries = roundup_pow_of_two(p->cq_entries);
 		if (p->cq_entries < p->sq_entries)
 			return -EINVAL;
 		if (p->cq_entries > IORING_MAX_CQ_ENTRIES) {
@@ -9297,7 +9319,6 @@ static int io_uring_create(unsigned entries, struct io_uring_params *p,
 				return -EINVAL;
 			p->cq_entries = IORING_MAX_CQ_ENTRIES;
 		}
-		p->cq_entries = roundup_pow_of_two(p->cq_entries);
 	} else {
 		p->cq_entries = 2 * p->sq_entries;
 	}
