@@ -506,6 +506,11 @@ struct pid *find_ge_pid(int nr, struct pid_namespace *ns)
 	return idr_get_next(&ns->idr, &nr);
 }
 
+struct pid *find_ge_pid_upd(int *nr, struct pid_namespace *ns)
+{
+	return idr_get_next(&ns->idr, nr);
+}
+
 /**
  * pidfd_create() - Create a new pid file descriptor.
  *
