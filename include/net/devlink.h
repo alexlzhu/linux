@@ -18,6 +18,7 @@
 #include <net/net_namespace.h>
 #include <uapi/linux/devlink.h>
 #include <linux/xarray.h>
+#include <linux/firmware.h>
 
 struct devlink_ops;
 
@@ -516,15 +517,15 @@ enum devlink_param_generic_id {
 
 /**
  * struct devlink_flash_update_params - Flash Update parameters
- * @file_name: the name of the flash firmware file to update from
+ * @fw: pointer to the firmware data to update from
  * @component: the flash component to update
  *
- * With the exception of file_name, drivers must opt-in to parameters by
+ * With the exception of fw, drivers must opt-in to parameters by
  * setting the appropriate bit in the supported_flash_update_params field in
  * their devlink_ops structure.
  */
 struct devlink_flash_update_params {
-	const char *file_name;
+	const struct firmware *fw;
 	const char *component;
 	u32 overwrite_mask;
 };
