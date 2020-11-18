@@ -1258,7 +1258,7 @@ struct btrfs_root *btrfs_create_tree(struct btrfs_trans_handle *trans,
 	if (IS_ERR(leaf)) {
 		ret = PTR_ERR(leaf);
 		leaf = NULL;
-		goto fail;
+		goto fail_unlock;
 	}
 
 	root->node = leaf;
@@ -1281,6 +1281,8 @@ struct btrfs_root *btrfs_create_tree(struct btrfs_trans_handle *trans,
 	memcpy(root->root_item.uuid, uuid.b, BTRFS_UUID_SIZE);
 	root->root_item.drop_level = 0;
 
+	btrfs_tree_unlock(leaf);
+
 	key.objectid = objectid;
 	key.type = BTRFS_ROOT_ITEM_KEY;
 	key.offset = 0;
@@ -1288,18 +1290,17 @@ struct btrfs_root *btrfs_create_tree(struct btrfs_trans_handle *trans,
 	if (ret)
 		goto fail;
 
-	btrfs_tree_unlock(leaf);
-
 	return root;
 
+fail_unlock:
+	if (leaf)
+		btrfs_tree_unlock(leaf);
 fail:
 	if (leaf) {
-		btrfs_tree_unlock(leaf);
 		free_extent_buffer(root->commit_root);
 		free_extent_buffer(leaf);
 	}
 	kfree(root);
-
 	return ERR_PTR(ret);
 }
 
