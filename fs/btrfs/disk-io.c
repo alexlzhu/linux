@@ -2625,6 +2625,16 @@ static int __cold init_tree_roots(struct btrfs_fs_info *fs_info)
 }
 
 /*
+ * Some options only have meaning at mount time and shouldn't persist across
+ * remounts, or be displayed. Clear these at the end of mount and remount
+ * code paths.
+ */
+void btrfs_clear_oneshot_options(struct btrfs_fs_info *fs_info)
+{
+	btrfs_clear_opt(fs_info->mount_opt, USEBACKUPROOT);
+}
+
+/*
  * Mounting logic specific to read-write file systems. Shared by open_ctree
  * and btrfs_remount when remounting from read-only to read-write.
  */
@@ -3266,7 +3276,7 @@ int __cold open_ctree(struct super_block *sb,
 	}
 
 	if (sb_rdonly(sb))
-		return 0;
+		goto clear_oneshot;
 
 	if (btrfs_test_opt(fs_info, CLEAR_CACHE) &&
 	    btrfs_fs_compat_ro(fs_info, FREE_SPACE_TREE)) {
@@ -3309,12 +3319,8 @@ int __cold open_ctree(struct super_block *sb,
 	}
 	set_bit(BTRFS_FS_OPEN, &fs_info->flags);
 
-	/*
-	 * backuproot only affect mount behavior, and if open_ctree succeeded,
-	 * no need to keep the flag
-	 */
-	btrfs_clear_opt(fs_info->mount_opt, USEBACKUPROOT);
-
+clear_oneshot:
+	btrfs_clear_oneshot_options(fs_info);
 	return 0;
 
 fail_qgroup:
