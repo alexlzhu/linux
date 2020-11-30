@@ -3398,14 +3398,14 @@ static struct tgid_iter next_tgid(struct pid_namespace *ns, struct tgid_iter ite
 retry:
 	iter.task = NULL;
 	if (iter.tgid < nr)
-		printk_ratelimited(KERN_ERR "JL: going backwards %d -> %d\n",
+		printk_ratelimited(KERN_ERR, "JL: going backwards %d -> %d\n",
 			nr, iter.tgid);
 	nr = iter.tgid;
 	pid = find_ge_pid_upd(&nr, ns);
 	if (pid) {
 		iter.tgid = pid_nr_ns(pid, ns);
 		if (iter.tgid != nr)
-			printk_ratelimited(KERN_ERR "JL: nr %d != tgid %d\n",
+			printk_ratelimited(KERN_ERR, "JL: nr %d != tgid %d\n",
 			    nr, iter.tgid);
 		iter.task = pid_task(pid, PIDTYPE_PID);
 		/* What we to know is if the pid we have find is the

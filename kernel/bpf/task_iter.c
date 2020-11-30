@@ -35,14 +35,14 @@ static struct task_struct *task_seq_get_next(struct pid_namespace *ns,
 retry:
 	count++;
 	if (*tid < nr)
-		printk_ratelimited(KERN_ERR "JL2: going backwards %d -> %d\n",
+		printk_ratelimited(KERN_ERR, "JL2: going backwards %d -> %d\n",
 				   nr, *tid);
 	nr = *tid;
 	pid = find_ge_pid_upd(&nr, ns);
 	if (pid) {
 		*tid = pid_nr_ns(pid, ns);
                 if (*tid != nr)
-			printk_ratelimited(KERN_ERR "JL2: nr %d != tid %d\n",
+			printk_ratelimited(KERN_ERR, "JL2: nr %d != tid %d\n",
 					   nr, *tid);
 		task = get_pid_task(pid, PIDTYPE_PID);
 		if (!task) {
@@ -58,7 +58,7 @@ retry:
 	}
 	rcu_read_unlock();
 	if (count > 20)
-		printk_ratelimited(KERN_ERR "JL2: excessive retry %d\n",
+		printk_ratelimited(KERN_ERR, "JL2: excessive retry %d\n",
 				   count);
 
 	return task;
