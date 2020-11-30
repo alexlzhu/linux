@@ -21,29 +21,18 @@ struct bpf_iter_seq_task_info {
 	u32 tid;
 };
 
-extern struct pid *find_ge_pid_upd(int *nr, struct pid_namespace *ns);
 static struct task_struct *task_seq_get_next(struct pid_namespace *ns,
 					     u32 *tid,
 					     bool skip_if_dup_files)
 {
 	struct task_struct *task = NULL;
 	struct pid *pid;
-	int nr = *tid;
-	int count = 0;
 
 	rcu_read_lock();
 retry:
-	count++;
-	if (*tid < nr)
-		printk_ratelimited(KERN_ERR, "JL2: going backwards %d -> %d\n",
-				   nr, *tid);
-	nr = *tid;
-	pid = find_ge_pid_upd(&nr, ns);
+	pid = find_ge_pid(*tid, ns);
 	if (pid) {
 		*tid = pid_nr_ns(pid, ns);
-                if (*tid != nr)
-			printk_ratelimited(KERN_ERR, "JL2: nr %d != tid %d\n",
-					   nr, *tid);
 		task = get_pid_task(pid, PIDTYPE_PID);
 		if (!task) {
 			++*tid;
@@ -57,9 +46,6 @@ retry:
 		}
 	}
 	rcu_read_unlock();
-	if (count > 20)
-		printk_ratelimited(KERN_ERR, "JL2: excessive retry %d\n",
-				   count);
 
 	return task;
 }

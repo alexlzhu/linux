@@ -3386,27 +3386,18 @@ struct tgid_iter {
 	unsigned int tgid;
 	struct task_struct *task;
 };
-extern struct pid *find_ge_pid_upd(int *nr, struct pid_namespace *ns);
 static struct tgid_iter next_tgid(struct pid_namespace *ns, struct tgid_iter iter)
 {
 	struct pid *pid;
-	int nr = iter.tgid;
 
 	if (iter.task)
 		put_task_struct(iter.task);
 	rcu_read_lock();
 retry:
 	iter.task = NULL;
-	if (iter.tgid < nr)
-		printk_ratelimited(KERN_ERR, "JL: going backwards %d -> %d\n",
-			nr, iter.tgid);
-	nr = iter.tgid;
-	pid = find_ge_pid_upd(&nr, ns);
+	pid = find_ge_pid(iter.tgid, ns);
 	if (pid) {
 		iter.tgid = pid_nr_ns(pid, ns);
-		if (iter.tgid != nr)
-			printk_ratelimited(KERN_ERR, "JL: nr %d != tgid %d\n",
-			    nr, iter.tgid);
 		iter.task = pid_task(pid, PIDTYPE_PID);
 		/* What we to know is if the pid we have find is the
 		 * pid of a thread_group_leader.  Testing for task
