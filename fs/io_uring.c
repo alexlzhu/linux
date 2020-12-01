@@ -6812,6 +6812,7 @@ static int io_sq_thread(void *data)
 	struct cgroup_subsys_state *cur_css = NULL;
 	struct files_struct *old_files = current->files;
 	struct nsproxy *old_nsproxy = current->nsproxy;
+	struct pid *old_thread_pid = current->thread_pid;
 	const struct cred *old_cred = NULL;
 	struct io_sq_data *sqd = data;
 	struct io_ring_ctx *ctx;
@@ -6820,6 +6821,7 @@ static int io_sq_thread(void *data)
 	task_lock(current);
 	current->files = NULL;
 	current->nsproxy = NULL;
+	current->thread_pid = NULL;
 	task_unlock(current);
 
 	start_jiffies = jiffies;
@@ -6882,6 +6884,7 @@ static int io_sq_thread(void *data)
 	task_lock(current);
 	current->files = old_files;
 	current->nsproxy = old_nsproxy;
+	current->thread_pid = old_thread_pid;
 	task_unlock(current);
 
 	kthread_parkme();
