@@ -1223,9 +1223,10 @@ out_map_in_map:
 
 static void test_map_large(void)
 {
+
 	struct bigkey {
 		int a;
-		char b[116];
+		char b[4096];
 		long long c;
 	} key;
 	int fd, i, value;
@@ -1273,6 +1274,8 @@ static void __run_parallel(unsigned int tasks,
 {
 	pid_t pid[tasks];
 	int i;
+
+	fflush(stdout);
 
 	for (i = 0; i < tasks; i++) {
 		pid[i] = fork();

@@ -21,6 +21,7 @@
 	.fixup_map_hash_48b = { 4 },
 	.result = ACCEPT,
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
+	.flags = F_NEEDS_EFFICIENT_UNALIGNED_ACCESS,
 },
 {
 	"regalloc negative",
@@ -71,6 +72,7 @@
 	.fixup_map_hash_48b = { 4 },
 	.result = ACCEPT,
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
+	.flags = F_NEEDS_EFFICIENT_UNALIGNED_ACCESS,
 },
 {
 	"regalloc src_reg negative",
@@ -97,6 +99,7 @@
 	.result = REJECT,
 	.errstr = "invalid access to map value, value_size=48 off=44 size=8",
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
+	.flags = F_NEEDS_EFFICIENT_UNALIGNED_ACCESS,
 },
 {
 	"regalloc and spill",
@@ -126,6 +129,7 @@
 	.fixup_map_hash_48b = { 4 },
 	.result = ACCEPT,
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
+	.flags = F_NEEDS_EFFICIENT_UNALIGNED_ACCESS,
 },
 {
 	"regalloc and spill negative",
@@ -156,6 +160,7 @@
 	.result = REJECT,
 	.errstr = "invalid access to map value, value_size=48 off=48 size=8",
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
+	.flags = F_NEEDS_EFFICIENT_UNALIGNED_ACCESS,
 },
 {
 	"regalloc three regs",
@@ -182,6 +187,7 @@
 	.fixup_map_hash_48b = { 4 },
 	.result = ACCEPT,
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
+	.flags = F_NEEDS_EFFICIENT_UNALIGNED_ACCESS,
 },
 {
 	"regalloc after call",
@@ -210,6 +216,7 @@
 	.fixup_map_hash_48b = { 4 },
 	.result = ACCEPT,
 	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
+	.flags = F_NEEDS_EFFICIENT_UNALIGNED_ACCESS,
 },
 {
 	"regalloc in callee",
@@ -235,6 +242,33 @@
 	BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_3, 0),
 	BPF_EXIT_INSN(),
 	BPF_MOV64_IMM(BPF_REG_0, 0),
+	BPF_EXIT_INSN(),
+	},
+	.fixup_map_hash_48b = { 4 },
+	.result = ACCEPT,
+	.prog_type = BPF_PROG_TYPE_TRACEPOINT,
+	.flags = F_NEEDS_EFFICIENT_UNALIGNED_ACCESS,
+},
+{
+	"regalloc, spill, JEQ",
+	.insns = {
+	BPF_MOV64_REG(BPF_REG_6, BPF_REG_1),
+	BPF_ST_MEM(BPF_DW, BPF_REG_10, -8, 0),
+	BPF_MOV64_REG(BPF_REG_2, BPF_REG_10),
+	BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, -8),
+	BPF_LD_MAP_FD(BPF_REG_1, 0),
+	BPF_EMIT_CALL(BPF_FUNC_map_lookup_elem),
+	BPF_STX_MEM(BPF_DW, BPF_REG_10, BPF_REG_0, -8), /* spill r0 */
+	BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 0),
+	/* The verifier will walk the rest twice with r0 == 0 and r0 == map_value */
+	BPF_EMIT_CALL(BPF_FUNC_get_prandom_u32),
+	BPF_MOV64_REG(BPF_REG_2, BPF_REG_0),
+	BPF_JMP_IMM(BPF_JEQ, BPF_REG_2, 20, 0),
+	/* The verifier will walk the rest two more times with r0 == 20 and r0 == unknown */
+	BPF_LDX_MEM(BPF_DW, BPF_REG_3, BPF_REG_10, -8), /* fill r3 with map_value */
+	BPF_JMP_IMM(BPF_JEQ, BPF_REG_3, 0, 1), /* skip ldx if map_value == NULL */
+	/* Buggy verifier will think that r3 == 20 here */
+	BPF_LDX_MEM(BPF_DW, BPF_REG_0, BPF_REG_3, 0), /* read from map_value */
 	BPF_EXIT_INSN(),
 	},
 	.fixup_map_hash_48b = { 4 },

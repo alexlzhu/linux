@@ -560,8 +560,6 @@ bpf_object__init_prog(struct bpf_object *obj, struct bpf_program *prog,
 		      const char *name, size_t sec_idx, const char *sec_name,
 		      size_t sec_off, void *insn_data, size_t insn_data_sz)
 {
-	int i;
-
 	if (insn_data_sz == 0 || insn_data_sz % BPF_INSN_SZ || sec_off % BPF_INSN_SZ) {
 		pr_warn("sec '%s': corrupted program '%s', offset %zu, size %zu\n",
 			sec_name, name, sec_off, insn_data_sz);
@@ -599,13 +597,6 @@ bpf_object__init_prog(struct bpf_object *obj, struct bpf_program *prog,
 	if (!prog->insns)
 		goto errout;
 	memcpy(prog->insns, insn_data, insn_data_sz);
-
-	for (i = 0; i < prog->insns_cnt; i++) {
-		if (insn_is_subprog_call(&prog->insns[i])) {
-			obj->has_subcalls = true;
-			break;
-		}
-	}
 
 	return 0;
 errout:
@@ -3280,7 +3271,19 @@ bpf_object__find_program_by_title(const struct bpf_object *obj,
 static bool prog_is_subprog(const struct bpf_object *obj,
 			    const struct bpf_program *prog)
 {
-	return prog->sec_idx == obj->efile.text_shndx && obj->has_subcalls;
+	/* For legacy reasons, libbpf supports an entry-point BPF programs
+	 * without SEC() attribute, i.e., those in the .text section. But if
+	 * there are 2 or more such programs in the .text section, they all
+	 * must be subprograms called from entry-point BPF programs in
+	 * designated SEC()'tions, otherwise there is no way to distinguish
+	 * which of those programs should be loaded vs which are a subprogram.
+	 * Similarly, if there is a function/program in .text and at least one
+	 * other BPF program with custom SEC() attribute, then we just assume
+	 * .text programs are subprograms (even if they are not called from
+	 * other programs), because libbpf never explicitly supported mixing
+	 * SEC()-designated BPF programs and .text entry-point BPF programs.
+	 */
+	return prog->sec_idx == obj->efile.text_shndx && obj->nr_programs > 1;
 }
 
 struct bpf_program *
@@ -6418,8 +6421,8 @@ static int bpf_object__collect_map_relos(struct bpf_object *obj,
 	int i, j, nrels, new_sz;
 	const struct btf_var_secinfo *vi = NULL;
 	const struct btf_type *sec, *var, *def;
+	struct bpf_map *map = NULL, *targ_map;
 	const struct btf_member *member;
-	struct bpf_map *map, *targ_map;
 	const char *name, *mname;
 	Elf_Data *symbols;
 	unsigned int moff;
@@ -8302,7 +8305,7 @@ static const struct bpf_sec_def section_defs[] = {
 						BPF_XDP_DEVMAP),
 	BPF_EAPROG_SEC("xdp_cpumap/",		BPF_PROG_TYPE_XDP,
 						BPF_XDP_CPUMAP),
-	BPF_EAPROG_SEC("xdp",			BPF_PROG_TYPE_XDP,
+	BPF_APROG_SEC("xdp",			BPF_PROG_TYPE_XDP,
 						BPF_XDP),
 	BPF_PROG_SEC("perf_event",		BPF_PROG_TYPE_PERF_EVENT),
 	BPF_PROG_SEC("lwt_in",			BPF_PROG_TYPE_LWT_IN),
