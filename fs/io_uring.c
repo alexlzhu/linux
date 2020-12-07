@@ -1390,7 +1390,7 @@ static bool io_identity_cow(struct io_kiocb *req)
 	 */
 	io_init_identity(id);
 	if (creds)
-		req->work.identity->creds = creds;
+		id->creds = creds;
 
 	/* add one for this request */
 	refcount_inc(&id->count);
@@ -2295,7 +2295,7 @@ static unsigned io_cqring_events(struct io_ring_ctx *ctx, bool noflush)
 		 * we wake up the task, and the next invocation will flush the
 		 * entries. We cannot safely to it from here.
 		 */
-		if (noflush && !list_empty(&ctx->cq_overflow_list))
+		if (noflush)
 			return -1U;
 
 		io_cqring_overflow_flush(ctx, false, NULL, NULL);
@@ -4033,11 +4033,17 @@ static int io_remove_buffers(struct io_kiocb *req, bool force_nonblock,
 	head = idr_find(&ctx->io_buffer_idr, p->bgid);
 	if (head)
 		ret = __io_remove_buffers(ctx, head, p->bgid, p->nbufs);
-
-	io_ring_submit_lock(ctx, !force_nonblock);
 	if (ret < 0)
 		req_set_fail_links(req);
-	__io_req_complete(req, ret, 0, cs);
+
+	/* need to hold the lock to complete IOPOLL requests */
+	if (ctx->flags & IORING_SETUP_IOPOLL) {
+		__io_req_complete(req, ret, 0, cs);
+		io_ring_submit_unlock(ctx, !force_nonblock);
+	} else {
+		io_ring_submit_unlock(ctx, !force_nonblock);
+		__io_req_complete(req, ret, 0, cs);
+	}
 	return 0;
 }
 
@@ -4122,10 +4128,17 @@ static int io_provide_buffers(struct io_kiocb *req, bool force_nonblock,
 		}
 	}
 out:
-	io_ring_submit_unlock(ctx, !force_nonblock);
 	if (ret < 0)
 		req_set_fail_links(req);
-	__io_req_complete(req, ret, 0, cs);
+
+	/* need to hold the lock to complete IOPOLL requests */
+	if (ctx->flags & IORING_SETUP_IOPOLL) {
+		__io_req_complete(req, ret, 0, cs);
+		io_ring_submit_unlock(ctx, !force_nonblock);
+	} else {
+		io_ring_submit_unlock(ctx, !force_nonblock);
+		__io_req_complete(req, ret, 0, cs);
+	}
 	return 0;
 }
 
@@ -6196,8 +6209,19 @@ static struct io_wq_work *io_wq_submit_work(struct io_wq_work *work)
 	}
 
 	if (ret) {
-		req_set_fail_links(req);
-		io_req_complete(req, ret);
+		/*
+		 * io_iopoll_complete() does not hold completion_lock to complete
+		 * polled io, so here for polled io, just mark it done and still let
+		 * io_iopoll_complete() complete it.
+		 */
+		if (req->ctx->flags & IORING_SETUP_IOPOLL) {
+			struct kiocb *kiocb = &req->rw.kiocb;
+
+			kiocb_done(kiocb, ret, NULL);
+		} else {
+			req_set_fail_links(req);
+			io_req_complete(req, ret);
+		}
 	}
 
 	return io_steal_work(req);
@@ -8488,8 +8512,6 @@ static void io_ring_exit_work(struct work_struct *work)
 	 * as nobody else will be looking for them.
 	 */
 	do {
-		if (ctx->rings)
-			io_cqring_overflow_flush(ctx, true, NULL, NULL);
 		io_iopoll_try_reap_events(ctx);
 	} while (!wait_for_completion_timeout(&ctx->ref_comp, HZ/20));
 	io_ring_ctx_free(ctx);
@@ -8499,6 +8521,8 @@ static void io_ring_ctx_wait_and_kill(struct io_ring_ctx *ctx)
 {
 	mutex_lock(&ctx->uring_lock);
 	percpu_ref_kill(&ctx->refs);
+	if (ctx->rings)
+		io_cqring_overflow_flush(ctx, true, NULL, NULL);
 	mutex_unlock(&ctx->uring_lock);
 
 	io_kill_timeouts(ctx, NULL, NULL);
@@ -8508,8 +8532,6 @@ static void io_ring_ctx_wait_and_kill(struct io_ring_ctx *ctx)
 		io_wq_cancel_all(ctx->io_wq);
 
 	/* if we failed setting up the ctx, we might not have any rings */
-	if (ctx->rings)
-		io_cqring_overflow_flush(ctx, true, NULL, NULL);
 	io_iopoll_try_reap_events(ctx);
 	idr_for_each(&ctx->personality_idr, io_remove_personalities, ctx);
 
@@ -8674,7 +8696,9 @@ static void io_uring_cancel_task_requests(struct io_ring_ctx *ctx,
 	}
 
 	io_cancel_defer_files(ctx, task, files);
+	io_ring_submit_lock(ctx, (ctx->flags & IORING_SETUP_IOPOLL));
 	io_cqring_overflow_flush(ctx, true, task, files);
+	io_ring_submit_unlock(ctx, (ctx->flags & IORING_SETUP_IOPOLL));
 
 	if (!files)
 		__io_uring_cancel_task_requests(ctx, task);
@@ -9006,8 +9030,10 @@ SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
 	 */
 	ret = 0;
 	if (ctx->flags & IORING_SETUP_SQPOLL) {
+		io_ring_submit_lock(ctx, (ctx->flags & IORING_SETUP_IOPOLL));
 		if (!list_empty_careful(&ctx->cq_overflow_list))
 			io_cqring_overflow_flush(ctx, false, NULL, NULL);
+		io_ring_submit_unlock(ctx, (ctx->flags & IORING_SETUP_IOPOLL));
 		if (flags & IORING_ENTER_SQ_WAKEUP)
 			wake_up(&ctx->sq_data->wait);
 		if (flags & IORING_ENTER_SQ_WAIT)
