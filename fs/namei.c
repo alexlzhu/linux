@@ -1702,7 +1702,7 @@ static int lookup_fast(struct nameidata *nd,
 		}
 		if (unlazy_child(nd, dentry, seq))
 			return -ECHILD;
-		if (unlikely(status == -ECHILD))
+		if (status == -ECHILD)
 			/* we'd been told to redo it in non-rcu mode */
 			status = d_revalidate(dentry, nd->flags);
 	} else {
