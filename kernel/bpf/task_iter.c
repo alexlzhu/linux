@@ -37,11 +37,19 @@ retry:
 		if (!task) {
 			++*tid;
 			goto retry;
-		} else if (skip_if_dup_files && !thread_group_leader(task) &&
-			   task->files == task->group_leader->files) {
-			task = NULL;
-			++*tid;
-			goto retry;
+		} else if (skip_if_dup_files) {
+			bool not_group_leader1 = task->tgid != task->pid;
+			bool not_group_leader2 = !thread_group_leader(task);
+			if (not_group_leader1 != not_group_leader2)
+				printk("%s %s %d: %d %d\n", __FILE__, __func__, __LINE__,
+				       not_group_leader1, not_group_leader2);
+
+			if (!thread_group_leader(task) &&
+			    task->files == task->group_leader->files) {
+				task = NULL;
+				++*tid;
+				goto retry;
+			}
 		}
 		get_task_struct(task);
 	}
@@ -164,7 +172,7 @@ again:
 		curr_files = get_files_struct(curr_task);
 		if (!curr_files) {
 			put_task_struct(curr_task);
-			curr_tid = curr_tid + 1;
+			curr_tid = ++(info->tid);
 			info->fd = 0;
 			goto again;
 		}
