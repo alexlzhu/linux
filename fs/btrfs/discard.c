@@ -379,6 +379,10 @@ static void __btrfs_discard_schedule_work(struct btrfs_discard_ctl *discard_ctl,
 
 		mod_delayed_work(discard_ctl->discard_workers,
 				 &discard_ctl->work, nsecs_to_jiffies(delay));
+	} else {
+		/* no bgs left, fix up stats if got broken */
+		atomic_set(&discard_ctl->discardable_extents, 0);
+		atomic64_set(&discard_ctl->discardable_bytes, 0);
 	}
 }
 
