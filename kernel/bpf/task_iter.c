@@ -156,23 +156,24 @@ task_file_seq_get_next(struct bpf_iter_seq_task_file_info *info)
 	 * it held a reference to the task/files_struct/file.
 	 * Otherwise, it does not hold any reference.
 	 */
-again:
 	if (info->task) {
 		curr_task = info->task;
 		curr_files = info->files;
 		curr_fd = info->fd;
 	} else {
+again:
 		curr_task = task_seq_get_next(ns, &curr_tid, true);
 		if (!curr_task) {
 			info->task = NULL;
 			info->files = NULL;
+			info->tid = curr_tid + 1;
 			return NULL;
 		}
 
 		curr_files = get_files_struct(curr_task);
 		if (!curr_files) {
 			put_task_struct(curr_task);
-			curr_tid = ++(info->tid);
+			curr_tid = curr_tid + 1;
 			info->fd = 0;
 			goto again;
 		}
