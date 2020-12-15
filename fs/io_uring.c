@@ -3673,6 +3673,8 @@ static int io_shutdown(struct io_kiocb *req, bool force_nonblock)
 		return ret;
 
 	ret = __sys_shutdown_sock(sock, req->shutdown.how);
+	if (ret < 0)
+		req_set_fail_links(req);
 	io_req_complete(req, ret);
 	return 0;
 #else
