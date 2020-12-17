@@ -8034,10 +8034,13 @@ static void io_unaccount_mem(struct io_ring_ctx *ctx, unsigned long nr_pages,
 		__io_unaccount_mem(ctx->user, nr_pages);
 
 	if (ctx->mm_account) {
-		if (acct == ACCT_LOCKED)
+		if (acct == ACCT_LOCKED) {
+			down_write(&ctx->mm_account->mmap_sem);
 			ctx->mm_account->locked_vm -= nr_pages;
-		else if (acct == ACCT_PINNED)
+			up_write(&ctx->mm_account->mmap_sem);
+		}else if (acct == ACCT_PINNED) {
 			atomic64_sub(nr_pages, &ctx->mm_account->pinned_vm);
+		}
 	}
 }
 
@@ -8053,10 +8056,13 @@ static int io_account_mem(struct io_ring_ctx *ctx, unsigned long nr_pages,
 	}
 
 	if (ctx->mm_account) {
-		if (acct == ACCT_LOCKED)
+		if (acct == ACCT_LOCKED) {
+			down_write(&ctx->mm_account->mmap_sem);
 			ctx->mm_account->locked_vm += nr_pages;
-		else if (acct == ACCT_PINNED)
+			up_write(&ctx->mm_account->mmap_sem);
+		} else if (acct == ACCT_PINNED) {
 			atomic64_add(nr_pages, &ctx->mm_account->pinned_vm);
+		}
 	}
 
 	return 0;
