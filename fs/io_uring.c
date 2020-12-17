@@ -1667,6 +1667,11 @@ static inline bool io_should_trigger_evfd(struct io_ring_ctx *ctx)
 	return io_wq_current_is_worker();
 }
 
+static inline unsigned __io_cqring_events(struct io_ring_ctx *ctx)
+{
+	return ctx->cached_cq_tail - READ_ONCE(ctx->rings->cq.head);
+}
+
 static void io_cqring_ev_posted(struct io_ring_ctx *ctx)
 {
 	if (waitqueue_active(&ctx->wait))
@@ -1675,15 +1680,6 @@ static void io_cqring_ev_posted(struct io_ring_ctx *ctx)
 		wake_up(&ctx->sq_data->wait);
 	if (io_should_trigger_evfd(ctx))
 		eventfd_signal(ctx->cq_ev_fd, 1);
-}
-
-static void io_cqring_mark_overflow(struct io_ring_ctx *ctx)
-{
-	if (list_empty(&ctx->cq_overflow_list)) {
-		clear_bit(0, &ctx->sq_check_overflow);
-		clear_bit(0, &ctx->cq_check_overflow);
-		ctx->rings->sq_flags &= ~IORING_SQ_CQ_OVERFLOW;
-	}
 }
 
 /* Returns true if there are no backlogged entries after the flush */
@@ -1695,23 +1691,13 @@ static bool io_cqring_overflow_flush(struct io_ring_ctx *ctx, bool force,
 	struct io_kiocb *req, *tmp;
 	struct io_uring_cqe *cqe;
 	unsigned long flags;
+	bool all_flushed;
 	LIST_HEAD(list);
 
-	if (!force) {
-		if (list_empty_careful(&ctx->cq_overflow_list))
-			return true;
-		if ((ctx->cached_cq_tail - READ_ONCE(rings->cq.head) ==
-		    rings->cq_ring_entries))
-			return false;
-	}
+	if (!force && __io_cqring_events(ctx) == rings->cq_ring_entries)
+		return false;
 
 	spin_lock_irqsave(&ctx->completion_lock, flags);
-
-	/* if force is set, the ring is going away. always drop after that */
-	if (force)
-		ctx->cq_overflow_flushed = 1;
-
-	cqe = NULL;
 	list_for_each_entry_safe(req, tmp, &ctx->cq_overflow_list, compl.list) {
 		if (!io_match_task(req, tsk, files))
 			continue;
@@ -1732,9 +1718,14 @@ static bool io_cqring_overflow_flush(struct io_ring_ctx *ctx, bool force,
 		}
 	}
 
-	io_commit_cqring(ctx);
-	io_cqring_mark_overflow(ctx);
+	all_flushed = list_empty(&ctx->cq_overflow_list);
+	if (all_flushed) {
+		clear_bit(0, &ctx->sq_check_overflow);
+		clear_bit(0, &ctx->cq_check_overflow);
+		ctx->rings->sq_flags &= ~IORING_SQ_CQ_OVERFLOW;
+	}
 
+	io_commit_cqring(ctx);
 	spin_unlock_irqrestore(&ctx->completion_lock, flags);
 	io_cqring_ev_posted(ctx);
 
@@ -1744,7 +1735,7 @@ static bool io_cqring_overflow_flush(struct io_ring_ctx *ctx, bool force,
 		io_put_req(req);
 	}
 
-	return cqe != NULL;
+	return all_flushed;
 }
 
 static void __io_cqring_fill_event(struct io_kiocb *req, long res, long cflags)
@@ -2287,8 +2278,6 @@ static void io_double_put_req(struct io_kiocb *req)
 
 static unsigned io_cqring_events(struct io_ring_ctx *ctx, bool noflush)
 {
-	struct io_rings *rings = ctx->rings;
-
 	if (test_bit(0, &ctx->cq_check_overflow)) {
 		/*
 		 * noflush == true is from the waitqueue handler, just ensure
@@ -2303,7 +2292,7 @@ static unsigned io_cqring_events(struct io_ring_ctx *ctx, bool noflush)
 
 	/* See comment at the top of this file */
 	smp_rmb();
-	return ctx->cached_cq_tail - READ_ONCE(rings->cq.head);
+	return __io_cqring_events(ctx);
 }
 
 static inline unsigned int io_sqring_entries(struct io_ring_ctx *ctx)
@@ -3668,6 +3657,8 @@ static int io_shutdown(struct io_kiocb *req, bool force_nonblock)
 		return ret;
 
 	ret = __sys_shutdown_sock(sock, req->shutdown.how);
+	if (ret < 0)
+		req_set_fail_links(req);
 	io_req_complete(req, ret);
 	return 0;
 #else
@@ -6679,8 +6670,7 @@ static int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 
 	/* if we have a backlog and couldn't flush it all, return BUSY */
 	if (test_bit(0, &ctx->sq_check_overflow)) {
-		if (!list_empty(&ctx->cq_overflow_list) &&
-		    !io_cqring_overflow_flush(ctx, false, NULL, NULL))
+		if (!io_cqring_overflow_flush(ctx, false, NULL, NULL))
 			return -EBUSY;
 	}
 
@@ -8018,10 +8008,13 @@ static void io_unaccount_mem(struct io_ring_ctx *ctx, unsigned long nr_pages,
 		__io_unaccount_mem(ctx->user, nr_pages);
 
 	if (ctx->mm_account) {
-		if (acct == ACCT_LOCKED)
+		if (acct == ACCT_LOCKED) {
+			down_write(&ctx->mm_account->mmap_sem);
 			ctx->mm_account->locked_vm -= nr_pages;
-		else if (acct == ACCT_PINNED)
+			up_write(&ctx->mm_account->mmap_sem);
+		}else if (acct == ACCT_PINNED) {
 			atomic64_sub(nr_pages, &ctx->mm_account->pinned_vm);
+		}
 	}
 }
 
@@ -8037,10 +8030,13 @@ static int io_account_mem(struct io_ring_ctx *ctx, unsigned long nr_pages,
 	}
 
 	if (ctx->mm_account) {
-		if (acct == ACCT_LOCKED)
+		if (acct == ACCT_LOCKED) {
+			down_write(&ctx->mm_account->mmap_sem);
 			ctx->mm_account->locked_vm += nr_pages;
-		else if (acct == ACCT_PINNED)
+			up_write(&ctx->mm_account->mmap_sem);
+		} else if (acct == ACCT_PINNED) {
 			atomic64_add(nr_pages, &ctx->mm_account->pinned_vm);
+		}
 	}
 
 	return 0;
@@ -8510,6 +8506,8 @@ static void io_ring_ctx_wait_and_kill(struct io_ring_ctx *ctx)
 {
 	mutex_lock(&ctx->uring_lock);
 	percpu_ref_kill(&ctx->refs);
+	/* if force is set, the ring is going away. always drop after that */
+	ctx->cq_overflow_flushed = 1;
 	if (ctx->rings)
 		io_cqring_overflow_flush(ctx, true, NULL, NULL);
 	mutex_unlock(&ctx->uring_lock);
@@ -9019,10 +9017,13 @@ SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
 	 */
 	ret = 0;
 	if (ctx->flags & IORING_SETUP_SQPOLL) {
-		io_ring_submit_lock(ctx, (ctx->flags & IORING_SETUP_IOPOLL));
-		if (!list_empty_careful(&ctx->cq_overflow_list))
+		if (!list_empty_careful(&ctx->cq_overflow_list)) {
+			bool needs_lock = ctx->flags & IORING_SETUP_IOPOLL;
+
+			io_ring_submit_lock(ctx, needs_lock);
 			io_cqring_overflow_flush(ctx, false, NULL, NULL);
-		io_ring_submit_unlock(ctx, (ctx->flags & IORING_SETUP_IOPOLL));
+			io_ring_submit_unlock(ctx, needs_lock);
+		}
 		if (flags & IORING_ENTER_SQ_WAKEUP)
 			wake_up(&ctx->sq_data->wait);
 		if (flags & IORING_ENTER_SQ_WAIT)
