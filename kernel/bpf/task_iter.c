@@ -158,6 +158,7 @@ again:
 		if (!curr_task) {
 			info->task = NULL;
 			info->files = NULL;
+			info->tid = curr_tid;
 			return NULL;
 		}
 
