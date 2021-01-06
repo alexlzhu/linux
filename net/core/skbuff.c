@@ -1240,7 +1240,8 @@ release:
 	sock_put(sk);
 }
 
-void sock_zerocopy_callback(struct ubuf_info *uarg, bool success)
+void sock_zerocopy_callback(struct sk_buff *skb, struct ubuf_info *uarg,
+			    bool success)
 {
 	uarg->zerocopy = uarg->zerocopy & success;
 
