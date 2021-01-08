@@ -840,10 +840,44 @@ static int blkcg_print_stat(struct seq_file *sf, void *v)
 	return 0;
 }
 
+static s64 blkcg_inhibit_delay_read_s64(struct cgroup_subsys_state *css,
+					struct cftype *cft)
+{
+	struct blkcg *blkcg = css_to_blkcg(css);
+	return blkcg->inhibit_delay;
+}
+
+static int blkcg_inhibit_delay_write_s64(struct cgroup_subsys_state *css,
+					 struct cftype *cft, s64 val)
+{
+	struct blkcg *blkcg = css_to_blkcg(css);
+
+	if (val == blkcg->inhibit_delay)
+		return 0;
+	if (val < -1 || val > 1)
+		return -EINVAL;
+	if (val != 0) {
+		struct blkcg *parent;
+		for (parent = blkcg_parent(blkcg); parent;
+		     parent = blkcg_parent(parent)) {
+			if (parent->inhibit_delay < 0)
+				return -EPERM;
+		}
+	}
+	blkcg->inhibit_delay = val;
+	return 0;
+}
+
 static struct cftype blkcg_files[] = {
 	{
 		.name = "stat",
 		.seq_show = blkcg_print_stat,
+	},
+	{
+		.name = "fb_inhibit_delay",
+		.read_s64 = blkcg_inhibit_delay_read_s64,
+		.write_s64 = blkcg_inhibit_delay_write_s64,
+		.flags = CFTYPE_NOT_ON_ROOT,
 	},
 	{ }	/* terminate */
 };
@@ -1586,6 +1620,11 @@ static void blkcg_scale_delay(struct blkcg_gq *blkg, u64 now)
 	}
 }
 
+// for kprobe tracing
+noinline void blkg_delay_inhibited(struct blkcg_gq *blkg, u64 delay_nsec)
+{
+}
+
 /*
  * This is called when we want to actually walk up the hierarchy and check to
  * see if we need to throttle, and then actually throttle if there is some
@@ -1600,6 +1639,7 @@ static void blkcg_maybe_throttle_blkg(struct blkcg_gq *blkg, bool use_memdelay)
 	u64 exp;
 	u64 delay_nsec = 0;
 	int tok;
+	bool inhibit = false;
 
 	while (blkg->parent) {
 		int use_delay = atomic_read(&blkg->use_delay);
@@ -1614,11 +1654,15 @@ static void blkcg_maybe_throttle_blkg(struct blkcg_gq *blkg, bool use_memdelay)
 				clamp = use_delay > 0;
 			}
 		}
+		inhibit |= blkg->blkcg->inhibit_delay > 0;
 		blkg = blkg->parent;
 	}
 
-	if (!delay_nsec)
+	if (!delay_nsec || inhibit) {
+		if (delay_nsec)
+			blkg_delay_inhibited(blkg, delay_nsec);
 		return;
+	}
 
 	/*
 	 * Let's not sleep for all eternity if we've amassed a huge delay.
