@@ -60,6 +60,7 @@ struct blkcg {
 #ifdef CONFIG_CGROUP_WRITEBACK
 	struct list_head		cgwb_list;
 #endif
+	int				inhibit_delay;
 };
 
 struct blkg_iostat {
