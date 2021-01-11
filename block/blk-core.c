@@ -1418,6 +1418,18 @@ unsigned long part_start_io_acct(struct gendisk *disk, struct hd_struct **part,
 				 struct bio *bio)
 {
 	*part = disk_map_sector_rcu(disk, bio->bi_iter.bi_sector);
+	if (!hd_struct_try_get(*part)) {
+		/*
+		 * The partition is already being removed,
+		 * the request will be accounted on the disk only
+		 *
+		 * We take a reference on disk->part0 although that
+		 * partition will never be deleted, so we can treat
+		 * it as any other partition.
+		 */
+		*part = &disk->part0;
+		hd_struct_get(*part);
+	}
 
 	return __part_start_io_acct(*part, bio_sectors(bio), bio_op(bio));
 }
