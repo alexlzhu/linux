@@ -1,5 +1,4 @@
 {
- "php_interpreter": "/usr/bin/php",
  "project_id" : "linux-kernel",
  "conduit_uri" : "https://phabricator.fb.com/api/",
  "remote_hooks_installed" : true,
