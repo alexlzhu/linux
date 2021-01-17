@@ -8792,8 +8792,6 @@ static void __io_uring_cancel_task_requests(struct io_ring_ctx *ctx,
 
 static void io_disable_sqo_submit(struct io_ring_ctx *ctx)
 {
-	WARN_ON_ONCE(ctx->sqo_task != current);
-
 	mutex_lock(&ctx->uring_lock);
 	ctx->sqo_dead = 1;
 	mutex_unlock(&ctx->uring_lock);
@@ -8815,6 +8813,7 @@ static void io_uring_cancel_task_requests(struct io_ring_ctx *ctx,
 
 	if ((ctx->flags & IORING_SETUP_SQPOLL) && ctx->sq_data) {
 		/* for SQPOLL only sqo_task has task notes */
+		WARN_ON_ONCE(ctx->sqo_task != current);
 		io_disable_sqo_submit(ctx);
 		task = ctx->sq_data->thread;
 		atomic_inc(&task->io_uring->in_idle);
@@ -8904,7 +8903,7 @@ static void io_uring_remove_task_files(struct io_uring_task *tctx)
 		io_uring_del_task_file(file);
 }
 
-void __io_uring_files_cancel(struct files_struct *files)
+static void __io_uring_files_cancel(void)
 {
 	struct io_uring_task *tctx = current->io_uring;
 	struct file *file;
@@ -8913,11 +8912,8 @@ void __io_uring_files_cancel(struct files_struct *files)
 	/* make sure overflow events are dropped */
 	atomic_inc(&tctx->in_idle);
 	xa_for_each(&tctx->xa, index, file)
-		io_uring_cancel_task_requests(file->private_data, files);
+		io_uring_cancel_task_requests(file->private_data, NULL);
 	atomic_dec(&tctx->in_idle);
-
-	if (files)
-		io_uring_remove_task_files(tctx);
 }
 
 static s64 tctx_inflight(struct io_uring_task *tctx)
@@ -8960,12 +8956,16 @@ void __io_uring_task_cancel(void)
 	/* make sure overflow events are dropped */
 	atomic_inc(&tctx->in_idle);
 
+	/* trigger io_disable_sqo_submit() */
+	if (tctx->sqpoll)
+		__io_uring_files_cancel();
+
 	do {
 		/* read completions before cancelations */
 		inflight = tctx_inflight(tctx);
 		if (!inflight)
 			break;
-		__io_uring_files_cancel(NULL);
+		__io_uring_files_cancel();
 
 		prepare_to_wait(&tctx->wait, &wait, TASK_UNINTERRUPTIBLE);
 
@@ -9006,7 +9006,10 @@ static int io_uring_flush(struct file *file, void *data)
 
 	if (ctx->flags & IORING_SETUP_SQPOLL) {
 		/* there is only one file note, which is owned by sqo_task */
-		WARN_ON_ONCE((ctx->sqo_task == current) ==
+		WARN_ON_ONCE(ctx->sqo_task != current &&
+			     xa_load(&tctx->xa, (unsigned long)file));
+		/* sqo_dead check is for when this happens after cancellation */
+		WARN_ON_ONCE(ctx->sqo_task == current && !ctx->sqo_dead &&
 			     !xa_load(&tctx->xa, (unsigned long)file));
 
 		io_disable_sqo_submit(ctx);

@@ -37,18 +37,12 @@ struct io_uring_task {
 #if defined(CONFIG_IO_URING)
 struct sock *io_uring_get_socket(struct file *file);
 void __io_uring_task_cancel(void);
-void __io_uring_files_cancel(struct files_struct *files);
 void __io_uring_free(struct task_struct *tsk);
 
 static inline void io_uring_task_cancel(void)
 {
 	if (current->io_uring && !xa_empty(&current->io_uring->xa))
 		__io_uring_task_cancel();
-}
-static inline void io_uring_files_cancel(struct files_struct *files)
-{
-	if (current->io_uring && !xa_empty(&current->io_uring->xa))
-		__io_uring_files_cancel(files);
 }
 static inline void io_uring_free(struct task_struct *tsk)
 {
