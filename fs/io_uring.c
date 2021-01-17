@@ -8917,7 +8917,7 @@ static void io_uring_remove_task_files(struct io_uring_task *tctx)
 		io_uring_del_task_file(file);
 }
 
-void __io_uring_files_cancel(struct files_struct *files)
+static void __io_uring_files_cancel(void)
 {
 	struct io_uring_task *tctx = current->io_uring;
 	struct file *file;
@@ -8926,11 +8926,8 @@ void __io_uring_files_cancel(struct files_struct *files)
 	/* make sure overflow events are dropped */
 	atomic_inc(&tctx->in_idle);
 	xa_for_each(&tctx->xa, index, file)
-		io_uring_cancel_task_requests(file->private_data, files);
+		io_uring_cancel_task_requests(file->private_data, NULL);
 	atomic_dec(&tctx->in_idle);
-
-	if (files)
-		io_uring_remove_task_files(tctx);
 }
 
 static s64 tctx_inflight(struct io_uring_task *tctx)
@@ -8975,14 +8972,14 @@ void __io_uring_task_cancel(void)
 
 	/* trigger io_disable_sqo_submit() */
 	if (tctx->sqpoll)
-		__io_uring_files_cancel(NULL);
+		__io_uring_files_cancel();
 
 	do {
 		/* read completions before cancelations */
 		inflight = tctx_inflight(tctx);
 		if (!inflight)
 			break;
-		__io_uring_files_cancel(NULL);
+		__io_uring_files_cancel();
 
 		prepare_to_wait(&tctx->wait, &wait, TASK_UNINTERRUPTIBLE);
 
