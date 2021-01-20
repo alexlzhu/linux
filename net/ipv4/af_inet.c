@@ -152,7 +152,7 @@ void inet_sock_destruct(struct sock *sk)
 
 	/* XXX jlemon - debugging */
 	if (atomic_read(&sk->sk_rmem_alloc)) {
-		pr_err("rmem_alloc:%d type:%d state:%d flags:%x shut:%x "
+		pr_err("rmem_alloc:%d type:%d state:%d flags:%lx shut:%x "
 		       "full:%d acct:%d tcp:%d\n",
 			atomic_read(&sk->sk_rmem_alloc),
 			sk->sk_type, sk->sk_state, sk->sk_flags,
