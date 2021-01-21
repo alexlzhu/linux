@@ -1043,8 +1043,13 @@ static bool io_match_task(struct io_kiocb *head,
 {
 	struct io_kiocb *req;
 
-	if (task && head->task != task)
+	if (task && head->task != task) {
+		/* when thread leader exits, make sure to match siblings */
+		if (thread_group_leader(task) &&
+		    same_thread_group(task, head->task))
+			return true;
 		return false;
+	}
 	if (!files)
 		return true;
 
@@ -8917,17 +8922,25 @@ static void io_uring_remove_task_files(struct io_uring_task *tctx)
 		io_uring_del_task_file(file);
 }
 
-static void __io_uring_files_cancel(void)
+void __io_uring_task_exit(void)
 {
 	struct io_uring_task *tctx = current->io_uring;
 	struct file *file;
 	unsigned long index;
+
+	/* thread exit is fine, we cancel when the leader exits */
+	if (!thread_group_leader(current)) {
+		io_uring_remove_task_files(tctx);
+		return;
+	}
 
 	/* make sure overflow events are dropped */
 	atomic_inc(&tctx->in_idle);
 	xa_for_each(&tctx->xa, index, file)
 		io_uring_cancel_task_requests(file->private_data, NULL);
 	atomic_dec(&tctx->in_idle);
+
+	io_uring_remove_task_files(tctx);
 }
 
 static s64 tctx_inflight(struct io_uring_task *tctx)
@@ -8972,14 +8985,14 @@ void __io_uring_task_cancel(void)
 
 	/* trigger io_disable_sqo_submit() */
 	if (tctx->sqpoll)
-		__io_uring_files_cancel();
+		__io_uring_task_exit();
 
 	do {
 		/* read completions before cancelations */
 		inflight = tctx_inflight(tctx);
 		if (!inflight)
 			break;
-		__io_uring_files_cancel();
+		__io_uring_task_exit();
 
 		prepare_to_wait(&tctx->wait, &wait, TASK_UNINTERRUPTIBLE);
 
@@ -9009,7 +9022,8 @@ static int io_uring_flush(struct file *file, void *data)
 
 	/* we should have cancelled and erased it before PF_EXITING */
 	WARN_ON_ONCE((current->flags & PF_EXITING) &&
-		     xa_load(&tctx->xa, (unsigned long)file));
+		     xa_load(&tctx->xa, (unsigned long)file) &&
+		     !thread_group_leader(current));
 
 	/*
 	 * fput() is pending, will be 2 if the only other ref is our potential

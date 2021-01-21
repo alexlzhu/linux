@@ -748,7 +748,7 @@ void __noreturn do_exit(long code)
 		schedule();
 	}
 
-	io_uring_task_cancel();
+	io_uring_task_exit();
 	exit_signals(tsk);  /* sets PF_EXITING */
 
 	if (unlikely(in_atomic())) {
