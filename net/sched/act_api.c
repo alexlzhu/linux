@@ -788,13 +788,10 @@ tcf_action_dump_1(struct sk_buff *skb, struct tc_action *a, int bind, int ref)
 	}
 	rcu_read_unlock();
 
-	if (a->tcfa_flags) {
-		struct nla_bitfield32 flags = { a->tcfa_flags,
-						a->tcfa_flags, };
-
-		if (nla_put(skb, TCA_ACT_FLAGS, sizeof(flags), &flags))
-			goto nla_put_failure;
-	}
+	if (a->tcfa_flags &&
+	    nla_put_bitfield32(skb, TCA_ACT_FLAGS,
+			       a->tcfa_flags, a->tcfa_flags))
+		goto nla_put_failure;
 
 	nest = nla_nest_start_noflag(skb, TCA_OPTIONS);
 	if (nest == NULL)
@@ -854,15 +851,13 @@ static struct tc_cookie *nla_memdup_cookie(struct nlattr **tb)
 	return c;
 }
 
-static const u32 tca_act_flags_allowed = TCA_ACT_FLAGS_NO_PERCPU_STATS;
 static const struct nla_policy tcf_action_policy[TCA_ACT_MAX + 1] = {
 	[TCA_ACT_KIND]		= { .type = NLA_STRING },
 	[TCA_ACT_INDEX]		= { .type = NLA_U32 },
 	[TCA_ACT_COOKIE]	= { .type = NLA_BINARY,
 				    .len = TC_COOKIE_MAX_SIZE },
 	[TCA_ACT_OPTIONS]	= { .type = NLA_NESTED },
-	[TCA_ACT_FLAGS]		= { .type = NLA_BITFIELD32,
-				    .validation_data = &tca_act_flags_allowed },
+	[TCA_ACT_FLAGS]		= NLA_POLICY_BITFIELD32(TCA_ACT_FLAGS_NO_PERCPU_STATS),
 };
 
 struct tc_action *tcf_action_init_1(struct net *net, struct tcf_proto *tp,
@@ -1423,10 +1418,8 @@ static int tcf_action_add(struct net *net, struct nlattr *nla,
 	return ret;
 }
 
-static u32 tcaa_root_flags_allowed = TCA_FLAG_LARGE_DUMP_ON;
 static const struct nla_policy tcaa_policy[TCA_ROOT_MAX + 1] = {
-	[TCA_ROOT_FLAGS] = { .type = NLA_BITFIELD32,
-			     .validation_data = &tcaa_root_flags_allowed },
+	[TCA_ROOT_FLAGS] = NLA_POLICY_BITFIELD32(TCA_FLAG_LARGE_DUMP_ON),
 	[TCA_ROOT_TIME_DELTA]      = { .type = NLA_U32 },
 };
 

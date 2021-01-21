@@ -18,6 +18,7 @@
 #include <net/net_namespace.h>
 #include <uapi/linux/devlink.h>
 #include <linux/xarray.h>
+#include <linux/firmware.h>
 
 struct devlink_ops;
 
@@ -356,6 +357,25 @@ struct devlink_param_gset_ctx {
 };
 
 /**
+ * struct devlink_flash_notify - devlink dev flash notify data
+ * @status_msg: current status string
+ * @component: firmware component being updated
+ * @done: amount of work completed of total amount
+ * @total: amount of work expected to be done
+ * @timeout: expected max timeout in seconds
+ *
+ * These are values to be given to userland to be displayed in order
+ * to show current activity in a firmware update process.
+ */
+struct devlink_flash_notify {
+	const char *status_msg;
+	const char *component;
+	unsigned long done;
+	unsigned long total;
+	unsigned long timeout;
+};
+
+/**
  * struct devlink_param - devlink configuration parameter data
  * @name: name of the parameter
  * @generic: indicates if the parameter is generic or driver specific
@@ -494,6 +514,24 @@ enum devlink_param_generic_id {
 #define DEVLINK_INFO_VERSION_GENERIC_FW_ROCE	"fw.roce"
 /* Firmware bundle identifier */
 #define DEVLINK_INFO_VERSION_GENERIC_FW_BUNDLE_ID	"fw.bundle_id"
+
+/**
+ * struct devlink_flash_update_params - Flash Update parameters
+ * @fw: pointer to the firmware data to update from
+ * @component: the flash component to update
+ *
+ * With the exception of fw, drivers must opt-in to parameters by
+ * setting the appropriate bit in the supported_flash_update_params field in
+ * their devlink_ops structure.
+ */
+struct devlink_flash_update_params {
+	const struct firmware *fw;
+	const char *component;
+	u32 overwrite_mask;
+};
+
+#define DEVLINK_SUPPORT_FLASH_UPDATE_COMPONENT		BIT(0)
+#define DEVLINK_SUPPORT_FLASH_UPDATE_OVERWRITE_MASK	BIT(1)
 
 struct devlink_region;
 struct devlink_info_req;
@@ -741,6 +779,12 @@ enum devlink_trap_group_generic_id {
 	}
 
 struct devlink_ops {
+	/**
+	 * @supported_flash_update_params:
+	 * mask of parameters supported by the driver's .flash_update
+	 * implemementation.
+	 */
+	u32 supported_flash_update_params;
 	int (*reload_down)(struct devlink *devlink, bool netns_change,
 			   struct netlink_ext_ack *extack);
 	int (*reload_up)(struct devlink *devlink,
@@ -801,8 +845,15 @@ struct devlink_ops {
 				      struct netlink_ext_ack *extack);
 	int (*info_get)(struct devlink *devlink, struct devlink_info_req *req,
 			struct netlink_ext_ack *extack);
-	int (*flash_update)(struct devlink *devlink, const char *file_name,
-			    const char *component,
+	/**
+	 * @flash_update: Device flash update function
+	 *
+	 * Used to perform a flash update for the device. The set of
+	 * parameters supported by the driver should be set in
+	 * supported_flash_update_params.
+	 */
+	int (*flash_update)(struct devlink *devlink,
+			    struct devlink_flash_update_params *params,
 			    struct netlink_ext_ack *extack);
 	/**
 	 * @trap_init: Trap initialization function.
@@ -1056,13 +1107,15 @@ devlink_health_reporter_recovery_done(struct devlink_health_reporter *reporter);
 
 bool devlink_is_reload_failed(const struct devlink *devlink);
 
-void devlink_flash_update_begin_notify(struct devlink *devlink);
-void devlink_flash_update_end_notify(struct devlink *devlink);
 void devlink_flash_update_status_notify(struct devlink *devlink,
 					const char *status_msg,
 					const char *component,
 					unsigned long done,
 					unsigned long total);
+void devlink_flash_update_timeout_notify(struct devlink *devlink,
+					 const char *status_msg,
+					 const char *component,
+					 unsigned long timeout);
 
 int devlink_traps_register(struct devlink *devlink,
 			   const struct devlink_trap *traps,
