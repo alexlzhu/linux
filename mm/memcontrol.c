@@ -6193,6 +6193,8 @@ static ssize_t memory_high_write(struct kernfs_open_file *of,
 	if (err)
 		return err;
 
+	memcg->high = high;
+
 	for (;;) {
 		unsigned long nr_pages = page_counter_read(&memcg->memory);
 		unsigned long reclaimed;
@@ -6215,8 +6217,6 @@ static ssize_t memory_high_write(struct kernfs_open_file *of,
 		if (!reclaimed && !nr_retries--)
 			break;
 	}
-
-	memcg->high = high;
 
 	memcg_wb_domain_size_changed(memcg);
 	return nbytes;
@@ -6272,6 +6272,10 @@ static ssize_t memory_high_tmp_write(struct kernfs_open_file *of,
 	if (timeout > 300*1000*1000) /* idk */
 		return -ERANGE;
 
+	memcg->high_tmp = high;
+	timeout = usecs_to_jiffies(timeout);
+	memcg->high_tmp_expires = jiffies + timeout;
+
 	for (;;) {
 		unsigned long nr_pages = page_counter_read(&memcg->memory);
 		unsigned long reclaimed;
@@ -6294,10 +6298,6 @@ static ssize_t memory_high_tmp_write(struct kernfs_open_file *of,
 		if (!reclaimed && !nr_retries--)
 			break;
 	}
-
-	memcg->high_tmp = high;
-	timeout = usecs_to_jiffies(timeout);
-	memcg->high_tmp_expires = jiffies + timeout;
 
 	memcg_wb_domain_size_changed(memcg);
 	return nbytes;
