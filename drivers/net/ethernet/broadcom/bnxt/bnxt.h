@@ -1553,6 +1553,7 @@ struct bnxt_fw_reporter_ctx {
 					 BNXT_FW_STATUS_HEALTHY)
 
 #define BNXT_FW_RETRY			5
+#define BNXT_FW_IF_RETRY		10
 
 struct bnxt {
 	void __iomem		*bar0;
