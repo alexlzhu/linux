@@ -1441,7 +1441,7 @@ config CSD_LOCK_WAIT_DEBUG
 	bool "Debugging for csd_lock_wait(), called from smp_call_function*()"
 	depends on DEBUG_KERNEL
 	depends on 64BIT
-	default n
+	default y
 	help
 	  This option enables debug prints when CPUs are slow to respond
 	  to the smp_call_function*() IPI wrappers.  These debug prints
