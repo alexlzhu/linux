@@ -96,9 +96,9 @@ int inotify_handle_event(struct fsnotify_group *group,
 	 * trigger OOM killer in the target monitoring memcg as it may have
 	 * security repercussion.
 	 */
-	old_memcg = memalloc_use_memcg(group->memcg);
+	old_memcg = set_active_memcg(group->memcg);
 	event = kmalloc(alloc_len, GFP_KERNEL_ACCOUNT | __GFP_RETRY_MAYFAIL);
-	memalloc_use_memcg(old_memcg);
+	set_active_memcg(old_memcg);
 
 	if (unlikely(!event)) {
 		/*

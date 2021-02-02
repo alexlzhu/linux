@@ -37,19 +37,11 @@ retry:
 		if (!task) {
 			++*tid;
 			goto retry;
-		} else if (skip_if_dup_files) {
-			bool not_group_leader1 = task->tgid != task->pid;
-			bool not_group_leader2 = !thread_group_leader(task);
-			if (not_group_leader1 != not_group_leader2)
-				printk("%s %s %d: %d %d\n", __FILE__, __func__, __LINE__,
-				       not_group_leader1, not_group_leader2);
-
-			if (!thread_group_leader(task) &&
-			    task->files == task->group_leader->files) {
-				task = NULL;
-				++*tid;
-				goto retry;
-			}
+		} else if (skip_if_dup_files && !thread_group_leader(task) &&
+			   task->files == task->group_leader->files) {
+			task = NULL;
+			++*tid;
+			goto retry;
 		}
 		get_task_struct(task);
 	}
@@ -156,17 +148,17 @@ task_file_seq_get_next(struct bpf_iter_seq_task_file_info *info)
 	 * it held a reference to the task/files_struct/file.
 	 * Otherwise, it does not hold any reference.
 	 */
+again:
 	if (info->task) {
 		curr_task = info->task;
 		curr_files = info->files;
 		curr_fd = info->fd;
 	} else {
-again:
 		curr_task = task_seq_get_next(ns, &curr_tid, true);
 		if (!curr_task) {
 			info->task = NULL;
 			info->files = NULL;
-			info->tid = curr_tid + 1;
+			info->tid = curr_tid;
 			return NULL;
 		}
 

@@ -2128,12 +2128,12 @@ void bio_associate_blkg_from_page(struct bio *bio, struct page *page)
 {
 	struct cgroup_subsys_state *css;
 
-	if (!page->mem_cgroup)
+	if (!page_memcg(page))
 		return;
 
 	rcu_read_lock();
 
-	css = cgroup_e_css(page->mem_cgroup->css.cgroup, &io_cgrp_subsys);
+	css = cgroup_e_css(page_memcg(page)->css.cgroup, &io_cgrp_subsys);
 	bio_associate_blkg_from_css(bio, css);
 
 	rcu_read_unlock();

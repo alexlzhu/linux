@@ -2028,7 +2028,7 @@ static void loop_handle_cmd(struct loop_cmd *cmd)
 	if (cmd->blkcg_css)
 		kthread_associate_blkcg(cmd->blkcg_css);
 	if (cmd->memcg_css)
-		old_memcg = memalloc_use_memcg(
+		old_memcg = set_active_memcg(
 			mem_cgroup_from_css(cmd->memcg_css));
 
 	ret = do_req_filebacked(lo, rq);
@@ -2037,7 +2037,7 @@ static void loop_handle_cmd(struct loop_cmd *cmd)
 		kthread_associate_blkcg(NULL);
 
 	if (cmd->memcg_css) {
-		memalloc_use_memcg(old_memcg);
+		set_active_memcg(old_memcg);
 		css_put(cmd->memcg_css);
 	}
  failed:
