@@ -7619,6 +7619,15 @@ static void io_rsrc_put_work(struct work_struct *work)
 	}
 }
 
+static struct file **io_fixed_file_slot(struct fixed_rsrc_data *file_data,
+					unsigned i)
+{
+	struct fixed_rsrc_table *table;
+
+	table = &file_data->table[i >> IORING_FILE_TABLE_SHIFT];
+	return &table->files[i & IORING_FILE_TABLE_MASK];
+}
+
 static void io_rsrc_node_ref_zero(struct percpu_ref *ref)
 {
 	struct fixed_rsrc_ref_node *ref_node;
@@ -7687,6 +7696,7 @@ static void destroy_fixed_rsrc_ref_node(struct fixed_rsrc_ref_node *ref_node)
 	kfree(ref_node);
 }
 
+
 static int io_sqe_files_register(struct io_ring_ctx *ctx, void __user *arg,
 				 unsigned nr_args)
 {
@@ -7719,9 +7729,6 @@ static int io_sqe_files_register(struct io_ring_ctx *ctx, void __user *arg,
 		goto out_free;
 
 	for (i = 0; i < nr_args; i++, ctx->nr_user_files++) {
-		struct fixed_rsrc_table *table;
-		unsigned index;
-
 		if (copy_from_user(&fd, &fds[i], sizeof(fd))) {
 			ret = -EFAULT;
 			goto out_fput;
@@ -7746,9 +7753,7 @@ static int io_sqe_files_register(struct io_ring_ctx *ctx, void __user *arg,
 			fput(file);
 			goto out_fput;
 		}
-		table = &file_data->table[i >> IORING_FILE_TABLE_SHIFT];
-		index = i & IORING_FILE_TABLE_MASK;
-		table->files[index] = file;
+		*io_fixed_file_slot(file_data, i) = file;
 	}
 
 	ret = io_sqe_files_scm(ctx);
@@ -7851,7 +7856,7 @@ static int __io_sqe_files_update(struct io_ring_ctx *ctx,
 {
 	struct fixed_rsrc_data *data = ctx->file_data;
 	struct fixed_rsrc_ref_node *ref_node;
-	struct file *file;
+	struct file *file, **file_slot;
 	__s32 __user *fds;
 	int fd, i, err;
 	__u32 done;
@@ -7869,9 +7874,6 @@ static int __io_sqe_files_update(struct io_ring_ctx *ctx,
 
 	fds = u64_to_user_ptr(up->data);
 	for (done = 0; done < nr_args; done++) {
-		struct fixed_rsrc_table *table;
-		unsigned index;
-
 		err = 0;
 		if (copy_from_user(&fd, &fds[done], sizeof(fd))) {
 			err = -EFAULT;
@@ -7881,14 +7883,13 @@ static int __io_sqe_files_update(struct io_ring_ctx *ctx,
 			continue;
 
 		i = array_index_nospec(up->offset + done, ctx->nr_user_files);
-		table = &ctx->file_data->table[i >> IORING_FILE_TABLE_SHIFT];
-		index = i & IORING_FILE_TABLE_MASK;
-		if (table->files[index]) {
-			file = table->files[index];
-			err = io_queue_file_removal(data, file);
+		file_slot = io_fixed_file_slot(ctx->file_data, i);
+
+		if (*file_slot) {
+			err = io_queue_file_removal(data, *file_slot);
 			if (err)
 				break;
-			table->files[index] = NULL;
+			*file_slot = NULL;
 			needs_switch = true;
 		}
 		if (fd != -1) {
@@ -7910,13 +7911,12 @@ static int __io_sqe_files_update(struct io_ring_ctx *ctx,
 				err = -EBADF;
 				break;
 			}
-			table->files[index] = file;
 			err = io_sqe_file_register(ctx, file, i);
 			if (err) {
-				table->files[index] = NULL;
 				fput(file);
 				break;
 			}
+			*file_slot = file;
 		}
 	}
 
@@ -9361,11 +9361,8 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 	seq_printf(m, "SqThreadCpu:\t%d\n", sq ? task_cpu(sq->thread) : -1);
 	seq_printf(m, "UserFiles:\t%u\n", ctx->nr_user_files);
 	for (i = 0; has_lock && i < ctx->nr_user_files; i++) {
-		struct fixed_rsrc_table *table;
-		struct file *f;
+		struct file *f = *io_fixed_file_slot(ctx->file_data, i);
 
-		table = &ctx->file_data->table[i >> IORING_FILE_TABLE_SHIFT];
-		f = table->files[i & IORING_FILE_TABLE_MASK];
 		if (f)
 			seq_printf(m, "%5u: %s\n", i, file_dentry(f)->d_iname);
 		else
