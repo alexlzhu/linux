@@ -4447,6 +4447,7 @@ static int io_setup_async_msg(struct io_kiocb *req,
 	async_msg = req->async_data;
 	req->flags |= REQ_F_NEED_CLEANUP;
 	memcpy(async_msg, kmsg, sizeof(*kmsg));
+	async_msg->msg.msg_name = &async_msg->addr;
 	return -EAGAIN;
 }
 
@@ -4499,7 +4500,6 @@ static int io_sendmsg(struct io_kiocb *req, bool force_nonblock,
 
 	if (req->async_data) {
 		kmsg = req->async_data;
-		kmsg->msg.msg_name = &kmsg->addr;
 		/* if iov is set, it's allocated already */
 		if (!kmsg->iov)
 			kmsg->iov = kmsg->fast_iov;
@@ -4727,7 +4727,6 @@ static int io_recvmsg(struct io_kiocb *req, bool force_nonblock,
 
 	if (req->async_data) {
 		kmsg = req->async_data;
-		kmsg->msg.msg_name = &kmsg->addr;
 		/* if iov is set, it's allocated already */
 		if (!kmsg->iov)
 			kmsg->iov = kmsg->fast_iov;
