@@ -632,6 +632,40 @@ static bool mapping_needs_writeback(struct address_space *mapping)
 	return mapping->nrpages;
 }
 
+/*
+ * Returns true if any page in the given range is dirty or under IO/writeback
+ */
+static bool filemap_range_needs_writeback(struct address_space *mapping,
+					  loff_t start_byte, loff_t end_byte)
+{
+	struct page *page = NULL, *head;
+	XA_STATE(xas, &mapping->i_pages, start_byte >> PAGE_SHIFT);
+	pgoff_t max = end_byte >> PAGE_SHIFT;
+
+	if (!mapping_needs_writeback(mapping))
+		return false;
+	if (!mapping_tagged(mapping, PAGECACHE_TAG_DIRTY) &&
+	    !mapping_tagged(mapping, PAGECACHE_TAG_WRITEBACK))
+		return false;
+	if (end_byte < start_byte)
+		return false;
+
+	rcu_read_lock();
+	xas_for_each(&xas, head, max) {
+		if (xas_retry(&xas, head))
+			continue;
+		if (xa_is_value(head))
+			continue;
+		page = find_subpage(head, xas.xa_index);
+		if (PageDirty(page) || PageLocked(page) || PageWriteback(page))
+			break;
+		page = NULL;
+	}
+	rcu_read_unlock();
+
+	return page != NULL;
+}
+
 /**
  * filemap_write_and_wait_range - write out & wait on a file range
  * @mapping:	the address_space for the pages
@@ -2373,8 +2407,8 @@ generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 
 		size = i_size_read(inode);
 		if (iocb->ki_flags & IOCB_NOWAIT) {
-			if (filemap_range_has_page(mapping, iocb->ki_pos,
-						   iocb->ki_pos + count - 1))
+			if (filemap_range_needs_writeback(mapping, iocb->ki_pos,
+							  iocb->ki_pos + count - 1))
 				return -EAGAIN;
 		} else {
 			retval = filemap_write_and_wait_range(mapping,
