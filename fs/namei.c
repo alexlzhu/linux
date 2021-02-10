@@ -699,6 +699,7 @@ static bool try_to_unlazy(struct nameidata *nd)
 out1:
 	nd->path.mnt = NULL;
 	nd->path.dentry = NULL;
+	nd->depth = 0;
 out:
 	rcu_read_unlock();
 	return false;
@@ -753,6 +754,7 @@ static bool try_to_unlazy_next(struct nameidata *nd, struct dentry *dentry, unsi
 
 out2:
 	nd->path.mnt = NULL;
+	nd->depth = 0;
 out1:
 	nd->path.dentry = NULL;
 out:
