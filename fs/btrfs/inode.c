@@ -8166,8 +8166,9 @@ static ssize_t btrfs_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 	bool relock = false;
 	ssize_t ret;
 
-	if (check_direct_IO(fs_info, iter, offset))
-		return 0;
+	ret = check_direct_IO(fs_info, iter, offset);
+	if (ret)
+		return ret;
 
 	inode_dio_begin(inode);
 
