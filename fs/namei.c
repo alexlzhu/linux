@@ -667,23 +667,25 @@ static bool legitimize_root(struct nameidata *nd)
  */
 
 /**
- * unlazy_walk - try to switch to ref-walk mode.
+ * try_to_unlazy - try to switch to ref-walk mode.
  * @nd: nameidata pathwalk data
- * Returns: 0 on success, -ECHILD on failure
+ * Returns: true on success, false on failure
  *
- * unlazy_walk attempts to legitimize the current nd->path and nd->root
+ * try_to_unlazy attempts to legitimize the current nd->path and nd->root
  * for ref-walk mode.
  * Must be called from rcu-walk context.
- * Nothing should touch nameidata between unlazy_walk() failure and
+ * Nothing should touch nameidata between try_to_unlazy() failure and
  * terminate_walk().
  */
-static int unlazy_walk(struct nameidata *nd)
+static bool try_to_unlazy(struct nameidata *nd)
 {
 	struct dentry *parent = nd->path.dentry;
 
 	BUG_ON(!(nd->flags & LOOKUP_RCU));
 
 	nd->flags &= ~LOOKUP_RCU;
+	if (nd->flags & LOOKUP_CACHED)
+		goto out1;
 	if (unlikely(!legitimize_links(nd)))
 		goto out1;
 	if (unlikely(!legitimize_path(nd, &nd->path, nd->seq)))
@@ -692,34 +694,37 @@ static int unlazy_walk(struct nameidata *nd)
 		goto out;
 	rcu_read_unlock();
 	BUG_ON(nd->inode != parent->d_inode);
-	return 0;
+	return true;
 
 out1:
 	nd->path.mnt = NULL;
 	nd->path.dentry = NULL;
+	nd->depth = 0;
 out:
 	rcu_read_unlock();
-	return -ECHILD;
+	return false;
 }
 
 /**
- * unlazy_child - try to switch to ref-walk mode.
+ * try_to_unlazy_next - try to switch to ref-walk mode.
  * @nd: nameidata pathwalk data
- * @dentry: child of nd->path.dentry
- * @seq: seq number to check dentry against
- * Returns: 0 on success, -ECHILD on failure
+ * @dentry: next dentry to step into
+ * @seq: seq number to check @dentry against
+ * Returns: true on success, false on failure
  *
- * unlazy_child attempts to legitimize the current nd->path, nd->root and dentry
- * for ref-walk mode.  @dentry must be a path found by a do_lookup call on
- * @nd.  Must be called from rcu-walk context.
- * Nothing should touch nameidata between unlazy_child() failure and
+ * Similar to to try_to_unlazy(), but here we have the next dentry already
+ * picked by rcu-walk and want to legitimize that in addition to the current
+ * nd->path and nd->root for ref-walk mode.  Must be called from rcu-walk context.
+ * Nothing should touch nameidata between try_to_unlazy_next() failure and
  * terminate_walk().
  */
-static int unlazy_child(struct nameidata *nd, struct dentry *dentry, unsigned seq)
+static bool try_to_unlazy_next(struct nameidata *nd, struct dentry *dentry, unsigned seq)
 {
 	BUG_ON(!(nd->flags & LOOKUP_RCU));
 
 	nd->flags &= ~LOOKUP_RCU;
+	if (nd->flags & LOOKUP_CACHED)
+		goto out2;
 	if (unlikely(!legitimize_links(nd)))
 		goto out2;
 	if (unlikely(!legitimize_mnt(nd->path.mnt, nd->m_seq)))
@@ -745,19 +750,20 @@ static int unlazy_child(struct nameidata *nd, struct dentry *dentry, unsigned se
 	if (unlikely(!legitimize_root(nd)))
 		goto out_dput;
 	rcu_read_unlock();
-	return 0;
+	return true;
 
 out2:
 	nd->path.mnt = NULL;
+	nd->depth = 0;
 out1:
 	nd->path.dentry = NULL;
 out:
 	rcu_read_unlock();
-	return -ECHILD;
+	return false;
 out_dput:
 	rcu_read_unlock();
 	dput(dentry);
-	return -ECHILD;
+	return false;
 }
 
 static inline int d_revalidate(struct dentry *dentry, unsigned int flags)
@@ -790,7 +796,8 @@ static int complete_walk(struct nameidata *nd)
 		 */
 		if (!(nd->flags & (LOOKUP_ROOT | LOOKUP_IS_SCOPED)))
 			nd->root.mnt = NULL;
-		if (unlikely(unlazy_walk(nd)))
+		nd->flags &= ~LOOKUP_CACHED;
+		if (!try_to_unlazy(nd))
 			return -ECHILD;
 	}
 
@@ -1129,7 +1136,7 @@ const char *get_link(struct nameidata *nd)
 		touch_atime(&last->link);
 		cond_resched();
 	} else if (atime_needs_update(&last->link, inode)) {
-		if (unlikely(unlazy_walk(nd)))
+		if (!try_to_unlazy(nd))
 			return ERR_PTR(-ECHILD);
 		touch_atime(&last->link);
 	}
@@ -1148,7 +1155,7 @@ const char *get_link(struct nameidata *nd)
 		if (nd->flags & LOOKUP_RCU) {
 			res = get(NULL, inode, &last->done);
 			if (res == ERR_PTR(-ECHILD)) {
-				if (unlikely(unlazy_walk(nd)))
+				if (!try_to_unlazy(nd))
 					return ERR_PTR(-ECHILD);
 				res = get(dentry, inode, &last->done);
 			}
@@ -1662,7 +1669,7 @@ static int lookup_fast(struct nameidata *nd,
 		bool negative;
 		dentry = __d_lookup_rcu(parent, &nd->last, &seq);
 		if (unlikely(!dentry)) {
-			if (unlazy_walk(nd))
+			if (!try_to_unlazy(nd))
 				return -ECHILD;
 			return 0;
 		}
@@ -1700,9 +1707,9 @@ static int lookup_fast(struct nameidata *nd,
 			if (likely(__follow_mount_rcu(nd, path, inode, seqp)))
 				return 1;
 		}
-		if (unlazy_child(nd, dentry, seq))
+		if (!try_to_unlazy_next(nd, dentry, seq))
 			return -ECHILD;
-		if (unlikely(status == -ECHILD))
+		if (status == -ECHILD)
 			/* we'd been told to redo it in non-rcu mode */
 			status = d_revalidate(dentry, nd->flags);
 	} else {
@@ -1780,10 +1787,8 @@ static inline int may_lookup(struct nameidata *nd)
 {
 	if (nd->flags & LOOKUP_RCU) {
 		int err = inode_permission(nd->inode, MAY_EXEC|MAY_NOT_BLOCK);
-		if (err != -ECHILD)
+		if (err != -ECHILD || !try_to_unlazy(nd))
 			return err;
-		if (unlazy_walk(nd))
-			return -ECHILD;
 	}
 	return inode_permission(nd->inode, MAY_EXEC);
 }
@@ -1845,7 +1850,7 @@ static int pick_link(struct nameidata *nd, struct path *link,
 				nd->path.mnt = NULL;
 				nd->path.dentry = NULL;
 				rcu_read_unlock();
-			} else if (likely(unlazy_walk(nd)) == 0)
+			} else if (try_to_unlazy(nd))
 				error = nd_alloc_stack(nd);
 		}
 		if (error) {
@@ -2260,7 +2265,7 @@ OK:
 		}
 		if (unlikely(!d_can_lookup(nd->path.dentry))) {
 			if (nd->flags & LOOKUP_RCU) {
-				if (unlazy_walk(nd))
+				if (!try_to_unlazy(nd))
 					return -ECHILD;
 			}
 			return -ENOTDIR;
@@ -2273,6 +2278,10 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 {
 	int error;
 	const char *s = nd->name->name;
+
+	/* LOOKUP_CACHED requires RCU, ask caller to retry */
+	if ((flags & (LOOKUP_RCU | LOOKUP_CACHED)) == LOOKUP_CACHED)
+		return ERR_PTR(-EAGAIN);
 
 	if (!*s)
 		flags &= ~LOOKUP_RCU;
@@ -2767,8 +2776,10 @@ path_mountpoint(struct nameidata *nd, unsigned flags, struct path *path)
 		(err = lookup_last(nd)) > 0) {
 		s = trailing_symlink(nd);
 	}
-	if (!err && (nd->flags & LOOKUP_RCU))
-		err = unlazy_walk(nd);
+	if (!err && (nd->flags & LOOKUP_RCU)) {
+		if (!try_to_unlazy(nd))
+			err = -ECHILD;
+	}
 	if (!err)
 		err = handle_lookup_down(nd);
 	if (!err) {
@@ -3385,9 +3396,7 @@ static int do_last(struct nameidata *nd,
 	}
 
 	if (open_flag & (O_CREAT | O_TRUNC | O_WRONLY | O_RDWR)) {
-		error = mnt_want_write(nd->path.mnt);
-		if (!error)
-			got_write = true;
+		got_write = !mnt_want_write(nd->path.mnt);
 		/*
 		 * do _not_ fail yet - we might not need that or fail with
 		 * a different error; let lookup_open() decide; we'll be
@@ -3564,10 +3573,8 @@ static int do_tmpfile(struct nameidata *nd, unsigned flags,
 	audit_inode(nd->name, child, 0);
 	/* Don't check for other permissions, the inode was just created */
 	error = may_open(&path, 0, op->open_flag);
-	if (error)
-		goto out2;
-	file->f_path.mnt = path.mnt;
-	error = finish_open(file, child, NULL);
+	if (!error)
+		error = vfs_open(&path, file);
 out2:
 	mnt_drop_write(path.mnt);
 out:
