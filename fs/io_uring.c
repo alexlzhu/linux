@@ -1121,9 +1121,6 @@ static void io_sq_thread_drop_mm_files(void)
 
 static int __io_sq_thread_acquire_files(struct io_ring_ctx *ctx)
 {
-	if (current->flags & PF_EXITING)
-		return -EFAULT;
-
 	if (!current->files) {
 		struct files_struct *files;
 		struct nsproxy *nsproxy;
@@ -1151,14 +1148,8 @@ static int __io_sq_thread_acquire_mm(struct io_ring_ctx *ctx)
 {
 	struct mm_struct *mm;
 
-	if (current->flags & PF_EXITING)
-		return -EFAULT;
 	if (current->mm)
 		return 0;
-
-	/* Should never happen */
-	if (unlikely(!(ctx->flags & IORING_SETUP_SQPOLL)))
-		return -EFAULT;
 
 	task_lock(ctx->sqo_task);
 	mm = ctx->sqo_task->mm;
@@ -1174,8 +1165,8 @@ static int __io_sq_thread_acquire_mm(struct io_ring_ctx *ctx)
 	return -EFAULT;
 }
 
-static int io_sq_thread_acquire_mm_files(struct io_ring_ctx *ctx,
-					 struct io_kiocb *req)
+static int __io_sq_thread_acquire_mm_files(struct io_ring_ctx *ctx,
+					   struct io_kiocb *req)
 {
 	const struct io_op_def *def = &io_op_defs[req->opcode];
 	int ret;
@@ -1193,6 +1184,16 @@ static int io_sq_thread_acquire_mm_files(struct io_ring_ctx *ctx,
 	}
 
 	return 0;
+}
+
+static inline int io_sq_thread_acquire_mm_files(struct io_ring_ctx *ctx,
+						struct io_kiocb *req)
+{
+	if (unlikely(current->flags & PF_EXITING))
+		return -EFAULT;
+	if (!(ctx->flags & IORING_SETUP_SQPOLL))
+		return 0;
+	return __io_sq_thread_acquire_mm_files(ctx, req);
 }
 
 static void io_sq_thread_associate_blkcg(struct io_ring_ctx *ctx,
@@ -2305,9 +2306,7 @@ static void __io_req_task_submit(struct io_kiocb *req)
 	struct io_ring_ctx *ctx = req->ctx;
 
 	mutex_lock(&ctx->uring_lock);
-	if (!ctx->sqo_dead &&
-	    !__io_sq_thread_acquire_mm(ctx) &&
-	    !__io_sq_thread_acquire_files(ctx))
+	if (!ctx->sqo_dead && !io_sq_thread_acquire_mm_files(ctx, req))
 		__io_queue_sqe(req);
 	else
 		__io_req_task_cancel(req, -EFAULT);
