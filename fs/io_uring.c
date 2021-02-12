@@ -1121,9 +1121,6 @@ static void io_sq_thread_drop_mm_files(void)
 
 static int __io_sq_thread_acquire_files(struct io_ring_ctx *ctx)
 {
-	if (current->flags & PF_EXITING)
-		return -EFAULT;
-
 	if (!current->files) {
 		struct files_struct *files;
 		struct nsproxy *nsproxy;
@@ -1151,14 +1148,8 @@ static int __io_sq_thread_acquire_mm(struct io_ring_ctx *ctx)
 {
 	struct mm_struct *mm;
 
-	if (current->flags & PF_EXITING)
-		return -EFAULT;
 	if (current->mm)
 		return 0;
-
-	/* Should never happen */
-	if (unlikely(!(ctx->flags & IORING_SETUP_SQPOLL)))
-		return -EFAULT;
 
 	task_lock(ctx->sqo_task);
 	mm = ctx->sqo_task->mm;
@@ -1174,8 +1165,8 @@ static int __io_sq_thread_acquire_mm(struct io_ring_ctx *ctx)
 	return -EFAULT;
 }
 
-static int io_sq_thread_acquire_mm_files(struct io_ring_ctx *ctx,
-					 struct io_kiocb *req)
+static int __io_sq_thread_acquire_mm_files(struct io_ring_ctx *ctx,
+					   struct io_kiocb *req)
 {
 	const struct io_op_def *def = &io_op_defs[req->opcode];
 	int ret;
@@ -1193,6 +1184,16 @@ static int io_sq_thread_acquire_mm_files(struct io_ring_ctx *ctx,
 	}
 
 	return 0;
+}
+
+static inline int io_sq_thread_acquire_mm_files(struct io_ring_ctx *ctx,
+						struct io_kiocb *req)
+{
+	if (unlikely(current->flags & PF_EXITING))
+		return -EFAULT;
+	if (!(ctx->flags & IORING_SETUP_SQPOLL))
+		return 0;
+	return __io_sq_thread_acquire_mm_files(ctx, req);
 }
 
 static void io_sq_thread_associate_blkcg(struct io_ring_ctx *ctx,
@@ -2304,10 +2305,9 @@ static void __io_req_task_submit(struct io_kiocb *req)
 {
 	struct io_ring_ctx *ctx = req->ctx;
 
+	/* ctx stays valid until unlock, even if we drop all ours ctx->refs */
 	mutex_lock(&ctx->uring_lock);
-	if (!ctx->sqo_dead &&
-	    !__io_sq_thread_acquire_mm(ctx) &&
-	    !__io_sq_thread_acquire_files(ctx))
+	if (!ctx->sqo_dead && !io_sq_thread_acquire_mm_files(ctx, req))
 		__io_queue_sqe(req);
 	else
 		__io_req_task_cancel(req, -EFAULT);
@@ -2320,10 +2320,8 @@ static void __io_req_task_submit(struct io_kiocb *req)
 static void io_req_task_submit(struct callback_head *cb)
 {
 	struct io_kiocb *req = container_of(cb, struct io_kiocb, task_work);
-	struct io_ring_ctx *ctx = req->ctx;
 
 	__io_req_task_submit(req);
-	percpu_ref_put(&ctx->refs);
 }
 
 static void io_req_task_queue(struct io_kiocb *req)
@@ -2331,11 +2329,11 @@ static void io_req_task_queue(struct io_kiocb *req)
 	int ret;
 
 	req->task_work.func = io_req_task_submit;
-	percpu_ref_get(&req->ctx->refs);
-
 	ret = io_req_task_work_add(req);
-	if (unlikely(ret))
+	if (unlikely(ret)) {
+		percpu_ref_get(&req->ctx->refs);
 		io_req_task_work_add_fallback(req, io_req_task_cancel);
+	}
 }
 
 static inline void io_queue_next(struct io_kiocb *req)
@@ -2389,13 +2387,10 @@ static void io_req_free_batch(struct req_batch *rb, struct io_kiocb *req,
 	rb->ctx_refs++;
 
 	io_dismantle_req(req);
-	if (state->free_reqs != ARRAY_SIZE(state->reqs)) {
+	if (state->free_reqs != ARRAY_SIZE(state->reqs))
 		state->reqs[state->free_reqs++] = req;
-	} else {
-		struct io_comp_state *cs = &req->ctx->submit_state.comp;
-
-		list_add(&req->compl.list, &cs->free_list);
-	}
+	else
+		list_add(&req->compl.list, &state->comp.free_list);
 }
 
 static void io_submit_flush_completions(struct io_comp_state *cs,
@@ -3477,7 +3472,6 @@ static int io_async_buf_func(struct wait_queue_entry *wait, unsigned mode,
 	struct wait_page_queue *wpq;
 	struct io_kiocb *req = wait->private;
 	struct wait_page_key *key = arg;
-	int ret;
 
 	wpq = container_of(wait, struct wait_page_queue, wait);
 
@@ -3487,14 +3481,9 @@ static int io_async_buf_func(struct wait_queue_entry *wait, unsigned mode,
 	req->rw.kiocb.ki_flags &= ~IOCB_WAITQ;
 	list_del_init(&wait->entry);
 
-	req->task_work.func = io_req_task_submit;
-	percpu_ref_get(&req->ctx->refs);
-
 	/* submit ref gets dropped, acquire a new one */
 	refcount_inc(&req->refs);
-	ret = io_req_task_work_add(req);
-	if (unlikely(ret))
-		io_req_task_work_add_fallback(req, io_req_task_cancel);
+	io_req_task_queue(req);
 	return 1;
 }
 
@@ -6437,25 +6426,19 @@ static struct io_kiocb *io_prep_linked_timeout(struct io_kiocb *req)
 
 static void __io_queue_sqe(struct io_kiocb *req)
 {
-	struct io_kiocb *linked_timeout;
+	struct io_kiocb *linked_timeout = io_prep_linked_timeout(req);
 	const struct cred *old_creds = NULL;
 	int ret;
 
-again:
-	linked_timeout = io_prep_linked_timeout(req);
-
 	if ((req->flags & REQ_F_WORK_INITIALIZED) &&
 	    (req->work.flags & IO_WQ_WORK_CREDS) &&
-	    req->work.identity->creds != current_cred()) {
-		if (old_creds)
-			revert_creds(old_creds);
-		if (old_creds == req->work.identity->creds)
-			old_creds = NULL; /* restored original creds */
-		else
-			old_creds = override_creds(req->work.identity->creds);
-	}
+	    req->work.identity->creds != current_cred())
+		old_creds = override_creds(req->work.identity->creds);
 
 	ret = io_issue_sqe(req, IO_URING_F_NONBLOCK|IO_URING_F_COMPLETE_DEFER);
+
+	if (old_creds)
+		revert_creds(old_creds);
 
 	/*
 	 * We async punt it if the file wasn't marked NOWAIT, or if the file
@@ -6469,9 +6452,6 @@ again:
 			 */
 			io_queue_async_work(req);
 		}
-
-		if (linked_timeout)
-			io_queue_linked_timeout(linked_timeout);
 	} else if (likely(!ret)) {
 		/* drop submission reference */
 		if (req->flags & REQ_F_COMPLETE_INLINE) {
@@ -6479,31 +6459,18 @@ again:
 			struct io_comp_state *cs = &ctx->submit_state.comp;
 
 			cs->reqs[cs->nr++] = req;
-			if (cs->nr == IO_COMPL_BATCH)
+			if (cs->nr == ARRAY_SIZE(cs->reqs))
 				io_submit_flush_completions(cs, ctx);
-			req = NULL;
 		} else {
-			req = io_put_req_find_next(req);
-		}
-
-		if (linked_timeout)
-			io_queue_linked_timeout(linked_timeout);
-
-		if (req) {
-			if (!(req->flags & REQ_F_FORCE_ASYNC))
-				goto again;
-			io_queue_async_work(req);
+			io_put_req(req);
 		}
 	} else {
-		/* un-prep timeout, so it'll be killed as any other linked */
-		req->flags &= ~REQ_F_LINK_TIMEOUT;
 		req_set_fail_links(req);
 		io_put_req(req);
 		io_req_complete(req, ret);
 	}
-
-	if (old_creds)
-		revert_creds(old_creds);
+	if (linked_timeout)
+		io_queue_linked_timeout(linked_timeout);
 }
 
 static void io_queue_sqe(struct io_kiocb *req, const struct io_uring_sqe *sqe)
@@ -6666,7 +6633,7 @@ static const struct io_uring_sqe *io_get_sqe(struct io_ring_ctx *ctx)
 	 * 2) allows the kernel side to track the head on its own, even
 	 *    though the application is the one updating it.
 	 */
-	head = READ_ONCE(sq_array[ctx->cached_sq_head & ctx->sq_mask]);
+	head = READ_ONCE(sq_array[ctx->cached_sq_head++ & ctx->sq_mask]);
 	if (likely(head < ctx->sq_entries))
 		return &ctx->sq_sqes[head];
 
@@ -6674,11 +6641,6 @@ static const struct io_uring_sqe *io_get_sqe(struct io_ring_ctx *ctx)
 	ctx->cached_sq_dropped++;
 	WRITE_ONCE(ctx->rings->sq_dropped, ctx->cached_sq_dropped);
 	return NULL;
-}
-
-static inline void io_consume_sqe(struct io_ring_ctx *ctx)
-{
-	ctx->cached_sq_head++;
 }
 
 /*
@@ -6819,18 +6781,17 @@ static int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 		struct io_kiocb *req;
 		int err;
 
-		sqe = io_get_sqe(ctx);
-		if (unlikely(!sqe)) {
-			io_consume_sqe(ctx);
-			break;
-		}
 		req = io_alloc_req(ctx);
 		if (unlikely(!req)) {
 			if (!submitted)
 				submitted = -EAGAIN;
 			break;
 		}
-		io_consume_sqe(ctx);
+		sqe = io_get_sqe(ctx);
+		if (unlikely(!sqe)) {
+			kmem_cache_free(req_cachep, req);
+			break;
+		}
 		/* will complete beyond this point, count as submitted */
 		submitted++;
 
@@ -8614,6 +8575,14 @@ static void io_req_cache_free(struct list_head *list)
 static void io_ring_ctx_free(struct io_ring_ctx *ctx)
 {
 	struct io_submit_state *submit_state = &ctx->submit_state;
+
+	/*
+	 * Some may use context even when all refs and requests have been put,
+	 * and they are free to do so while still holding uring_lock, see
+	 * __io_req_task_submit(). Wait for them to finish.
+	 */
+	mutex_lock(&ctx->uring_lock);
+	mutex_unlock(&ctx->uring_lock);
 
 	io_finish_async(ctx);
 	io_sqe_buffers_unregister(ctx);
