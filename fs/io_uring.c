@@ -1189,8 +1189,6 @@ static int __io_sq_thread_acquire_mm_files(struct io_ring_ctx *ctx,
 static inline int io_sq_thread_acquire_mm_files(struct io_ring_ctx *ctx,
 						struct io_kiocb *req)
 {
-	if (unlikely(current->flags & PF_EXITING))
-		return -EFAULT;
 	if (!(ctx->flags & IORING_SETUP_SQPOLL))
 		return 0;
 	return __io_sq_thread_acquire_mm_files(ctx, req);
@@ -2307,7 +2305,8 @@ static void __io_req_task_submit(struct io_kiocb *req)
 
 	/* ctx stays valid until unlock, even if we drop all ours ctx->refs */
 	mutex_lock(&ctx->uring_lock);
-	if (!ctx->sqo_dead && !io_sq_thread_acquire_mm_files(ctx, req))
+	if (!ctx->sqo_dead && !(current->flags & PF_EXITING) &&
+	    !io_sq_thread_acquire_mm_files(ctx, req))
 		__io_queue_sqe(req);
 	else
 		__io_req_task_cancel(req, -EFAULT);
