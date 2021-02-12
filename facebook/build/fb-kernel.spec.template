@@ -7,7 +7,7 @@ Group: System Environment/Kernel
 Vendor: The Linux Community
 URL: http://www.kernel.org
 Provides:  kernel-{{ .uname }}
-BuildRequires: sed tar m4 bison flex make bc rsync openssl openssl-devel elfutils-libelf-devel kmod dwarves devtoolset-8-gcc
+BuildRequires: sed tar m4 bison flex make bc rsync openssl openssl-devel elfutils-libelf-devel kmod dwarves
 
 %description
 The Linux Kernel, the operating system core itself
@@ -43,7 +43,7 @@ against the {{ .uname }} kernel package.
 %define _build_id_links none
 %define __spec_install_post \
   %{__arch_install_post} \
-  /usr/lib/rpm/redhat/brp-compress \
+  /usr/lib/rpm/brp-compress \
 %{nil}
 
 %install
