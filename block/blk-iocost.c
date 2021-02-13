@@ -450,6 +450,8 @@ struct ioc {
 
 struct iocg_pcpu_stat {
 	local64_t			abs_vusage;
+	local64_t			randbytes[2];
+	local64_t			randios[2];
 };
 
 struct iocg_stat {
@@ -457,6 +459,8 @@ struct iocg_stat {
 	u64				wait_us;
 	u64				indebt_us;
 	u64				indelay_us;
+	u64				randbytes[2];
+	u64				randios[2];
 };
 
 /* per device-cgroup pair */
@@ -542,6 +546,8 @@ struct ioc_gq {
 	struct iocg_stat		desc_stat;
 	struct iocg_stat		last_stat;
 	u64				last_stat_abs_vusage;
+	u64				last_stat_randbytes[2];
+	u64				last_stat_randios[2];
 	u64				usage_delta_us;
 	u64				wait_since;
 	u64				indebt_since;
@@ -1594,8 +1600,9 @@ static void iocg_flush_stat_one(struct ioc_gq *iocg, struct ioc_now *now)
 	struct ioc *ioc = iocg->ioc;
 	struct iocg_stat new_stat;
 	u64 abs_vusage = 0;
+	u64 randbytes[2] = {}, randios[2] = {};
 	u64 vusage_delta;
-	int cpu;
+	int cpu, rw;
 
 	lockdep_assert_held(&iocg->ioc->lock);
 
@@ -1603,12 +1610,27 @@ static void iocg_flush_stat_one(struct ioc_gq *iocg, struct ioc_now *now)
 	for_each_possible_cpu(cpu) {
 		abs_vusage += local64_read(
 				per_cpu_ptr(&iocg->pcpu_stat->abs_vusage, cpu));
+		for (rw = READ; rw <= WRITE; rw++) {
+			randbytes[rw] += local64_read(
+				per_cpu_ptr(&iocg->pcpu_stat->randbytes[rw], cpu));
+			randios[rw] += local64_read(
+				per_cpu_ptr(&iocg->pcpu_stat->randios[rw], cpu));
+		}
 	}
 	vusage_delta = abs_vusage - iocg->last_stat_abs_vusage;
 	iocg->last_stat_abs_vusage = abs_vusage;
 
 	iocg->usage_delta_us = div64_u64(vusage_delta, ioc->vtime_base_rate);
 	iocg->local_stat.usage_us += iocg->usage_delta_us;
+
+	for (rw = READ; rw <= WRITE; rw++) {
+		iocg->local_stat.randbytes[rw] +=
+			randbytes[rw] - iocg->last_stat_randbytes[rw];
+		iocg->local_stat.randios[rw] +=
+			randios[rw] - iocg->last_stat_randios[rw];
+		iocg->last_stat_randbytes[rw] = randbytes[rw];
+		iocg->last_stat_randios[rw] = randios[rw];
+	}
 
 	/* propagate upwards */
 	new_stat.usage_us =
@@ -1619,6 +1641,13 @@ static void iocg_flush_stat_one(struct ioc_gq *iocg, struct ioc_now *now)
 		iocg->local_stat.indebt_us + iocg->desc_stat.indebt_us;
 	new_stat.indelay_us =
 		iocg->local_stat.indelay_us + iocg->desc_stat.indelay_us;
+
+	for (rw = READ; rw <= WRITE; rw++) {
+		new_stat.randbytes[rw] = iocg->local_stat.randbytes[rw] +
+			iocg->desc_stat.randbytes[rw];
+		new_stat.randios[rw] = iocg->local_stat.randios[rw] +
+			iocg->desc_stat.randios[rw];
+	}
 
 	/* propagate the deltas to the parent */
 	if (iocg->level > 0) {
@@ -1633,6 +1662,13 @@ static void iocg_flush_stat_one(struct ioc_gq *iocg, struct ioc_now *now)
 			new_stat.indebt_us - iocg->last_stat.indebt_us;
 		parent_stat->indelay_us +=
 			new_stat.indelay_us - iocg->last_stat.indelay_us;
+
+		for (rw = READ; rw <= WRITE; rw++) {
+			parent_stat->randbytes[rw] += new_stat.randbytes[rw] -
+				iocg->last_stat.randbytes[rw];
+			parent_stat->randios[rw] += new_stat.randios[rw] -
+				iocg->last_stat.randios[rw];
+		}
 	}
 
 	iocg->last_stat = new_stat;
@@ -2452,20 +2488,20 @@ static void calc_vtime_cost_builtin(struct bio *bio, struct ioc_gq *iocg,
 	u64 pages = max_t(u64, bio_sectors(bio) >> IOC_SECT_TO_PAGE_SHIFT, 1);
 	u64 seek_pages = 0;
 	u64 cost = 0;
-	bool is_read;
+	int rw;
 
 	switch (bio_op(bio)) {
 	case REQ_OP_READ:
 		coef_seqio	= ioc->params.lcoefs[LCOEF_RSEQIO];
 		coef_randio	= ioc->params.lcoefs[LCOEF_RRANDIO];
 		coef_page	= ioc->params.lcoefs[LCOEF_RPAGE];
-		is_read		= true;
+		rw		= READ;
 		break;
 	case REQ_OP_WRITE:
 		coef_seqio	= ioc->params.lcoefs[LCOEF_WSEQIO];
 		coef_randio	= ioc->params.lcoefs[LCOEF_WRANDIO];
 		coef_page	= ioc->params.lcoefs[LCOEF_WPAGE];
-		is_read		= false;
+		rw		= WRITE;
 		break;
 	default:
 		goto out;
@@ -2478,24 +2514,14 @@ static void calc_vtime_cost_builtin(struct bio *bio, struct ioc_gq *iocg,
 
 	if (!is_merge) {
 		if (seek_pages > LCOEF_RANDIO_PAGES) {
-			struct blkcg_gq *blkg = iocg_to_blkg(iocg);
-			struct blkg_iostat_set *bis;
-			int rw = is_read ? BLKG_IOSTAT_READ_RAND :
-					   BLKG_IOSTAT_WRITE_RAND;
-			int cpu;
+			int cpu = get_cpu();
+			struct iocg_pcpu_stat *stat = per_cpu_ptr(iocg->pcpu_stat, cpu);
+
+			local64_add(pages * PAGE_SIZE, &stat->randbytes[rw]);
+			local64_inc(&stat->randios[rw]);
+			put_cpu();
 
 			cost += coef_randio;
-
-			cpu = get_cpu();
-			bis = per_cpu_ptr(blkg->iostat_cpu, cpu);
-			u64_stats_update_begin(&bis->sync);
-
-			bis->cur.bytes[rw] += pages * PAGE_SIZE;
-			bis->cur.ios[rw] += 1;
-
-			u64_stats_update_end(&bis->sync);
-			cgroup_rstat_updated(blkg->blkcg->css.cgroup, cpu);
-			put_cpu();
 		} else {
 			cost += coef_seqio;
 		}
@@ -2550,13 +2576,22 @@ static void ioc_rqos_throttle(struct rq_qos *rqos, struct bio *bio)
 	unsigned long flags;
 
 	/* bypass IOs if disabled, still initializing, or for root cgroup */
-	if (!ioc->enabled || !iocg || !iocg->level)
+	if (!ioc->enabled || !iocg)
 		return;
 
 	/* calculate the absolute vtime cost */
 	abs_cost = calc_vtime_cost(bio, iocg, false);
 	if (!abs_cost)
 		return;
+
+	/* FB-ONLY: Track root-level stats for visibility */
+	if (!iocg->level) {
+		struct iocg_pcpu_stat *gcs = get_cpu_ptr(iocg->pcpu_stat);
+		local64_add(abs_cost, &gcs->abs_vusage);
+		put_cpu_ptr(gcs);
+		iocg->cursor = bio_end_sector(bio);
+		return;
+	}
 
 	if (!iocg_activate(iocg, &now))
 		return;
@@ -2684,7 +2719,7 @@ static void ioc_rqos_merge(struct rq_qos *rqos, struct request *rq,
 	unsigned long flags;
 
 	/* bypass if disabled, still initializing, or for root cgroup */
-	if (!ioc->enabled || !iocg || !iocg->level)
+	if (!ioc->enabled || !iocg)
 		return;
 
 	abs_cost = calc_vtime_cost(bio, iocg, true);
@@ -2700,6 +2735,14 @@ static void ioc_rqos_merge(struct rq_qos *rqos, struct request *rq,
 	if (blk_rq_pos(rq) < bio_end &&
 	    blk_rq_pos(rq) + blk_rq_sectors(rq) == iocg->cursor)
 		iocg->cursor = bio_end;
+
+	/* FB-ONLY: Track root-level stats for visibility */
+	if (!iocg->level) {
+		struct iocg_pcpu_stat *gcs = get_cpu_ptr(iocg->pcpu_stat);
+		local64_add(abs_cost, &gcs->abs_vusage);
+		put_cpu_ptr(gcs);
+		return;
+	}
 
 	/*
 	 * Charge if there's enough vtime budget and the existing request has
@@ -2983,10 +3026,18 @@ static size_t ioc_pd_stat(struct blkg_policy_data *pd, char *buf, size_t size)
 {
 	struct ioc_gq *iocg = pd_to_iocg(pd);
 	struct ioc *ioc = iocg->ioc;
+	struct iocg_stat *stat = &iocg->last_stat;
 	size_t pos = 0;
 
 	if (!ioc->enabled)
 		return 0;
+
+	if (stat->randbytes[READ] || stat->randbytes[WRITE] ||
+	    stat->randios[READ] || stat->randios[WRITE])
+		pos += scnprintf(buf + pos, size - pos,
+				 " rrandbytes=%llu wrandbytes=%llu rrandios=%llu wrandios=%llu",
+				 stat->randbytes[READ], stat->randbytes[WRITE],
+				 stat->randios[READ], stat->randios[WRITE]);
 
 	if (iocg->level == 0) {
 		unsigned vp10k = DIV64_U64_ROUND_CLOSEST(
@@ -2996,16 +3047,16 @@ static size_t ioc_pd_stat(struct blkg_policy_data *pd, char *buf, size_t size)
 		int cpu;
 
 		for_each_online_cpu(cpu) {
-			struct ioc_pcpu_stat *stat = per_cpu_ptr(ioc->pcpu_stat, cpu);
-
-			rmet += stat->missed[READ].last_met;
-			wmet += stat->missed[WRITE].last_met;
-			rmissed += stat->missed[READ].last_missed;
-			wmissed += stat->missed[WRITE].last_missed;
-			rqwaitns += stat->last_rq_wait_ns;
+			struct ioc_pcpu_stat *istat = per_cpu_ptr(ioc->pcpu_stat, cpu);
+			rmet += istat->missed[READ].last_met;
+			wmet += istat->missed[WRITE].last_met;
+			rmissed += istat->missed[READ].last_missed;
+			wmissed += istat->missed[WRITE].last_missed;
+			rqwaitns += istat->last_rq_wait_ns;
 		}
 
-		pos += scnprintf(buf + pos, size - pos, " cost.vrate=%u.%02u cost.rmet=%llu cost.wmet=%llu cost.rmissed=%llu cost.wmissed=%llu cost.rqwait=%llu",
+		pos += scnprintf(buf + pos, size - pos,
+				 " cost.vrate=%u.%02u cost.rmet=%llu cost.wmet=%llu cost.rmissed=%llu cost.wmissed=%llu cost.rqwait=%llu",
 				 vp10k / 100, vp10k % 100,
 				 rmet, wmet, rmissed, wmissed, rqwaitns / 1000);
 	}
