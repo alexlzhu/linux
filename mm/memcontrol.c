@@ -6269,6 +6269,40 @@ static ssize_t memory_high_write(struct kernfs_open_file *of,
 	return nbytes;
 }
 
+static ssize_t memory_reclaim_write(struct kernfs_open_file *of,
+				    char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	unsigned int nr_retries = MAX_RECLAIM_RETRIES;
+	unsigned long to_reclaim;
+	int err;
+
+	buf = strstrip(buf);
+	err = page_counter_memparse(buf, "max", &to_reclaim);
+	if (err)
+		return err;
+
+	for (;;) {
+		unsigned long reclaimed;
+
+		if (signal_pending(current))
+			return -EINTR;
+
+		reclaimed = try_to_free_mem_cgroup_pages(memcg, to_reclaim,
+							 GFP_KERNEL, true);
+
+		if (to_reclaim <= reclaimed)
+			break;
+
+		if (!reclaimed && !nr_retries--)
+			return -EAGAIN;
+
+		to_reclaim -= reclaimed;
+	}
+
+	return nbytes;
+}
+
 static int memory_max_show(struct seq_file *m, void *v)
 {
 	return seq_puts_memcg_tunable(m,
@@ -6450,6 +6484,11 @@ static struct cftype memory_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = memory_high_show,
 		.write = memory_high_write,
+	},
+	{
+		.name = "reclaim",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.write = memory_reclaim_write,
 	},
 	{
 		.name = "max",

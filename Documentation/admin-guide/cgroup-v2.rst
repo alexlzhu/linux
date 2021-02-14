@@ -1181,6 +1181,15 @@ PAGE_SIZE multiple when read back.
 	high limit is used and monitored properly, this limit's
 	utility is limited to providing the final safety net.
 
+  memory.reclaim
+	A write-only single value file which exists on non-root
+	cgroups.
+
+	Triggers memory reclaim without setting any limit.  Writer to
+	this file spends CPU cycles to reclaim memory from this
+	cgroup.  Write returns when the specified amount is reclaimed
+	or reclaim fails multiple attempts.
+
   memory.oom.group
 	A read-write single value file which exists on non-root
 	cgroups.  The default value is "0".
