@@ -2162,10 +2162,10 @@ static bool __tctx_task_work(struct io_uring_task *tctx)
 	if (wq_list_empty(&tctx->task_list))
 		return false;
 
-	spin_lock(&tctx->task_lock);
+	spin_lock_irq(&tctx->task_lock);
 	list = tctx->task_list;
 	INIT_WQ_LIST(&tctx->task_list);
-	spin_unlock(&tctx->task_lock);
+	spin_unlock_irq(&tctx->task_lock);
 
 	node = list.first;
 	while (node) {
@@ -2212,13 +2212,14 @@ static int io_task_work_add(struct task_struct *tsk, struct io_kiocb *req,
 {
 	struct io_uring_task *tctx = tsk->io_uring;
 	struct io_wq_work_node *node, *prev;
+	unsigned long flags;
 	int ret;
 
 	WARN_ON_ONCE(!tctx);
 
-	spin_lock(&tctx->task_lock);
+	spin_lock_irqsave(&tctx->task_lock, flags);
 	wq_list_add_tail(&req->io_task_work.node, &tctx->task_list);
-	spin_unlock(&tctx->task_lock);
+	spin_unlock_irqrestore(&tctx->task_lock, flags);
 
 	/* task_work already pending, we're done */
 	if (test_bit(0, &tctx->task_state) ||
@@ -2233,7 +2234,7 @@ static int io_task_work_add(struct task_struct *tsk, struct io_kiocb *req,
 	 * in the list, it got run and we're fine.
 	 */
 	ret = 0;
-	spin_lock(&tctx->task_lock);
+	spin_lock_irqsave(&tctx->task_lock, flags);
 	wq_list_for_each(node, prev, &tctx->task_list) {
 		if (&req->io_task_work.node == node) {
 			wq_list_del(&tctx->task_list, node, prev);
@@ -2241,7 +2242,7 @@ static int io_task_work_add(struct task_struct *tsk, struct io_kiocb *req,
 			break;
 		}
 	}
-	spin_unlock(&tctx->task_lock);
+	spin_unlock_irqrestore(&tctx->task_lock, flags);
 	clear_bit(0, &tctx->task_state);
 	return ret;
 }
@@ -3580,10 +3581,7 @@ static int io_read(struct io_kiocb *req, unsigned int issue_flags)
 	ret = io_iter_do_read(req, iter);
 
 	if (ret == -EIOCBQUEUED) {
-		/* it's faster to check here then delegate to kfree */
-		if (iovec)
-			kfree(iovec);
-		return 0;
+		goto out_free;
 	} else if (ret == -EAGAIN) {
 		/* IOPOLL retry should happen for io-wq threads */
 		if (!force_nonblock && !(req->ctx->flags & IORING_SETUP_IOPOLL))
@@ -3604,6 +3602,7 @@ static int io_read(struct io_kiocb *req, unsigned int issue_flags)
 	if (ret2)
 		return ret2;
 
+	iovec = NULL;
 	rw = req->async_data;
 	/* now use our persistent iterator, if we aren't already */
 	iter = &rw->iter;
@@ -3630,6 +3629,10 @@ static int io_read(struct io_kiocb *req, unsigned int issue_flags)
 	} while (ret > 0 && ret < io_size);
 done:
 	kiocb_done(kiocb, ret, issue_flags);
+out_free:
+	/* it's faster to check here then delegate to kfree */
+	if (iovec)
+		kfree(iovec);
 	return 0;
 }
 
@@ -8557,21 +8560,39 @@ static void io_destroy_buffers(struct io_ring_ctx *ctx)
 	idr_destroy(&ctx->io_buffer_idr);
 }
 
-static void io_req_cache_free(struct list_head *list)
+static void io_req_cache_free(struct list_head *list, struct task_struct *tsk)
 {
-	while (!list_empty(list)) {
-		struct io_kiocb *req;
+	struct io_kiocb *req, *nxt;
 
-		req = list_first_entry(list, struct io_kiocb, compl.list);
+	list_for_each_entry_safe(req, nxt, list, compl.list) {
+		if (tsk && req->task != tsk)
+			continue;
 		list_del(&req->compl.list);
 		kmem_cache_free(req_cachep, req);
 	}
 }
 
-static void io_ring_ctx_free(struct io_ring_ctx *ctx)
+static void io_req_caches_free(struct io_ring_ctx *ctx, struct task_struct *tsk)
 {
 	struct io_submit_state *submit_state = &ctx->submit_state;
 
+	mutex_lock(&ctx->uring_lock);
+
+	if (submit_state->free_reqs)
+		kmem_cache_free_bulk(req_cachep, submit_state->free_reqs,
+				     submit_state->reqs);
+
+	io_req_cache_free(&submit_state->comp.free_list, NULL);
+
+	spin_lock_irq(&ctx->completion_lock);
+	io_req_cache_free(&submit_state->comp.locked_free_list, NULL);
+	spin_unlock_irq(&ctx->completion_lock);
+
+	mutex_unlock(&ctx->uring_lock);
+}
+
+static void io_ring_ctx_free(struct io_ring_ctx *ctx)
+{
 	/*
 	 * Some may use context even when all refs and requests have been put,
 	 * and they are free to do so while still holding uring_lock, see
@@ -8589,10 +8610,6 @@ static void io_ring_ctx_free(struct io_ring_ctx *ctx)
 		mmdrop(ctx->mm_account);
 		ctx->mm_account = NULL;
 	}
-
-	if (submit_state->free_reqs)
-		kmem_cache_free_bulk(req_cachep, submit_state->free_reqs,
-				     submit_state->reqs);
 
 #ifdef CONFIG_BLK_CGROUP
 	if (ctx->sqo_blkcg_css)
@@ -8617,9 +8634,8 @@ static void io_ring_ctx_free(struct io_ring_ctx *ctx)
 	percpu_ref_exit(&ctx->refs);
 	free_uid(ctx->user);
 	put_cred(ctx->creds);
+	io_req_caches_free(ctx, NULL);
 	kfree(ctx->cancel_hash);
-	io_req_cache_free(&ctx->submit_state.comp.free_list);
-	io_req_cache_free(&ctx->submit_state.comp.locked_free_list);
 	kfree(ctx);
 }
 
@@ -9089,8 +9105,10 @@ static int io_uring_flush(struct file *file, void *data)
 	struct io_uring_task *tctx = current->io_uring;
 	struct io_ring_ctx *ctx = file->private_data;
 
-	if (fatal_signal_pending(current) || (current->flags & PF_EXITING))
+	if (fatal_signal_pending(current) || (current->flags & PF_EXITING)) {
 		io_uring_cancel_task_requests(ctx, NULL);
+		io_req_caches_free(ctx, current);
+	}
 
 	if (!tctx)
 		return 0;
