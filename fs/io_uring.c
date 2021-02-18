@@ -283,8 +283,14 @@ struct io_comp_state {
 	struct list_head	locked_free_list;
 };
 
+struct io_submit_link {
+	struct io_kiocb		*head;
+	struct io_kiocb		*last;
+};
+
 struct io_submit_state {
 	struct blk_plug		plug;
+	struct io_submit_link	link;
 
 	/*
 	 * io_kiocb alloc cache
@@ -6617,15 +6623,10 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	return ret;
 }
 
-struct io_submit_link {
-	struct io_kiocb *head;
-	struct io_kiocb *last;
-};
-
 static int io_submit_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
-			 const struct io_uring_sqe *sqe,
-			 struct io_submit_link *link)
+			 const struct io_uring_sqe *sqe)
 {
+	struct io_submit_link *link = &ctx->submit_state.link;
 	int ret;
 
 	ret = io_init_req(ctx, req, sqe);
@@ -6700,6 +6701,8 @@ fail_req:
 static void io_submit_state_end(struct io_submit_state *state,
 				struct io_ring_ctx *ctx)
 {
+	if (state->link.head)
+		io_queue_link_head(state->link.head);
 	if (state->comp.nr)
 		io_submit_flush_completions(&state->comp, ctx);
 	if (state->plug_started)
@@ -6715,6 +6718,8 @@ static void io_submit_state_start(struct io_submit_state *state,
 {
 	state->plug_started = false;
 	state->ios_left = max_ios;
+	/* set only head, no need to init link_last in advance */
+	state->link.head = NULL;
 }
 
 static void io_commit_sqring(struct io_ring_ctx *ctx)
@@ -6762,7 +6767,6 @@ static const struct io_uring_sqe *io_get_sqe(struct io_ring_ctx *ctx)
 
 static int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 {
-	struct io_submit_link link;
 	int submitted = 0;
 
 	/* if we have a backlog and couldn't flush it all, return BUSY */
@@ -6779,9 +6783,7 @@ static int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 
 	percpu_counter_add(&current->io_uring->inflight, nr);
 	refcount_add(nr, &current->usage);
-
 	io_submit_state_start(&ctx->submit_state, nr);
-	link.head = NULL;
 
 	while (submitted < nr) {
 		const struct io_uring_sqe *sqe;
@@ -6800,7 +6802,7 @@ static int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 		}
 		/* will complete beyond this point, count as submitted */
 		submitted++;
-		if (io_submit_sqe(ctx, req, sqe, &link))
+		if (io_submit_sqe(ctx, req, sqe))
 			break;
 	}
 
@@ -6813,10 +6815,8 @@ static int io_submit_sqes(struct io_ring_ctx *ctx, unsigned int nr)
 		percpu_counter_sub(&tctx->inflight, unused);
 		put_task_struct_many(current, unused);
 	}
-	if (link.head)
-		io_queue_link_head(link.head);
-	io_submit_state_end(&ctx->submit_state, ctx);
 
+	io_submit_state_end(&ctx->submit_state, ctx);
 	 /* Commit SQ ring head once we've consumed and submitted all SQEs */
 	io_commit_sqring(ctx);
 
