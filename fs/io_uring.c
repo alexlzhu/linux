@@ -6516,15 +6516,6 @@ fail_req:
 	}
 }
 
-static inline void io_queue_link_head(struct io_kiocb *req)
-{
-	if (unlikely(req->flags & REQ_F_FAIL_LINK)) {
-		io_put_req(req);
-		io_req_complete(req, -ECANCELED);
-	} else
-		io_queue_sqe(req);
-}
-
 /*
  * Check SQE restrictions (opcode and flags).
  *
@@ -6639,9 +6630,13 @@ static int io_submit_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
 fail_req:
 		io_put_req(req);
 		io_req_complete(req, ret);
-		/* fail even hard links since we don't submit */
-		if (link->head)
+		if (link->head) {
+			/* fail even hard links since we don't submit */
 			link->head->flags |= REQ_F_FAIL_LINK;
+			io_put_req(link->head);
+			io_req_complete(link->head, -ECANCELED);
+			link->head = NULL;
+		}
 		return ret;
 	}
 	ret = io_req_prep(req, sqe);
@@ -6682,7 +6677,7 @@ fail_req:
 
 		/* last request of a link, enqueue the link */
 		if (!(req->flags & (REQ_F_LINK | REQ_F_HARDLINK))) {
-			io_queue_link_head(head);
+			io_queue_sqe(head);
 			link->head = NULL;
 		}
 	} else {
@@ -6708,7 +6703,7 @@ static void io_submit_state_end(struct io_submit_state *state,
 				struct io_ring_ctx *ctx)
 {
 	if (state->link.head)
-		io_queue_link_head(state->link.head);
+		io_queue_sqe(state->link.head);
 	if (state->comp.nr)
 		io_submit_flush_completions(&state->comp, ctx);
 	if (state->plug_started)
