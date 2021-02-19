@@ -1160,20 +1160,15 @@ PAGE_SIZE multiple when read back.
 	Going over the high limit never invokes the OOM killer and
 	under extreme conditions the limit may be breached.
 
-  memory.high.tmp
+  memory.reclaim
 
-	A read-write two value file which exists on non-root cgroups.
-	The default is "max 0".
+    A write-only single value file which exists on non-root
+    cgroups.
 
-	This has the same effect as memory.high, but the extra
-	parameter designates a time limit on the setting. After the
-	timeout expires, the tunable resets itself automatically to
-	the default of "max 0" (no restrictions in effect).
-
-	While in effect, this overrides the memory.high setting.
-
-	The timeout parameter is in microseconds. When read from the
-	file, it shows the remaining time for the current setting.
+    Triggers memory reclaim without setting any limit.  Writer to
+    this file spends CPU cycles to reclaim memory from this cgroup.
+    Write returns when the specified amount is reclaimed or reclaim
+    fails multiple attempts.
 
   memory.max
 	A read-write single value file which exists on non-root
