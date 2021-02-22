@@ -2358,7 +2358,7 @@ static void io_req_task_queue(struct io_kiocb *req)
 	req->task_work.func = io_req_task_submit;
 	ret = io_req_task_work_add(req);
 	if (unlikely(ret)) {
-		ret = -ECANCELED;
+		req->result = -ECANCELED;
 		percpu_ref_get(&req->ctx->refs);
 		io_req_task_work_add_fallback(req, io_req_task_cancel);
 	}
@@ -8580,9 +8580,11 @@ static void io_req_caches_free(struct io_ring_ctx *ctx, struct task_struct *tsk)
 
 	mutex_lock(&ctx->uring_lock);
 
-	if (submit_state->free_reqs)
+	if (submit_state->free_reqs) {
 		kmem_cache_free_bulk(req_cachep, submit_state->free_reqs,
 				     submit_state->reqs);
+		submit_state->free_reqs = 0;
+	}
 
 	io_req_cache_free(&submit_state->comp.free_list, NULL);
 
@@ -10069,6 +10071,8 @@ SYSCALL_DEFINE4(io_uring_register, unsigned int, fd, unsigned int, opcode,
 		goto out_fput;
 
 	ctx = f.file->private_data;
+
+	io_run_task_work();
 
 	mutex_lock(&ctx->uring_lock);
 	ret = __io_uring_register(ctx, opcode, arg, nr_args);
