@@ -1024,6 +1024,7 @@ static void io_rsrc_put_work(struct work_struct *work);
 static void io_req_task_queue(struct io_kiocb *req);
 static void io_submit_flush_completions(struct io_comp_state *cs,
 					struct io_ring_ctx *ctx);
+static bool io_poll_remove_waitqs(struct io_kiocb *req);
 static int io_req_prep_async(struct io_kiocb *req);
 
 static struct kmem_cache *req_cachep;
@@ -1481,7 +1482,7 @@ static inline void req_ref_get(struct io_kiocb *req)
 	atomic_inc(&req->refs);
 }
 
-static void __io_cqring_fill_event(struct io_kiocb *req, long res,
+static bool __io_cqring_fill_event(struct io_kiocb *req, long res,
 				   unsigned int cflags)
 {
 	struct io_ring_ctx *ctx = req->ctx;
@@ -1499,7 +1500,7 @@ static void __io_cqring_fill_event(struct io_kiocb *req, long res,
 		WRITE_ONCE(cqe->user_data, req->user_data);
 		WRITE_ONCE(cqe->res, res);
 		WRITE_ONCE(cqe->flags, cflags);
-		return;
+		return true;
 	}
 	if (!ctx->cq_overflow_flushed &&
 	    !atomic_read(&req->task->io_uring->in_idle)) {
@@ -1517,7 +1518,7 @@ static void __io_cqring_fill_event(struct io_kiocb *req, long res,
 		ocqe->cqe.res = res;
 		ocqe->cqe.flags = cflags;
 		list_add_tail(&ocqe->list, &ctx->cq_overflow_list);
-		return;
+		return true;
 	}
 overflow:
 	/*
@@ -1526,6 +1527,7 @@ overflow:
 	 * on the floor.
 	 */
 	WRITE_ONCE(ctx->rings->cq_overflow, ++ctx->cached_cq_overflow);
+	return false;
 }
 
 static void io_cqring_fill_event(struct io_kiocb *req, long res)
@@ -4805,14 +4807,14 @@ static bool io_poll_complete(struct io_kiocb *req, __poll_t mask, int error)
 		error = -ECANCELED;
 		req->poll.events |= EPOLLONESHOT;
 	}
-	if (error || (req->poll.events & EPOLLONESHOT)) {
-		io_poll_remove_double(req);
+	if (!error)
+		error = mangle_poll(mask);
+	if (!__io_cqring_fill_event(req, error, flags) ||
+	    (req->poll.events & EPOLLONESHOT)) {
+		io_poll_remove_waitqs(req);
 		req->poll.done = true;
 		flags = 0;
 	}
-	if (!error)
-		error = mangle_poll(mask);
-	__io_cqring_fill_event(req, error, flags);
 	io_commit_cqring(ctx);
 	return !(flags & IORING_CQE_F_MORE);
 }
@@ -5103,6 +5105,8 @@ static bool __io_poll_remove_one(struct io_kiocb *req,
 {
 	bool do_complete = false;
 
+	if (!poll->head)
+		return false;
 	spin_lock(&poll->head->lock);
 	WRITE_ONCE(poll->canceled, true);
 	if (!list_empty(&poll->wait.entry)) {
