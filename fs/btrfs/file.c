@@ -2116,7 +2116,7 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	if (ret)
 		goto out;
 
-	btrfs_inode_lock(inode, 0);
+	btrfs_inode_lock(inode, BTRFS_ILOCK_MMAP);
 
 	atomic_inc(&root->log_batch);
 
@@ -2129,11 +2129,11 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 			     &BTRFS_I(inode)->runtime_flags);
 
 	/*
-	 * Before we acquired the inode's lock, someone may have dirtied more
-	 * pages in the target range. We need to make sure that writeback for
-	 * any such pages does not start while we are logging the inode, because
-	 * if it does, any of the following might happen when we are not doing a
-	 * full inode sync:
+	 * Before we acquired the inode's lock and the mmap lock, someone may
+	 * have dirtied more pages in the target range. We need to make sure
+	 * that writeback for any such pages does not start while we are logging
+	 * the inode, because if it does, any of the following might happen when
+	 * we are not doing a full inode sync:
 	 *
 	 * 1) We log an extent after its writeback finishes but before its
 	 *    checksums are added to the csum tree, leading to -EIO errors
@@ -2148,7 +2148,7 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	 */
 	ret = start_ordered_ops(inode, start, end);
 	if (ret) {
-		btrfs_inode_unlock(inode, 0);
+		btrfs_inode_unlock(inode, BTRFS_ILOCK_MMAP);
 		goto out;
 	}
 
@@ -2249,7 +2249,7 @@ int btrfs_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
 	 * file again, but that will end up using the synchronization
 	 * inside btrfs_sync_log to keep things safe.
 	 */
-	btrfs_inode_unlock(inode, 0);
+	btrfs_inode_unlock(inode, BTRFS_ILOCK_MMAP);
 
 	if (ret != BTRFS_NO_LOG_SYNC) {
 		if (!ret) {
@@ -2279,7 +2279,7 @@ out:
 
 out_release_extents:
 	btrfs_release_log_ctx_extents(&ctx);
-	btrfs_inode_unlock(inode, 0);
+	btrfs_inode_unlock(inode, BTRFS_ILOCK_MMAP);
 	goto out;
 }
 
