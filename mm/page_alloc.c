@@ -68,6 +68,7 @@
 #include <linux/lockdep.h>
 #include <linux/nmi.h>
 #include <linux/psi.h>
+#include <linux/proc_fs.h>
 
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -132,6 +133,13 @@ atomic_long_t _totalram_pages __read_mostly;
 EXPORT_SYMBOL(_totalram_pages);
 unsigned long totalreserve_pages __read_mostly;
 unsigned long totalcma_pages __read_mostly;
+
+#ifdef CONFIG_PAGEBLOCK_STATS
+/* initial state */
+static long pageblock_stats[MIGRATE_TYPES] __read_mostly;
+/* percpu counters for runtime conversions */
+static DEFINE_PER_CPU(long[MIGRATE_TYPES], pageblock_stats_pcpu);
+#endif
 
 int percpu_pagelist_fraction;
 gfp_t gfp_allowed_mask __read_mostly = GFP_BOOT_MASK;
@@ -568,7 +576,39 @@ void set_pfnblock_flags_mask(struct page *page, unsigned long flags,
 	}
 }
 
+#ifdef CONFIG_PAGEBLOCK_STATS
+static void init_pageblock_migratetype(struct page *page, int migratetype)
+{
+	if (unlikely(page_group_by_mobility_disabled &&
+		     migratetype < MIGRATE_PCPTYPES))
+		migratetype = MIGRATE_UNMOVABLE;
+
+	pageblock_stats[migratetype]++;
+
+	set_pageblock_flags_group(page, (unsigned long)migratetype,
+				  PB_migrate, PB_migrate_end);
+}
+
 void set_pageblock_migratetype(struct page *page, int migratetype)
+{
+	unsigned long prev;
+
+	if (unlikely(page_group_by_mobility_disabled &&
+		     migratetype < MIGRATE_PCPTYPES))
+		migratetype = MIGRATE_UNMOVABLE;
+
+	prev = get_pageblock_migratetype(page);
+	if (migratetype != prev) {
+		this_cpu_dec(pageblock_stats_pcpu[prev]);
+		this_cpu_inc(pageblock_stats_pcpu[migratetype]);
+	}
+
+	set_pageblock_flags_group(page, (unsigned long)migratetype,
+				  PB_migrate, PB_migrate_end);
+}
+
+#else
+static void init_pageblock_migratetype(struct page *page, int migratetype)
 {
 	if (unlikely(page_group_by_mobility_disabled &&
 		     migratetype < MIGRATE_PCPTYPES))
@@ -577,6 +617,12 @@ void set_pageblock_migratetype(struct page *page, int migratetype)
 	set_pageblock_flags_group(page, (unsigned long)migratetype,
 					PB_migrate, PB_migrate_end);
 }
+
+void set_pageblock_migratetype(struct page *page, int migratetype)
+{
+	init_pageblock_migratetype(page, migratetype);
+}
+#endif
 
 #ifdef CONFIG_DEBUG_VM
 static int page_outside_zone_boundaries(struct zone *zone, struct page *page)
@@ -5975,7 +6021,7 @@ void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone,
 		 * pfn out of zone.
 		 */
 		if (!(pfn & (pageblock_nr_pages - 1))) {
-			set_pageblock_migratetype(page, MIGRATE_MOVABLE);
+			init_pageblock_migratetype(page, MIGRATE_MOVABLE);
 			cond_resched();
 		}
 		pfn++;
@@ -8798,4 +8844,41 @@ bool set_hwpoison_free_buddy_page(struct page *page)
 
 	return hwpoisoned;
 }
+#endif
+
+#ifdef CONFIG_PAGEBLOCK_STATS
+static int pageblocks_proc_show(struct seq_file *m, void *v)
+{
+	long nr[MIGRATE_TYPES] = {0};
+	long total = 0;
+	int cpu, type;
+
+	for (type = 0; type < MIGRATE_TYPES; type++) {
+		nr[type] = pageblock_stats[type];
+		total += nr[type];
+
+		for_each_possible_cpu(cpu)
+			nr[type] += per_cpu(pageblock_stats_pcpu[type], cpu);
+	}
+
+	seq_printf(m, "total       %ld\n", total);
+	seq_printf(m, "unmovable   %ld\n", nr[MIGRATE_UNMOVABLE]);
+	seq_printf(m, "movable     %ld\n", nr[MIGRATE_MOVABLE]);
+	seq_printf(m, "reclaimable %ld\n", nr[MIGRATE_RECLAIMABLE]);
+	seq_printf(m, "highatomic  %ld\n", nr[MIGRATE_HIGHATOMIC]);
+#ifdef CONFIG_CMA
+	seq_printf(m, "cma         %ld\n", nr[MIGRATE_CMA]);
+#endif
+#ifdef CONFIG_MEMORY_ISOLATION
+	seq_printf(m, "isolate     %ld\n", nr[MIGRATE_ISOLATE]);
+#endif
+	return 0;
+}
+
+static int __init proc_pageblocks_init(void)
+{
+	proc_create_single("pageblocks", 0, NULL, pageblocks_proc_show);
+	return 0;
+}
+fs_initcall(proc_pageblocks_init);
 #endif
