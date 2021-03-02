@@ -3158,6 +3158,7 @@ S:	Supported
 F:	arch/*/net/*
 F:	Documentation/networking/filter.txt
 F:	Documentation/bpf/
+F:	Documentation/userspace-api/ebpf/
 F:	include/linux/bpf*
 F:	include/linux/filter.h
 F:	include/trace/events/xdp.h
