@@ -41,6 +41,33 @@ struct bcm_vk_tty_chan {
 /* Poll every 1/10 of second - temp hack till we use MSI interrupt */
 #define SERIAL_TIMER_VALUE (HZ / 10)
 
+#if defined(BCM_VK_LEGACY_API)
+
+/* No support in legacy case, and do a dummy init and exit */
+int bcm_vk_tty_init(struct bcm_vk *vk, char *name)
+{
+	struct device *dev = &vk->pdev->dev;
+
+	dev_dbg(dev, "init %s\n", name);
+	return 0;
+}
+
+void bcm_vk_tty_exit(struct bcm_vk *vk)
+{
+	struct device *dev = &vk->pdev->dev;
+
+	dev_dbg(dev, "exit\n");
+}
+
+void bcm_vk_tty_terminate_tty_user(struct bcm_vk *vk)
+{
+	struct device *dev = &vk->pdev->dev;
+
+	dev_dbg(dev, "terminate tty user\n");
+}
+
+#else
+
 static void bcm_vk_tty_poll(struct timer_list *t)
 {
 	struct bcm_vk *vk = from_timer(vk, t, serial_timer);
@@ -332,8 +359,4 @@ void bcm_vk_tty_terminate_tty_user(struct bcm_vk *vk)
 	}
 }
 
-void bcm_vk_tty_wq_exit(struct bcm_vk *vk)
-{
-	cancel_work_sync(&vk->tty_wq_work);
-	destroy_workqueue(vk->tty_wq_thread);
-}
+#endif

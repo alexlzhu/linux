@@ -8,6 +8,7 @@
 #include <linux/vmalloc.h>
 
 #include <asm/page.h>
+#include <asm/pgtable.h>
 #include <asm/unaligned.h>
 
 #include <uapi/linux/misc/bcm_vk.h>
