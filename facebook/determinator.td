@@ -43,7 +43,7 @@ def build(alias, do_kerneltest, notify, tags = None, priority = None, modules = 
     )
 
 td_rule(
-    name = "linux-kernel-x86_64",
+    name = "linux-kernel-x86_64-diff",
     predicate = schedule_type_is("diff"),
     # don't notify on diff builds
     output = build(
@@ -55,7 +55,7 @@ td_rule(
 )
 
 td_rule(
-    name = "linux-kernel-x86_64",
+    name = "linux-kernel-x86_64-adhoc",
     predicate = schedule_type_is("adhoc"),
     # adhoc builds are manually requested, so default to notifying when done
     output = build(
@@ -67,7 +67,7 @@ td_rule(
 )
 
 td_rule(
-    name = "linux-kernel-x86_64",
+    name = "linux-kernel-x86_64-contbuild",
     predicate = schedule_type_is("continuous"),
     output = build(
         alias = "linux-kernel-x86_64",
@@ -79,7 +79,7 @@ td_rule(
 [
     (
         td_rule(
-            name = "linux-kernel-x86_64-{}".format(flavor),
+            name = "linux-kernel-x86_64-{}-diff".format(flavor),
             predicate = schedule_type_is("diff"),
             output = build(
                 alias = "linux-kernel-x86_64-{}".format(flavor),
@@ -90,7 +90,7 @@ td_rule(
             ),
         ),
         td_rule(
-            name = "linux-kernel-x86_64-{}".format(flavor),
+            name = "linux-kernel-x86_64-{}-adhoc".format(flavor),
             predicate = schedule_type_is("adhoc"),
             output = build(
                 alias = "linux-kernel-x86_64-{}".format(flavor),
@@ -101,7 +101,7 @@ td_rule(
             ),
         ),
         td_rule(
-            name = "linux-kernel-x86_64-{}".format(flavor),
+            name = "linux-kernel-x86_64-{}-contbuild".format(flavor),
             predicate = schedule_type_is("continuous"),
             output = build(
                 alias = "linux-kernel-x86_64-{}".format(flavor),
@@ -116,7 +116,7 @@ td_rule(
 
 [
     td_rule(
-        name = "linux-kernel-x86_64-{}".format(debug.lower()),
+        name = "linux-kernel-x86_64-{}-contbuild".format(debug.lower()),
         predicate = schedule_type_is("continuous"),
         output = build(
             alias = "linux-kernel-x86_64-{}".format(debug.lower()),
