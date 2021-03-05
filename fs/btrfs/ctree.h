@@ -603,8 +603,8 @@ struct btrfs_fs_info {
 	/* keep track of unallocated space */
 	atomic64_t free_chunk_space;
 
-	struct extent_io_tree freed_extents[2];
-	struct extent_io_tree *pinned_extents;
+	/* Track ranges which are used by log trees blocks/logged data extents */
+	struct extent_io_tree excluded_extents;
 
 	/* logical->physical extent mapping */
 	struct extent_map_tree mapping_tree;
@@ -780,6 +780,8 @@ struct btrfs_fs_info {
 	 */
 	struct btrfs_workqueue *fixup_workers;
 	struct btrfs_workqueue *delayed_workers;
+
+	struct workqueue_struct *unpin_workqueue;
 
 	struct task_struct *transaction_kthread;
 	struct task_struct *cleaner_kthread;
@@ -2465,9 +2467,9 @@ int btrfs_lookup_data_extent(struct btrfs_fs_info *fs_info, u64 start, u64 len);
 int btrfs_lookup_extent_info(struct btrfs_trans_handle *trans,
 			     struct btrfs_fs_info *fs_info, u64 bytenr,
 			     u64 offset, int metadata, u64 *refs, u64 *flags);
-int btrfs_pin_extent(struct btrfs_fs_info *fs_info,
-		     u64 bytenr, u64 num, int reserved);
-int btrfs_pin_extent_for_log_replay(struct btrfs_fs_info *fs_info,
+int btrfs_pin_extent(struct btrfs_trans_handle *trans, u64 bytenr, u64 num,
+		     int reserved);
+int btrfs_pin_extent_for_log_replay(struct btrfs_trans_handle *trans,
 				    u64 bytenr, u64 num_bytes);
 int btrfs_exclude_logged_extents(struct extent_buffer *eb);
 int btrfs_cross_ref_exist(struct btrfs_root *root,
@@ -2503,10 +2505,9 @@ int btrfs_free_extent(struct btrfs_trans_handle *trans, struct btrfs_ref *ref);
 
 int btrfs_free_reserved_extent(struct btrfs_fs_info *fs_info,
 			       u64 start, u64 len, int delalloc);
-int btrfs_pin_reserved_extent(struct btrfs_fs_info *fs_info, u64 start,
+int btrfs_pin_reserved_extent(struct btrfs_trans_handle *trans, u64 start,
 			      u64 len);
-void btrfs_prepare_extent_commit(struct btrfs_fs_info *fs_info);
-int btrfs_finish_extent_commit(struct btrfs_trans_handle *trans);
+void btrfs_finish_extent_commit(struct btrfs_transaction *trans);
 int btrfs_inc_extent_ref(struct btrfs_trans_handle *trans,
 			 struct btrfs_ref *generic_ref);
 

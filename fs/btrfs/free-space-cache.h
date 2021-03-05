@@ -22,6 +22,7 @@ enum btrfs_trim_state {
 
 struct btrfs_free_space {
 	struct rb_node offset_index;
+	struct rb_node size_index;
 	u64 offset;
 	u64 bytes;
 	u64 max_extent_size;
@@ -45,7 +46,9 @@ static inline bool btrfs_free_space_trimming_bitmap(
 struct btrfs_free_space_ctl {
 	spinlock_t tree_lock;
 	struct rb_root free_space_offset;
+	struct rb_root_cached free_space_size;
 	u64 free_space;
+	u64 max_extent_size;
 	int extents_thresh;
 	int free_extents;
 	int total_bitmaps;
@@ -57,6 +60,7 @@ struct btrfs_free_space_ctl {
 	void *private;
 	struct mutex cache_writeout_mutex;
 	struct list_head trimming_ranges;
+	bool index_by_size;
 };
 
 struct btrfs_free_space_op {
@@ -112,7 +116,8 @@ int btrfs_write_out_ino_cache(struct btrfs_root *root,
 			      struct btrfs_path *path,
 			      struct inode *inode);
 
-void btrfs_init_free_space_ctl(struct btrfs_block_group *block_group);
+void btrfs_init_free_space_ctl(struct btrfs_block_group *block_group,
+			       struct btrfs_free_space_ctl *ctl);
 int __btrfs_add_free_space(struct btrfs_fs_info *fs_info,
 			   struct btrfs_free_space_ctl *ctl,
 			   u64 bytenr, u64 size,

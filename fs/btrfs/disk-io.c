@@ -42,6 +42,7 @@
 #include "ref-verify.h"
 #include "block-group.h"
 #include "discard.h"
+#include "space-info.h"
 
 #define BTRFS_SUPER_FLAG_SUPP	(BTRFS_HEADER_FLAG_WRITTEN |\
 				 BTRFS_HEADER_FLAG_RELOC |\
@@ -518,11 +519,11 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct page *page)
 	u8 result[BTRFS_CSUM_SIZE];
 	u16 csum_size = btrfs_super_csum_size(fs_info->super_copy);
 	struct extent_buffer *eb;
-	int ret;
+	int ret = 0;
 
 	eb = (struct extent_buffer *)page->private;
 	if (page != eb->pages[0])
-		return 0;
+		return ret;
 
 	found_start = btrfs_header_bytenr(eb);
 	/*
@@ -540,6 +541,7 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct page *page)
 	if (csum_tree_block(eb, result))
 		return -EINVAL;
 
+#ifdef CONFIG_BTRFS_FS_CHECK_INTEGRITY
 	if (btrfs_header_level(eb))
 		ret = btrfs_check_node(eb);
 	else
@@ -553,9 +555,10 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct page *page)
 		WARN_ON(IS_ENABLED(CONFIG_BTRFS_DEBUG));
 		return ret;
 	}
+#endif
 	write_extent_buffer(eb, result, 0, csum_size);
 
-	return 0;
+	return ret;
 }
 
 static int check_tree_block_fsid(struct extent_buffer *eb)
@@ -1964,6 +1967,7 @@ static void btrfs_stop_all_workers(struct btrfs_fs_info *fs_info)
 	 */
 	btrfs_destroy_workqueue(fs_info->endio_meta_workers);
 	btrfs_destroy_workqueue(fs_info->endio_meta_write_workers);
+	destroy_workqueue(fs_info->unpin_workqueue);
 }
 
 static void free_root_extent_buffers(struct btrfs_root *root)
@@ -2021,10 +2025,8 @@ void btrfs_free_fs_roots(struct btrfs_fs_info *fs_info)
 			btrfs_drop_and_free_fs_root(fs_info, gang[i]);
 	}
 
-	if (test_bit(BTRFS_FS_STATE_ERROR, &fs_info->fs_state)) {
+	if (test_bit(BTRFS_FS_STATE_ERROR, &fs_info->fs_state))
 		btrfs_free_log_root_tree(NULL, fs_info);
-		btrfs_destroy_pinned_extent(fs_info, fs_info->pinned_extents);
-	}
 }
 
 static void btrfs_init_scrub(struct btrfs_fs_info *fs_info)
@@ -2154,6 +2156,8 @@ static int btrfs_init_workqueues(struct btrfs_fs_info *fs_info,
 		btrfs_alloc_workqueue(fs_info, "qgroup-rescan", flags, 1, 0);
 	fs_info->discard_ctl.discard_workers =
 		alloc_workqueue("btrfs_discard", WQ_UNBOUND | WQ_FREEZABLE, 1);
+	fs_info->unpin_workqueue =
+		alloc_workqueue("btrfs_unpin", flags, 0);
 
 	if (!(fs_info->workers && fs_info->delalloc_workers &&
 	      fs_info->flush_workers &&
@@ -2165,7 +2169,8 @@ static int btrfs_init_workqueues(struct btrfs_fs_info *fs_info,
 	      fs_info->caching_workers && fs_info->readahead_workers &&
 	      fs_info->fixup_workers && fs_info->delayed_workers &&
 	      fs_info->qgroup_rescan_workers &&
-	      fs_info->discard_ctl.discard_workers)) {
+	      fs_info->discard_ctl.discard_workers &&
+	      fs_info->unpin_workqueue)) {
 		return -ENOMEM;
 	}
 
@@ -2880,11 +2885,8 @@ int __cold open_ctree(struct super_block *sb,
 	fs_info->block_group_cache_tree = RB_ROOT;
 	fs_info->first_logical_byte = (u64)-1;
 
-	extent_io_tree_init(fs_info, &fs_info->freed_extents[0],
-			    IO_TREE_FS_INFO_FREED_EXTENTS0, NULL);
-	extent_io_tree_init(fs_info, &fs_info->freed_extents[1],
-			    IO_TREE_FS_INFO_FREED_EXTENTS1, NULL);
-	fs_info->pinned_extents = &fs_info->freed_extents[0];
+	extent_io_tree_init(fs_info, &fs_info->excluded_extents,
+			    IO_TREE_FS_EXCLUDED_EXTENTS, NULL);
 	set_bit(BTRFS_FS_BARRIER, &fs_info->flags);
 
 	mutex_init(&fs_info->ordered_operations_mutex);
@@ -3336,6 +3338,7 @@ fail_qgroup:
 	btrfs_free_qgroup_config(fs_info);
 fail_trans_kthread:
 	kthread_stop(fs_info->transaction_kthread);
+	drain_workqueue(fs_info->unpin_workqueue);
 	btrfs_cleanup_transaction(fs_info);
 	btrfs_free_fs_roots(fs_info);
 fail_cleaner:
@@ -4037,6 +4040,8 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 		 */
 		btrfs_flush_workqueue(fs_info->delayed_workers);
 
+		btrfs_flush_workqueue(fs_info->fixup_workers);
+
 		ret = btrfs_commit_super(fs_info);
 		if (ret)
 			btrfs_err(fs_info, "commit super ret %d", ret);
@@ -4048,6 +4053,7 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 
 	kthread_stop(fs_info->transaction_kthread);
 	kthread_stop(fs_info->cleaner_kthread);
+	drain_workqueue(fs_info->unpin_workqueue);
 
 	ASSERT(list_empty(&fs_info->delayed_iputs));
 	set_bit(BTRFS_FS_CLOSING_DONE, &fs_info->flags);
@@ -4316,9 +4322,30 @@ static int btrfs_destroy_delayed_refs(struct btrfs_transaction *trans,
 		spin_unlock(&delayed_refs->lock);
 		mutex_unlock(&head->mutex);
 
-		if (pin_bytes)
-			btrfs_pin_extent(fs_info, head->bytenr,
-					 head->num_bytes, 1);
+		if (pin_bytes) {
+			struct btrfs_block_group *cache;
+
+			cache = btrfs_lookup_block_group(fs_info, head->bytenr);
+			BUG_ON(!cache);
+
+			spin_lock(&cache->space_info->lock);
+			spin_lock(&cache->lock);
+			cache->pinned += head->num_bytes;
+			btrfs_space_info_update_bytes_pinned(fs_info,
+				cache->space_info, head->num_bytes);
+			cache->reserved -= head->num_bytes;
+			cache->space_info->bytes_reserved -= head->num_bytes;
+			spin_unlock(&cache->lock);
+			spin_unlock(&cache->space_info->lock);
+			percpu_counter_add_batch(
+				&cache->space_info->total_bytes_pinned,
+				head->num_bytes, BTRFS_TOTAL_BYTES_PINNED_BATCH);
+
+			btrfs_put_block_group(cache);
+
+			btrfs_error_unpin_extent_range(fs_info, head->bytenr,
+				head->bytenr + head->num_bytes - 1);
+		}
 		btrfs_cleanup_ref_head_accounting(fs_info, delayed_refs, head);
 		btrfs_put_delayed_ref_head(head);
 		cond_resched();
@@ -4420,16 +4447,12 @@ static int btrfs_destroy_marked_extents(struct btrfs_fs_info *fs_info,
 }
 
 static int btrfs_destroy_pinned_extent(struct btrfs_fs_info *fs_info,
-				       struct extent_io_tree *pinned_extents)
+				       struct extent_io_tree *unpin)
 {
-	struct extent_io_tree *unpin;
 	u64 start;
 	u64 end;
 	int ret;
-	bool loop = true;
 
-	unpin = pinned_extents;
-again:
 	while (1) {
 		struct extent_state *cached_state = NULL;
 
@@ -4452,15 +4475,6 @@ again:
 		btrfs_error_unpin_extent_range(fs_info, start, end);
 		mutex_unlock(&fs_info->unused_bg_unpin_mutex);
 		cond_resched();
-	}
-
-	if (loop) {
-		if (unpin == &fs_info->freed_extents[0])
-			unpin = &fs_info->freed_extents[1];
-		else
-			unpin = &fs_info->freed_extents[0];
-		loop = false;
-		goto again;
 	}
 
 	return 0;
@@ -4553,8 +4567,7 @@ void btrfs_cleanup_one_transaction(struct btrfs_transaction *cur_trans,
 
 	btrfs_destroy_marked_extents(fs_info, &cur_trans->dirty_pages,
 				     EXTENT_DIRTY);
-	btrfs_destroy_pinned_extent(fs_info,
-				    fs_info->pinned_extents);
+	btrfs_destroy_pinned_extent(fs_info, &cur_trans->pinned_extents);
 
 	cur_trans->state =TRANS_STATE_COMPLETED;
 	wake_up(&cur_trans->commit_wait);
@@ -4606,7 +4619,6 @@ static int btrfs_cleanup_transaction(struct btrfs_fs_info *fs_info)
 	btrfs_destroy_all_ordered_extents(fs_info);
 	btrfs_destroy_delayed_inodes(fs_info);
 	btrfs_assert_delayed_root_empty(fs_info);
-	btrfs_destroy_pinned_extent(fs_info, fs_info->pinned_extents);
 	btrfs_destroy_all_delalloc_inodes(fs_info);
 	mutex_unlock(&fs_info->transaction_kthread_mutex);
 
