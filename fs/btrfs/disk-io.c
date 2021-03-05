@@ -4274,6 +4274,8 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 		 */
 		btrfs_flush_workqueue(fs_info->delayed_workers);
 
+		btrfs_flush_workqueue(fs_info->fixup_workers);
+
 		ret = btrfs_commit_super(fs_info);
 		if (ret)
 			btrfs_err(fs_info, "commit super ret %d", ret);
