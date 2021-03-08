@@ -562,6 +562,9 @@ enum {
 
 	/* Indicate that we can't trust the free space tree for caching yet */
 	BTRFS_FS_FREE_SPACE_TREE_UNTRUSTED,
+
+	/* Indicate that we've disabled the write time checks. */
+	BTRFS_FS_WRITE_TIME_CHECKS_DISABLED,
 };
 
 /*
