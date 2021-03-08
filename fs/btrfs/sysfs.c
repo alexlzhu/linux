@@ -1018,6 +1018,48 @@ static ssize_t btrfs_read_policy_store(struct kobject *kobj,
 }
 BTRFS_ATTR_RW(, read_policy, btrfs_read_policy_show, btrfs_read_policy_store);
 
+static ssize_t write_time_checks_show(struct kobject *kobj,
+				      struct kobj_attribute *a, char *buf)
+{
+	struct btrfs_fs_info *fs_info = to_fs_info(kobj);
+	int enabled;
+
+	enabled = !test_bit(BTRFS_FS_WRITE_TIME_CHECKS_DISABLED,
+			    &fs_info->flags);
+	return snprintf(buf, PAGE_SIZE, "%d\n", enabled);
+}
+
+static ssize_t write_time_checks_store(struct kobject *kobj,
+				       struct kobj_attribute *a,
+				       const char *buf, size_t len)
+{
+	struct btrfs_fs_info *fs_info = to_fs_info(kobj);
+	unsigned long knob;
+	int err;
+
+	if (!fs_info)
+		return -EPERM;
+
+	if (!capable(CAP_SYS_RESOURCE))
+		return -EPERM;
+
+	err = kstrtoul(buf, 10, &knob);
+	if (err)
+		return err;
+	if (knob > 1)
+		return -EINVAL;
+
+	if (knob)
+		clear_bit(BTRFS_FS_WRITE_TIME_CHECKS_DISABLED,
+			  &fs_info->flags);
+	else
+		set_bit(BTRFS_FS_WRITE_TIME_CHECKS_DISABLED,
+			&fs_info->flags);
+	return len;
+}
+
+BTRFS_ATTR_RW(, write_time_checks, write_time_checks_show, write_time_checks_store);
+
 static const struct attribute *btrfs_attrs[] = {
 	BTRFS_ATTR_PTR(, label),
 	BTRFS_ATTR_PTR(, nodesize),
@@ -1029,6 +1071,7 @@ static const struct attribute *btrfs_attrs[] = {
 	BTRFS_ATTR_PTR(, exclusive_operation),
 	BTRFS_ATTR_PTR(, generation),
 	BTRFS_ATTR_PTR(, read_policy),
+	BTRFS_ATTR_PTR(, write_time_checks),
 	NULL,
 };
 
