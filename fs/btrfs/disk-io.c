@@ -541,7 +541,9 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct page *page)
 	if (csum_tree_block(eb, result))
 		return -EINVAL;
 
-#ifdef CONFIG_BTRFS_FS_CHECK_INTEGRITY
+	if (test_bit(BTRFS_FS_WRITE_TIME_CHECKS_DISABLED, &fs_info->flags))
+		goto out;
+
 	if (btrfs_header_level(eb))
 		ret = btrfs_check_node(eb);
 	else
@@ -555,7 +557,7 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct page *page)
 		WARN_ON(IS_ENABLED(CONFIG_BTRFS_DEBUG));
 		return ret;
 	}
-#endif
+out:
 	write_extent_buffer(eb, result, 0, csum_size);
 
 	return ret;
