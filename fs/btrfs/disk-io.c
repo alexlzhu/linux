@@ -1972,7 +1972,8 @@ static void btrfs_stop_all_workers(struct btrfs_fs_info *fs_info)
 	 */
 	btrfs_destroy_workqueue(fs_info->endio_meta_workers);
 	btrfs_destroy_workqueue(fs_info->endio_meta_write_workers);
-	destroy_workqueue(fs_info->unpin_workqueue);
+	if (fs_info->unpin_workqueue)
+		destroy_workqueue(fs_info->unpin_workqueue);
 }
 
 static void free_root_extent_buffers(struct btrfs_root *root)
