@@ -5,6 +5,7 @@
 #ifndef _LINUX_PROC_FS_H
 #define _LINUX_PROC_FS_H
 
+#include <linux/compiler.h>
 #include <linux/types.h>
 #include <linux/fs.h>
 
@@ -12,7 +13,21 @@ struct proc_dir_entry;
 struct seq_file;
 struct seq_operations;
 
+enum {
+	/*
+	 * All /proc entries using this ->proc_ops instance are never removed.
+	 *
+	 * If in doubt, ignore this flag.
+	 */
+#ifdef MODULE
+	PROC_ENTRY_PERMANENT = 0U,
+#else
+	PROC_ENTRY_PERMANENT = 1U << 0,
+#endif
+};
+
 struct proc_ops {
+	unsigned int proc_flags;
 	int	(*proc_open)(struct inode *, struct file *);
 	ssize_t	(*proc_read)(struct file *, char __user *, size_t, loff_t *);
 	ssize_t	(*proc_write)(struct file *, const char __user *, size_t, loff_t *);
@@ -25,14 +40,42 @@ struct proc_ops {
 #endif
 	int	(*proc_mmap)(struct file *, struct vm_area_struct *);
 	unsigned long (*proc_get_unmapped_area)(struct file *, unsigned long, unsigned long, unsigned long, unsigned long);
+} __randomize_layout;
+
+/* definitions for hide_pid field */
+enum proc_hidepid {
+	HIDEPID_OFF	  = 0,
+	HIDEPID_NO_ACCESS = 1,
+	HIDEPID_INVISIBLE = 2,
+	HIDEPID_NOT_PTRACEABLE = 4, /* Limit pids to only ptraceable pids */
 };
+
+/* definitions for proc mount option pidonly */
+enum proc_pidonly {
+	PROC_PIDONLY_OFF = 0,
+	PROC_PIDONLY_ON  = 1,
+};
+
+struct proc_fs_info {
+	struct pid_namespace *pid_ns;
+	struct dentry *proc_self;        /* For /proc/self */
+	struct dentry *proc_thread_self; /* For /proc/thread-self */
+	kgid_t pid_gid;
+	enum proc_hidepid hide_pid;
+	enum proc_pidonly pidonly;
+};
+
+static inline struct proc_fs_info *proc_sb_info(struct super_block *sb)
+{
+	return sb->s_fs_info;
+}
 
 #ifdef CONFIG_PROC_FS
 
 typedef int (*proc_write_t)(struct file *, char *, size_t);
 
 extern void proc_root_init(void);
-extern void proc_flush_task(struct task_struct *);
+extern void proc_flush_pid(struct pid *);
 
 extern struct proc_dir_entry *proc_symlink(const char *,
 		struct proc_dir_entry *, const char *);
@@ -109,7 +152,7 @@ static inline void proc_root_init(void)
 {
 }
 
-static inline void proc_flush_task(struct task_struct *task)
+static inline void proc_flush_pid(struct pid *pid)
 {
 }
 
@@ -165,7 +208,7 @@ int open_related_ns(struct ns_common *ns,
 /* get the associated pid namespace for a file in procfs */
 static inline struct pid_namespace *proc_pid_ns(const struct inode *inode)
 {
-	return inode->i_sb->s_fs_info;
+	return proc_sb_info(inode->i_sb)->pid_ns;
 }
 
 #endif /* _LINUX_PROC_FS_H */
