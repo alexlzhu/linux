@@ -3885,7 +3885,8 @@ void btrfs_drop_and_free_fs_root(struct btrfs_fs_info *fs_info,
 
 	if (test_bit(BTRFS_FS_STATE_ERROR, &fs_info->fs_state)) {
 		btrfs_free_log(NULL, root);
-		if (root->reloc_root) {
+		if (root->reloc_root &&
+		    !test_bit(BTRFS_ROOT_DEAD_RELOC_TREE, &root->state)) {
 			free_extent_buffer(root->reloc_root->node);
 			free_extent_buffer(root->reloc_root->commit_root);
 			btrfs_put_fs_root(root->reloc_root);
