@@ -1935,7 +1935,9 @@ static int read_one_block_group(struct btrfs_fs_info *info,
 
 	cache->space_info = space_info;
 
+	spin_lock(&cache->lock);
 	block_group_update_used(cache, cache->used);
+	spin_unlock(&cache->lock);
 	link_block_group(cache);
 
 	set_avail_alloc_bits(info, cache->flags);
@@ -2133,7 +2135,9 @@ int btrfs_make_block_group(struct btrfs_trans_handle *trans, u64 bytes_used,
 				cache->bytes_super, &cache->space_info);
 	btrfs_update_global_block_rsv(fs_info);
 
+	spin_lock(&cache->lock);
 	block_group_update_used(cache, bytes_used);
+	spin_unlock(&cache->lock);
 	link_block_group(cache);
 
 	list_add_tail(&cache->bg_list, &trans->new_bgs);
