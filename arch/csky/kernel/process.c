@@ -59,7 +59,7 @@ int copy_thread_tls(unsigned long clone_flags,
 	/* setup ksp for switch_to !!! */
 	p->thread.ksp = (unsigned long)childstack;
 
-	if (unlikely(p->flags & PF_KTHREAD)) {
+	if (unlikely(p->flags & (PF_KTHREAD | PF_IO_WORKER))) {
 		memset(childregs, 0, sizeof(struct pt_regs));
 		childstack->r15 = (unsigned long) ret_from_kernel_thread;
 		childstack->r10 = kthread_arg;
