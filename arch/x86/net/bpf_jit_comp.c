@@ -930,6 +930,7 @@ static int do_jit(struct bpf_prog *bpf_prog, int *addrs, u8 *image,
 		u32 dst_reg = insn->dst_reg;
 		u32 src_reg = insn->src_reg;
 		u8 b2 = 0, b3 = 0;
+		u8 *start_of_ldx;
 		s64 jmp_offset;
 		u8 jmp_cond;
 		u8 *func;
@@ -1278,11 +1279,29 @@ st:			if (is_imm8(insn->off))
 		case BPF_LDX | BPF_PROBE_MEM | BPF_W:
 		case BPF_LDX | BPF_MEM | BPF_DW:
 		case BPF_LDX | BPF_PROBE_MEM | BPF_DW:
+			if (BPF_MODE(insn->code) == BPF_PROBE_MEM) {
+				/* test src_reg, src_reg */
+				maybe_emit_mod(&prog, src_reg, src_reg, true); /* always 1 byte */
+				EMIT2(0x85, add_2reg(0xC0, src_reg, src_reg));
+				/* jne start_of_ldx */
+				EMIT2(X86_JNE, 0);
+				/* xor dst_reg, dst_reg */
+				emit_mov_imm32(&prog, false, dst_reg, 0);
+				/* jmp byte_after_ldx */
+				EMIT2(0xEB, 0);
+
+				/* populate jmp_offset for JNE above */
+				temp[4] = prog - temp - 5 /* sizeof(test + jne) */;
+				start_of_ldx = prog;
+			}
 			emit_ldx(&prog, BPF_SIZE(insn->code), dst_reg, src_reg, insn->off);
 			if (BPF_MODE(insn->code) == BPF_PROBE_MEM) {
 				struct exception_table_entry *ex;
 				u8 *_insn = image + proglen;
 				s64 delta;
+
+				/* populate jmp_offset for JMP above */
+				start_of_ldx[-1] = prog - start_of_ldx;
 
 				if (!bpf_prog->aux->extable)
 					break;
@@ -1330,6 +1349,7 @@ st:			if (is_imm8(insn->off))
 			    insn->imm == (BPF_XOR | BPF_FETCH)) {
 				u8 *branch_target;
 				bool is64 = BPF_SIZE(insn->code) == BPF_DW;
+				u32 real_src_reg = src_reg;
 
 				/*
 				 * Can't be implemented with a single x86 insn.
@@ -1338,6 +1358,9 @@ st:			if (is_imm8(insn->off))
 
 				/* Will need RAX as a CMPXCHG operand so save R0 */
 				emit_mov_reg(&prog, true, BPF_REG_AX, BPF_REG_0);
+				if (src_reg == BPF_REG_0)
+					real_src_reg = BPF_REG_AX;
+
 				branch_target = prog;
 				/* Load old value */
 				emit_ldx(&prog, BPF_SIZE(insn->code),
@@ -1347,9 +1370,9 @@ st:			if (is_imm8(insn->off))
 				 * put the result in the AUX_REG.
 				 */
 				emit_mov_reg(&prog, is64, AUX_REG, BPF_REG_0);
-				maybe_emit_mod(&prog, AUX_REG, src_reg, is64);
+				maybe_emit_mod(&prog, AUX_REG, real_src_reg, is64);
 				EMIT2(simple_alu_opcodes[BPF_OP(insn->imm)],
-				      add_2reg(0xC0, AUX_REG, src_reg));
+				      add_2reg(0xC0, AUX_REG, real_src_reg));
 				/* Attempt to swap in new value */
 				err = emit_atomic(&prog, BPF_CMPXCHG,
 						  dst_reg, AUX_REG, insn->off,
@@ -1362,7 +1385,7 @@ st:			if (is_imm8(insn->off))
 				 */
 				EMIT2(X86_JNE, -(prog - branch_target) - 2);
 				/* Return the pre-modification value */
-				emit_mov_reg(&prog, is64, src_reg, BPF_REG_0);
+				emit_mov_reg(&prog, is64, real_src_reg, BPF_REG_0);
 				/* Restore R0 after clobbering RAX */
 				emit_mov_reg(&prog, true, BPF_REG_0, BPF_REG_AX);
 				break;
@@ -1721,17 +1744,25 @@ static int invoke_bpf_prog(const struct btf_func_model *m, u8 **pprog,
 			   struct bpf_prog *p, int stack_size, bool mod_ret)
 {
 	u8 *prog = *pprog;
+	u8 *jmp_insn;
 	int cnt = 0;
 
-	if (p->aux->sleepable) {
-		if (emit_call(&prog, __bpf_prog_enter_sleepable, prog))
+	/* arg1: mov rdi, progs[i] */
+	emit_mov_imm64(&prog, BPF_REG_1, (long) p >> 32, (u32) (long) p);
+	if (emit_call(&prog,
+		      p->aux->sleepable ? __bpf_prog_enter_sleepable :
+		      __bpf_prog_enter, prog))
 			return -EINVAL;
-	} else {
-		if (emit_call(&prog, __bpf_prog_enter, prog))
-			return -EINVAL;
-		/* remember prog start time returned by __bpf_prog_enter */
-		emit_mov_reg(&prog, true, BPF_REG_6, BPF_REG_0);
-	}
+	/* remember prog start time returned by __bpf_prog_enter */
+	emit_mov_reg(&prog, true, BPF_REG_6, BPF_REG_0);
+
+	/* if (__bpf_prog_enter*(prog) == 0)
+	 *	goto skip_exec_of_prog;
+	 */
+	EMIT3(0x48, 0x85, 0xC0);  /* test rax,rax */
+	/* emit 2 nops that will be replaced with JE insn */
+	jmp_insn = prog;
+	emit_nops(&prog, 2);
 
 	/* arg1: lea rdi, [rbp - stack_size] */
 	EMIT4(0x48, 0x8D, 0x7D, -stack_size);
@@ -1751,18 +1782,18 @@ static int invoke_bpf_prog(const struct btf_func_model *m, u8 **pprog,
 	if (mod_ret)
 		emit_stx(&prog, BPF_DW, BPF_REG_FP, BPF_REG_0, -8);
 
-	if (p->aux->sleepable) {
-		if (emit_call(&prog, __bpf_prog_exit_sleepable, prog))
+	/* replace 2 nops with JE insn, since jmp target is known */
+	jmp_insn[0] = X86_JE;
+	jmp_insn[1] = prog - jmp_insn - 2;
+
+	/* arg1: mov rdi, progs[i] */
+	emit_mov_imm64(&prog, BPF_REG_1, (long) p >> 32, (u32) (long) p);
+	/* arg2: mov rsi, rbx <- start time in nsec */
+	emit_mov_reg(&prog, true, BPF_REG_2, BPF_REG_6);
+	if (emit_call(&prog,
+		      p->aux->sleepable ? __bpf_prog_exit_sleepable :
+		      __bpf_prog_exit, prog))
 			return -EINVAL;
-	} else {
-		/* arg1: mov rdi, progs[i] */
-		emit_mov_imm64(&prog, BPF_REG_1, (long) p >> 32,
-			       (u32) (long) p);
-		/* arg2: mov rsi, rbx <- start time in nsec */
-		emit_mov_reg(&prog, true, BPF_REG_2, BPF_REG_6);
-		if (emit_call(&prog, __bpf_prog_exit, prog))
-			return -EINVAL;
-	}
 
 	*pprog = prog;
 	return 0;
@@ -2194,7 +2225,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		padding = true;
 		goto skip_init_addrs;
 	}
-	addrs = kmalloc_array(prog->len + 1, sizeof(*addrs), GFP_KERNEL);
+	addrs = kvmalloc_array(prog->len + 1, sizeof(*addrs), GFP_KERNEL);
 	if (!addrs) {
 		prog = orig_prog;
 		goto out_addrs;
@@ -2286,7 +2317,7 @@ out_image:
 		if (image)
 			bpf_prog_fill_jited_linfo(prog, addrs + 1);
 out_addrs:
-		kfree(addrs);
+		kvfree(addrs);
 		kfree(jit_data);
 		prog->aux->jit_data = NULL;
 	}
