@@ -505,10 +505,9 @@ loop:
 		if (signal_pending(current)) {
 			struct ksignal ksig;
 
-			if (fatal_signal_pending(current))
-				break;
-			if (get_signal(&ksig))
+			if (!get_signal(&ksig))
 				continue;
+			break;
 		}
 		if (ret)
 			continue;
@@ -722,10 +721,9 @@ static int io_wq_manager(void *data)
 		if (signal_pending(current)) {
 			struct ksignal ksig;
 
-			if (fatal_signal_pending(current))
-				set_bit(IO_WQ_BIT_EXIT, &wq->state);
-			else if (get_signal(&ksig))
+			if (!get_signal(&ksig))
 				continue;
+			set_bit(IO_WQ_BIT_EXIT, &wq->state);
 		}
 	} while (!test_bit(IO_WQ_BIT_EXIT, &wq->state));
 

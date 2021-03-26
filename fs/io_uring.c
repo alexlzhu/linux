@@ -6618,10 +6618,9 @@ static int io_sq_thread(void *data)
 		if (signal_pending(current)) {
 			struct ksignal ksig;
 
-			if (fatal_signal_pending(current))
-				break;
-			if (get_signal(&ksig))
+			if (!get_signal(&ksig))
 				continue;
+			break;
 		}
 		sqt_spin = false;
 		cap_entries = !list_is_singular(&sqd->ctx_list);
