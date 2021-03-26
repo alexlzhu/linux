@@ -1915,10 +1915,6 @@ bool do_notify_parent(struct task_struct *tsk, int sig)
 	bool autoreap = false;
 	u64 utime, stime;
 
-	/* Don't notify a parent task if an io_uring worker exits */
-	if (tsk->flags & PF_IO_WORKER)
-		return true;
-
 	BUG_ON(sig == -1);
 
  	/* do_notify_parent_cldstop should have been called instead.  */
