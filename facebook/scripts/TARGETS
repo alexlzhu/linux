@@ -1,0 +1,1 @@
+sh_binary(name = "prepareconfig", main = "prepareconfig", visibility = ["PUBLIC"])

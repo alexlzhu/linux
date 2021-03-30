@@ -1,0 +1,8 @@
+These scripts are based on the Chromium OS kernel config scripts, with some
+modifications.
+
+For details on the original scripts, see:
+http://dev.chromium.org/chromium-os/how-tos-and-troubleshooting/kernel-configuration
+
+For FB-side info, see:
+https://our.intern.facebook.com/intern/wiki/Kernel/Configuration/
