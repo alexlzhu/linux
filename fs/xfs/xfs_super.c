@@ -94,6 +94,7 @@ enum {
 	Opt_prjquota, Opt_uquota, Opt_gquota, Opt_pquota,
 	Opt_uqnoenforce, Opt_gqnoenforce, Opt_pqnoenforce, Opt_qnoenforce,
 	Opt_discard, Opt_nodiscard, Opt_dax, Opt_dax_enum,
+	Opt_barrier, Opt_nobarrier,
 };
 
 static const struct fs_parameter_spec xfs_fs_parameters[] = {
@@ -138,6 +139,9 @@ static const struct fs_parameter_spec xfs_fs_parameters[] = {
 	fsparam_flag("nodiscard",	Opt_nodiscard),
 	fsparam_flag("dax",		Opt_dax),
 	fsparam_enum("dax",		Opt_dax_enum, dax_param_enums),
+	/* Deprecated mount options scheduled for removal */
+	fsparam_flag("barrier",		Opt_barrier),
+	fsparam_flag("nobarrier",	Opt_nobarrier),
 	{}
 };
 
@@ -1280,6 +1284,10 @@ xfs_fs_parse_param(
 		xfs_warn(mp, "%s mount option is deprecated.", param->key);
 		mp->m_flags &= ~XFS_MOUNT_ATTR2;
 		mp->m_flags |= XFS_MOUNT_NOATTR2;
+		return 0;
+	case Opt_barrier:
+	case Opt_nobarrier:
+		xfs_warn(mp, "[no]barrier is deprecated, ignoring. See T54323454.");
 		return 0;
 	default:
 		xfs_warn(mp, "unknown mount option [%s].", param->key);
