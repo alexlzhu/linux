@@ -1,0 +1,49 @@
+{
+  "capabilities": [
+    "submit",
+  ],
+  "commit_message_labels": [
+    "Title",
+    "Summary",
+    "Test Plan",
+    "Reviewers",
+    "Reviewed By",
+    "Subscribers",
+    "Differential Revision",
+    "Tasks",
+    "Signature",
+    "Blame Revision",
+  ],
+  "postponed_linters": {
+    "determinator-lint": [
+      {
+        "type": "any_regex_matches",
+        "value": [
+          "^.*$"
+        ]
+      }
+    ]
+  },
+  "sandcastle_job_specs": [
+    {
+      "command": "SandcastleUniversalCommand",
+      "oncall": "kernel",
+      "alias": "linter",
+      "capabilities": {
+        "type": "lego",
+        "vcs": "linux-kernel-git",
+      },
+      "scheduleType": "diff",
+      "priority": 0,
+      "args": {
+        "steps": [
+          {
+            "name": "Async lint",
+            "shell": "arc lint --trace --never-apply-patches --output json",
+            "report_lint": "determinator-lint",
+          }
+        ]
+      }
+    }
+  ]
+}

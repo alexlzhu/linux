@@ -1,0 +1,27 @@
+load(":defs.bzl", "DEBUG_OPTIONS", "FLAVORS", "config")
+
+filegroup(
+    name = "files",
+    srcs = glob(["*.config"]),
+    visibility = ["//facebook/configs/..."],
+)
+
+# generate one config that is a base config, so that we can more efficiently
+# build different kernel flavors leveraging buck's cache and make itself to
+# originally build a kernel with this default config, and then re-run make to
+# apply the specific config options (including git-hash-based release name)
+config(
+    name = "base",
+    flavor = None,
+    debug = None,
+)
+
+# base config named after the arch
+config(flavor = None, debug = None)
+
+# generate a target to build a .config for every flavor
+[config(flavor = flavor) for flavor in FLAVORS]
+
+# we only build the flavorless kernel with debug options
+# kernels with flavors will not have debug variants
+[config(flavor = None, debug = debug) for debug in DEBUG_OPTIONS]
