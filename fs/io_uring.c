@@ -4783,6 +4783,7 @@ static struct io_poll_iocb *io_poll_get_single(struct io_kiocb *req)
 }
 
 static void io_poll_remove_double(struct io_kiocb *req)
+	__must_hold(&req->ctx->completion_lock)
 {
 	struct io_poll_iocb *poll = io_poll_get_double(req);
 
@@ -4801,6 +4802,7 @@ static void io_poll_remove_double(struct io_kiocb *req)
 }
 
 static bool io_poll_complete(struct io_kiocb *req, __poll_t mask, int error)
+	__must_hold(&req->ctx->completion_lock)
 {
 	struct io_ring_ctx *ctx = req->ctx;
 	unsigned flags = IORING_CQE_F_MORE;
@@ -5106,6 +5108,7 @@ static bool io_arm_poll_handler(struct io_kiocb *req)
 
 static bool __io_poll_remove_one(struct io_kiocb *req,
 				 struct io_poll_iocb *poll, bool do_cancel)
+	__must_hold(&req->ctx->completion_lock)
 {
 	bool do_complete = false;
 
@@ -5124,6 +5127,7 @@ static bool __io_poll_remove_one(struct io_kiocb *req,
 }
 
 static bool io_poll_remove_waitqs(struct io_kiocb *req)
+	__must_hold(&req->ctx->completion_lock)
 {
 	bool do_complete;
 
@@ -5147,6 +5151,7 @@ static bool io_poll_remove_waitqs(struct io_kiocb *req)
 }
 
 static bool io_poll_remove_one(struct io_kiocb *req)
+	__must_hold(&req->ctx->completion_lock)
 {
 	bool do_complete;
 
@@ -5190,6 +5195,7 @@ static bool io_poll_remove_all(struct io_ring_ctx *ctx, struct task_struct *tsk,
 }
 
 static struct io_kiocb *io_poll_find(struct io_ring_ctx *ctx, __u64 sqe_addr)
+	__must_hold(&ctx->completion_lock)
 {
 	struct hlist_head *list;
 	struct io_kiocb *req;
@@ -5205,6 +5211,7 @@ static struct io_kiocb *io_poll_find(struct io_ring_ctx *ctx, __u64 sqe_addr)
 }
 
 static int io_poll_cancel(struct io_ring_ctx *ctx, __u64 sqe_addr)
+	__must_hold(&ctx->completion_lock)
 {
 	struct io_kiocb *req;
 
@@ -5411,6 +5418,7 @@ static enum hrtimer_restart io_timeout_fn(struct hrtimer *timer)
 
 static struct io_kiocb *io_timeout_extract(struct io_ring_ctx *ctx,
 					   __u64 user_data)
+	__must_hold(&ctx->completion_lock)
 {
 	struct io_timeout_data *io;
 	struct io_kiocb *req;
@@ -5435,6 +5443,7 @@ static struct io_kiocb *io_timeout_extract(struct io_ring_ctx *ctx,
 }
 
 static int io_timeout_cancel(struct io_ring_ctx *ctx, __u64 user_data)
+	__must_hold(&ctx->completion_lock)
 {
 	struct io_kiocb *req = io_timeout_extract(ctx, user_data);
 
@@ -5449,6 +5458,7 @@ static int io_timeout_cancel(struct io_ring_ctx *ctx, __u64 user_data)
 
 static int io_timeout_update(struct io_ring_ctx *ctx, __u64 user_data,
 			     struct timespec64 *ts, enum hrtimer_mode mode)
+	__must_hold(&ctx->completion_lock)
 {
 	struct io_kiocb *req = io_timeout_extract(ctx, user_data);
 	struct io_timeout_data *data;
