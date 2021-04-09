@@ -67,6 +67,8 @@ struct pcpu_chunk {
 
 	void			*data;		/* chunk data */
 	bool			immutable;	/* no [de]population allowed */
+	bool			isolated;	/* isolated from chunk slot lists */
+	bool			depopulated;    /* sidelined after depopulation */
 	int			start_offset;	/* the overlap with the previous
 						   region to have a page aligned
 						   base_addr */
@@ -87,7 +89,7 @@ extern spinlock_t pcpu_lock;
 
 extern struct list_head *pcpu_chunk_lists;
 extern int pcpu_nr_slots;
-extern int pcpu_nr_empty_pop_pages;
+extern int pcpu_nr_empty_pop_pages[];
 
 extern struct pcpu_chunk *pcpu_first_chunk;
 extern struct pcpu_chunk *pcpu_reserved_chunk;
