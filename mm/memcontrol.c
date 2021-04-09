@@ -1596,6 +1596,10 @@ static char *memory_stat_format(struct mem_cgroup *memcg)
 	seq_buf_printf(&s, "pgsteal %lu\n",
 		       memcg_events(memcg, PGSTEAL_KSWAPD) +
 		       memcg_events(memcg, PGSTEAL_DIRECT));
+	seq_buf_printf(&s, "pgscan_direct %lu\n",
+		       memcg_events(memcg, PGSCAN_DIRECT));
+	seq_buf_printf(&s, "pgsteal_direct %lu\n",
+		       memcg_events(memcg, PGSTEAL_DIRECT));
 	seq_buf_printf(&s, "%s %lu\n", vm_event_name(PGACTIVATE),
 		       memcg_events(memcg, PGACTIVATE));
 	seq_buf_printf(&s, "%s %lu\n", vm_event_name(PGDEACTIVATE),
@@ -2442,10 +2446,19 @@ static unsigned long reclaim_high(struct mem_cgroup *memcg,
 
 static void high_work_func(struct work_struct *work)
 {
+	unsigned long high, usage;
 	struct mem_cgroup *memcg;
 
 	memcg = container_of(work, struct mem_cgroup, high_work);
-	reclaim_high(memcg, MEMCG_CHARGE_BATCH, GFP_KERNEL);
+
+	high = READ_ONCE(memcg->memory.high);
+	usage = page_counter_read(&memcg->memory);
+
+	if (usage <= high)
+		return;
+
+	set_worker_desc("cswapd/%llx", cgroup_id(memcg->css.cgroup));
+	reclaim_high(memcg, usage - high, GFP_KERNEL);
 }
 
 /*
@@ -2606,23 +2619,6 @@ void mem_cgroup_handle_over_high(void)
 	current->memcg_nr_pages_over_high = 0;
 
 retry_reclaim:
-	/*
-	 * The allocating task should reclaim at least the batch size, but for
-	 * subsequent retries we only want to do what's necessary to prevent oom
-	 * or breaching resource isolation.
-	 *
-	 * This is distinct from memory.max or page allocator behaviour because
-	 * memory.high is currently batched, whereas memory.max and the page
-	 * allocator run every time an allocation is made.
-	 */
-	nr_reclaimed = reclaim_high(memcg,
-				    in_retry ? SWAP_CLUSTER_MAX : nr_pages,
-				    GFP_KERNEL);
-
-	/*
-	 * memory.high is breached and reclaim is unable to keep up. Throttle
-	 * allocators proactively to slow down excessive growth.
-	 */
 	penalty_jiffies = calculate_high_delay(memcg, nr_pages,
 					       mem_find_max_overage(memcg));
 
@@ -2646,6 +2642,22 @@ retry_reclaim:
 		goto out;
 
 	/*
+	 * It's possible async reclaim just isn't able to keep up. Before we go
+	 * to sleep, try direct reclaim.
+	 *
+	 * The allocating task should reclaim at least the batch size, but for
+	 * subsequent retries we only want to do what's necessary to prevent oom
+	 * or breaching resource isolation.
+	 *
+	 * This is distinct from memory.max or page allocator behaviour because
+	 * memory.high is currently batched, whereas memory.max and the page
+	 * allocator run every time an allocation is made.
+	 */
+	nr_reclaimed = reclaim_high(memcg,
+				    in_retry ? SWAP_CLUSTER_MAX : nr_pages,
+				    GFP_KERNEL);
+
+	/*
 	 * If reclaim is making forward progress but we're still over
 	 * memory.high, we want to encourage that rather than doing allocator
 	 * throttling.
@@ -2656,6 +2668,9 @@ retry_reclaim:
 	}
 
 	/*
+	 * memory.high is breached and reclaim is unable to keep up. Throttle
+	 * allocators proactively to slow down excessive growth.
+	 *
 	 * If we exit early, we're guaranteed to die (since
 	 * schedule_timeout_killable sets TASK_KILLABLE). This means we don't
 	 * need to account for any ill-begotten jiffies to pay them off later.
@@ -2837,27 +2852,29 @@ done_restock:
 		swap_high = page_counter_read(&memcg->swap) >
 			READ_ONCE(memcg->swap.high);
 
-		/* Don't bother a random interrupted task */
-		if (in_interrupt()) {
-			if (mem_high) {
-				schedule_work(&memcg->high_work);
-				break;
-			}
-			continue;
-		}
-
 		if (mem_high || swap_high) {
 			/*
-			 * The allocating tasks in this cgroup will need to do
-			 * reclaim or be throttled to prevent further growth
-			 * of the memory or swap footprints.
-			 *
+			 * Kick off the async reclaimer, which should
+			 * be doing most of the work to avoid latency
+			 * in the workload. But also check in on its
+			 * progress before resuming to userspace, in
+			 * case we need to do direct reclaim, or even
+			 * throttle the allocating thread if reclaim
+			 * cannot keep up with allocation demand.
+			 */
+			queue_work(system_unbound_wq, &memcg->high_work);
+
+			/*
 			 * Target some best-effort fairness between the tasks,
 			 * and distribute reclaim work and delay penalties
 			 * based on how much each task is actually allocating.
+			 *
+			 * Don't bother a random interrupted task
 			 */
-			current->memcg_nr_pages_over_high += batch;
-			set_notify_resume(current);
+			if (!in_interrupt()) {
+				current->memcg_nr_pages_over_high += batch;
+				set_notify_resume(current);
+			}
 			break;
 		}
 	} while ((memcg = parent_mem_cgroup(memcg)));
@@ -6252,6 +6269,40 @@ static ssize_t memory_high_write(struct kernfs_open_file *of,
 	return nbytes;
 }
 
+static ssize_t memory_reclaim_write(struct kernfs_open_file *of,
+				    char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	unsigned int nr_retries = MAX_RECLAIM_RETRIES;
+	unsigned long to_reclaim;
+	int err;
+
+	buf = strstrip(buf);
+	err = page_counter_memparse(buf, "max", &to_reclaim);
+	if (err)
+		return err;
+
+	for (;;) {
+		unsigned long reclaimed;
+
+		if (signal_pending(current))
+			return -EINTR;
+
+		reclaimed = try_to_free_mem_cgroup_pages(memcg, to_reclaim,
+							 GFP_KERNEL, true);
+
+		if (to_reclaim <= reclaimed)
+			break;
+
+		if (!reclaimed && !nr_retries--)
+			return -EAGAIN;
+
+		to_reclaim -= reclaimed;
+	}
+
+	return nbytes;
+}
+
 static int memory_max_show(struct seq_file *m, void *v)
 {
 	return seq_puts_memcg_tunable(m,
@@ -6433,6 +6484,11 @@ static struct cftype memory_files[] = {
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = memory_high_show,
 		.write = memory_high_write,
+	},
+	{
+		.name = "reclaim",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.write = memory_reclaim_write,
 	},
 	{
 		.name = "max",
