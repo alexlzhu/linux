@@ -8619,6 +8619,8 @@ struct mlx5_ifc_pplm_reg_bits {
 
 	u8         fec_override_admin_100g_2x[0x10];
 	u8         fec_override_admin_50g_1x[0x10];
+
+	u8         reserved_at_140[0x140];
 };
 
 struct mlx5_ifc_ppcnt_reg_bits {
@@ -9904,7 +9906,7 @@ struct mlx5_ifc_pbmc_reg_bits {
 
 	struct mlx5_ifc_bufferx_reg_bits buffer[10];
 
-	u8         reserved_at_2e0[0x40];
+	u8         reserved_at_2e0[0x80];
 };
 
 struct mlx5_ifc_qtct_reg_bits {
