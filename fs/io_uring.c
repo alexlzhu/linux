@@ -3742,7 +3742,7 @@ err:
 	req->flags &= ~REQ_F_NEED_CLEANUP;
 	if (ret < 0)
 		req_set_fail_links(req);
-	io_req_complete(req, ret);
+	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
 }
 
@@ -4021,7 +4021,7 @@ static int io_fadvise(struct io_kiocb *req, unsigned int issue_flags)
 	ret = vfs_fadvise(req->file, fa->offset, fa->len, fa->advice);
 	if (ret < 0)
 		req_set_fail_links(req);
-	io_req_complete(req, ret);
+	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
 }
 
@@ -5217,7 +5217,7 @@ static int io_poll_remove(struct io_kiocb *req, unsigned int issue_flags)
 
 	if (ret < 0)
 		req_set_fail_links(req);
-	io_req_complete(req, ret);
+	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
 }
 
