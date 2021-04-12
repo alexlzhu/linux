@@ -13289,6 +13289,7 @@ static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		kfree(bp->ptp_cfg);
 		bp->ptp_cfg = NULL;
 	}
+	bnxt_inv_fw_health_reg(bp);
 	bnxt_dl_register(bp);
 
 	rc = register_netdev(dev);
