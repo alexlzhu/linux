@@ -755,8 +755,14 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 		return LRU_REMOVED;
 	}
 
-	/* recently referenced inodes get one more pass */
-	if (inode->i_state & I_REFERENCED) {
+	/*
+	 * Recently referenced & populated inodes get one more pass.
+	 *
+	 * The first exceptional entry is embedded into the root of the xarray,
+	 * so it can never be released by the shadow node shrinker.
+	 */
+	if ((inode->i_state & I_REFERENCED) ||
+	    inode->i_data.nrpages || inode->i_data.nrexceptional > 1) {
 		inode->i_state &= ~I_REFERENCED;
 		spin_unlock(&inode->i_lock);
 		return LRU_ROTATE;
