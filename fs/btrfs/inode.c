@@ -8023,8 +8023,12 @@ out_err:
 	 * perceived to be set. This ordering is ensured by the fact that an
 	 * atomic operations with a return value are fully ordered as per
 	 * atomic_t.txt
+	 *
+	 * If we submitted our orig_bio then we can just bio_io_error and be
+	 * done.
 	 */
-	if (atomic_dec_and_test(&dip->pending_bios))
+	if ((dip->flags & BTRFS_DIO_ORIG_BIO_SUBMITTED) ||
+	    atomic_dec_and_test(&dip->pending_bios))
 		bio_io_error(dip->orig_bio);
 
 	/* bio_end_io() will handle error, so we needn't return it */
