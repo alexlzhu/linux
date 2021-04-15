@@ -604,8 +604,10 @@ void set_pageblock_migratetype(struct page *page, int migratetype)
 
 	prev = get_pageblock_migratetype(page);
 	if (migratetype != prev) {
+		preempt_disable();
 		this_cpu_dec(pageblock_stats_pcpu[prev]);
 		this_cpu_inc(pageblock_stats_pcpu[migratetype]);
+		preempt_enable();
 	}
 
 	set_pfnblock_flags_mask(page, (unsigned long)migratetype,
@@ -5049,7 +5051,12 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	unsigned int alloc_flags = ALLOC_WMARK_LOW;
 	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
 	struct alloc_context ac = { };
-	struct page_alloc_stat *stats = this_cpu_ptr(&alloc_stats_pcpu);
+	/*
+	 * We're fine with a semi-accurate data here, so we do not disable
+	 * the preemption. raw_cpu_ptr() is used to avoid raising warnings
+	 * if CONFIG_PREEMPT_DEBUG is enabled.
+	 */
+	struct page_alloc_stat *stats = raw_cpu_ptr(&alloc_stats_pcpu);
 
 	/*
 	 * There are several places where we assume that the order value is sane
