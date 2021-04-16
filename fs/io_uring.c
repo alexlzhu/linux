@@ -6641,6 +6641,7 @@ static int io_sq_thread(void *data)
 
 				did_sig = get_signal(&ksig);
 			}
+			cond_resched();
 			mutex_lock(&sqd->lock);
 			if (did_sig)
 				break;
