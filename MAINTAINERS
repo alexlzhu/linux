@@ -3158,6 +3158,7 @@ S:	Supported
 F:	arch/*/net/*
 F:	Documentation/networking/filter.txt
 F:	Documentation/bpf/
+F:	Documentation/userspace-api/ebpf/
 F:	include/linux/bpf*
 F:	include/linux/filter.h
 F:	include/trace/events/xdp.h
@@ -3171,6 +3172,7 @@ F:	net/core/filter.c
 F:	net/sched/act_bpf.c
 F:	net/sched/cls_bpf.c
 F:	samples/bpf/
+F:	scripts/bpf_doc.py
 F:	tools/bpf/
 F:	tools/lib/bpf/
 F:	tools/testing/selftests/bpf/
@@ -3576,6 +3578,13 @@ M:	Michael Chan <mchan@broadcom.com>
 L:	netdev@vger.kernel.org
 S:	Supported
 F:	drivers/net/ethernet/broadcom/tg3.*
+
+BROADCOM VK DRIVER
+M:	Scott Branden <scott.branden@broadcom.com>
+L:	bcm-kernel-feedback-list@broadcom.com
+S:	Supported
+F:	drivers/misc/bcm-vk/
+F:	include/uapi/linux/misc/bcm_vk.h
 
 BROCADE BFA FC SCSI DRIVER
 M:	Anil Gurumurthy <anil.gurumurthy@qlogic.com>
@@ -13471,6 +13480,11 @@ R:	Steven Rostedt <rostedt@goodmis.org>
 S:	Maintained
 F:	kernel/printk/
 F:	include/linux/printk.h
+
+PRINTK INDEXING
+R:	Chris Down <chris@chrisdown.name>
+S:	Maintained
+F:	kernel/printk/index.c
 
 PRISM54 WIRELESS DRIVER
 M:	Luis Chamberlain <mcgrof@kernel.org>

@@ -1597,12 +1597,8 @@ out_check:
 			ret = cow_file_range(inode, locked_page,
 					     cow_start, found_key.offset - 1,
 					     page_started, nr_written, 1);
-			if (ret) {
-				if (nocow)
-					btrfs_dec_nocow_writers(fs_info,
-								disk_bytenr);
+			if (ret)
 				goto error;
-			}
 			cow_start = (u64)-1;
 		}
 
@@ -1618,9 +1614,6 @@ out_check:
 					  ram_bytes, BTRFS_COMPRESS_NONE,
 					  BTRFS_ORDERED_PREALLOC);
 			if (IS_ERR(em)) {
-				if (nocow)
-					btrfs_dec_nocow_writers(fs_info,
-								disk_bytenr);
 				ret = PTR_ERR(em);
 				goto error;
 			}
@@ -6506,6 +6499,16 @@ struct extent_map *btrfs_get_extent(struct btrfs_inode *inode,
 	 */
 	path->leave_spinning = 1;
 
+	/*
+	 * The same explanation in load_free_space_cache applies here as well,
+	 * we only read when we're loading the free space cache, and at that
+	 * point the commit_root has everything we need.
+	 */
+	if (btrfs_is_free_space_inode(inode)) {
+		path->search_commit_root = 1;
+		path->skip_locking = 1;
+	}
+
 	ret = btrfs_lookup_file_extent(NULL, root, path, objectid, start, 0);
 	if (ret < 0) {
 		err = ret;
@@ -8020,8 +8023,12 @@ out_err:
 	 * perceived to be set. This ordering is ensured by the fact that an
 	 * atomic operations with a return value are fully ordered as per
 	 * atomic_t.txt
+	 *
+	 * If we submitted our orig_bio then we can just bio_io_error and be
+	 * done.
 	 */
-	if (atomic_dec_and_test(&dip->pending_bios))
+	if ((dip->flags & BTRFS_DIO_ORIG_BIO_SUBMITTED) ||
+	    atomic_dec_and_test(&dip->pending_bios))
 		bio_io_error(dip->orig_bio);
 
 	/* bio_end_io() will handle error, so we needn't return it */

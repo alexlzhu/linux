@@ -714,9 +714,7 @@ Conventions
 - Settings for a single feature should be contained in a single file.
 
 - The root cgroup should be exempt from resource control and thus
-  shouldn't have resource control interface files.  Also,
-  informational files on the root cgroup which end up showing global
-  information available elsewhere shouldn't exist.
+  shouldn't have resource control interface files.
 
 - The default time unit is microseconds.  If a different unit is ever
   used, an explicit unit suffix must be present.
@@ -985,7 +983,7 @@ CPU Interface Files
 All time durations are in microseconds.
 
   cpu.stat
-	A read-only flat-keyed file which exists on non-root cgroups.
+	A read-only flat-keyed file.
 	This file exists whether the controller is enabled or not.
 
 	It always reports the following three stats:
@@ -1162,20 +1160,15 @@ PAGE_SIZE multiple when read back.
 	Going over the high limit never invokes the OOM killer and
 	under extreme conditions the limit may be breached.
 
-  memory.high.tmp
+  memory.reclaim
 
-	A read-write two value file which exists on non-root cgroups.
-	The default is "max 0".
+    A write-only single value file which exists on non-root
+    cgroups.
 
-	This has the same effect as memory.high, but the extra
-	parameter designates a time limit on the setting. After the
-	timeout expires, the tunable resets itself automatically to
-	the default of "max 0" (no restrictions in effect).
-
-	While in effect, this overrides the memory.high setting.
-
-	The timeout parameter is in microseconds. When read from the
-	file, it shows the remaining time for the current setting.
+    Triggers memory reclaim without setting any limit.  Writer to
+    this file spends CPU cycles to reclaim memory from this cgroup.
+    Write returns when the specified amount is reclaimed or reclaim
+    fails multiple attempts.
 
   memory.max
 	A read-write single value file which exists on non-root
@@ -1501,8 +1494,7 @@ IO Interface Files
 ~~~~~~~~~~~~~~~~~~
 
   io.stat
-	A read-only nested-keyed file which exists on non-root
-	cgroups.
+	A read-only nested-keyed file.
 
 	Lines are keyed by $MAJ:$MIN device numbers and not ordered.
 	The following nested keys are defined.

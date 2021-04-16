@@ -52,9 +52,12 @@ static int create_space_info(struct btrfs_fs_info *info, u64 flags)
 		return ret;
 	}
 
-	for (i = 0; i < BTRFS_NR_RAID_TYPES; i++)
+	for (i = 0; i < BTRFS_NR_RAID_TYPES; i++) {
 		INIT_LIST_HEAD(&space_info->block_groups[i]);
+		space_info->block_groups_tree[i] = RB_ROOT_CACHED;
+	}
 	init_rwsem(&space_info->groups_sem);
+	rwlock_init(&space_info->groups_lock);
 	spin_lock_init(&space_info->lock);
 	space_info->flags = flags & BTRFS_BLOCK_GROUP_TYPE_MASK;
 	space_info->force_alloc = CHUNK_ALLOC_NO_FORCE;
@@ -492,7 +495,9 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 		goto enospc;
 
 commit:
-	return btrfs_commit_transaction(trans);
+	btrfs_commit_transaction(trans);
+	flush_workqueue(fs_info->unpin_workqueue);
+	return 0;
 enospc:
 	btrfs_end_transaction(trans);
 	return -ENOSPC;

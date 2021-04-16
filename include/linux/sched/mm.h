@@ -336,8 +336,7 @@ set_active_memcg(struct mem_cgroup *memcg)
 	return old;
 }
 #else
-static inline struct mem_cgroup *
-memalloc_use_memcg(struct mem_cgroup *memcg)
+static inline struct mem_cgroup *set_active_memcg(struct mem_cgroup *memcg)
 {
 	return NULL;
 }

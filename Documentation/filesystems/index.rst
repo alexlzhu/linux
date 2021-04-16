@@ -49,5 +49,6 @@ Documentation for filesystem implementations.
    autofs
    fuse
    overlayfs
+   proc
    virtiofs
    vfat
