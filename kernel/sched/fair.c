@@ -6074,9 +6074,6 @@ target)
 {
 	int cpu;
 
-	if (!static_branch_likely(&sched_smt_present))
-		return -1;
-
 	for_each_cpu(cpu, cpu_smt_mask(target)) {
 		if (!cpumask_test_cpu(cpu, p->cpus_ptr) ||
 		    !cpumask_test_cpu(cpu, sched_domain_span(sd)))
@@ -6116,11 +6113,10 @@ static inline int select_idle_smt(struct task_struct *p, struct sched_domain *sd
  * comparing the average scan cost (tracked in sd->avg_scan_cost) against the
  * average idle time for this rq (as found in rq->avg_idle).
  */
-static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int prev, int target)
+static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, bool has_idle_core, int target)
 {
 	struct cpumask *cpus = this_cpu_cpumask_var_ptr(select_idle_mask);
 	int i, cpu, idle_cpu = -1, nr = INT_MAX;
-	bool smt = test_idle_cores(target, false);
 	int this = smp_processor_id();
 	struct sched_domain *this_sd;
 	u64 time;
@@ -6131,36 +6127,27 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int p
 
 	cpumask_and(cpus, sched_domain_span(sd), p->cpus_ptr);
 
-	if (!smt) {
-		if (cpus_share_cache(prev, target)) {
-			/* No idle core. Check if prev has an idle sibling. */
-			i = select_idle_smt(p, sd, prev);
-			if ((unsigned int)i < nr_cpumask_bits)
-				return i;
-		}
+	if (sched_feat(SIS_PROP) && !has_idle_core) {
+		u64 avg_cost, avg_idle, span_avg;
 
-		if (sched_feat(SIS_PROP)) {
-			u64 avg_cost, avg_idle, span_avg;
+		/*
+		 * Due to large variance we need a large fuzz factor;
+		 * hackbench in particularly is sensitive here.
+		 */
+		avg_idle = this_rq()->avg_idle / 512;
+		avg_cost = this_sd->avg_scan_cost + 1;
 
-			/*
-			 * Due to large variance we need a large fuzz factor;
-			 * hackbench in particularly is sensitive here.
-			 */
-			avg_idle = this_rq()->avg_idle / 512;
-			avg_cost = this_sd->avg_scan_cost + 1;
+		span_avg = sd->span_weight * avg_idle;
+		if (span_avg > 4*avg_cost)
+			nr = div_u64(span_avg, avg_cost);
+		else
+			nr = 4;
 
-			span_avg = sd->span_weight * avg_idle;
-			if (span_avg > 4*avg_cost)
-				nr = div_u64(span_avg, avg_cost);
-			else
-				nr = 4;
-
-			time = cpu_clock(this);
-		}
+		time = cpu_clock(this);
 	}
 
 	for_each_cpu_wrap(cpu, cpus, target) {
-		if (smt) {
+		if (has_idle_core) {
 			i = select_idle_core(p, cpu, cpus, &idle_cpu);
 			if ((unsigned int)i < nr_cpumask_bits)
 				return i;
@@ -6174,10 +6161,10 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int p
 		}
 	}
 
-	if (smt)
+	if (has_idle_core)
 		set_idle_cores(this, false);
 
-	if (sched_feat(SIS_PROP) && !smt) {
+	if (sched_feat(SIS_PROP) && !has_idle_core) {
 		time = cpu_clock(this) - time;
 		update_avg(&this_sd->avg_scan_cost, time);
 	}
@@ -6224,6 +6211,7 @@ select_idle_capacity(struct task_struct *p, struct sched_domain *sd, int target)
  */
 static int select_idle_sibling(struct task_struct *p, int prev, int target)
 {
+	bool has_idle_core = false;
 	struct sched_domain *sd;
 	int i, recent_used_cpu;
 
@@ -6292,7 +6280,17 @@ symmetric:
 	if (!sd)
 		return target;
 
-	i = select_idle_cpu(p, sd, prev, target);
+	if (sched_smt_active()) {
+		has_idle_core = test_idle_cores(target, false);
+
+		if (!has_idle_core && cpus_share_cache(prev, target)) {
+			i = select_idle_smt(p, sd, prev);
+			if ((unsigned int)i < nr_cpumask_bits)
+				return i;
+		}
+	}
+
+	i = select_idle_cpu(p, sd, has_idle_core, target);
 	if ((unsigned)i < nr_cpumask_bits)
 		return i;
 
