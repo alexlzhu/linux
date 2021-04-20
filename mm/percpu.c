@@ -110,6 +110,9 @@
 #define PCPU_EMPTY_POP_PAGES_LOW	2
 #define PCPU_EMPTY_POP_PAGES_HIGH	4
 
+/* only schedule reclaim if there are at least N empty pop pages sidelined */
+#define PCPU_EMPTY_POP_RECLAIM_THRESHOLD	4
+
 #ifdef CONFIG_SMP
 /* default addr <-> pcpu_ptr mapping, override in asm/percpu.h if necessary */
 #ifndef __addr_to_pcpu_ptr
@@ -135,6 +138,9 @@ static int pcpu_unit_size __ro_after_init;
 static int pcpu_nr_units __ro_after_init;
 static int pcpu_atom_size __ro_after_init;
 int pcpu_nr_slots __ro_after_init;
+int pcpu_free_slot __ro_after_init;
+int pcpu_sidelined_slot __ro_after_init;
+int pcpu_to_depopulate_slot __ro_after_init;
 static size_t pcpu_chunk_struct_size __ro_after_init;
 
 /* cpus with the lowest and highest unit addresses */
@@ -180,19 +186,7 @@ static LIST_HEAD(pcpu_map_extend_chunks);
  * The reserved chunk doesn't contribute to the count.
  */
 int pcpu_nr_empty_pop_pages[PCPU_NR_CHUNK_TYPES];
-
-/*
- * List of chunks with a lot of free pages.  Used to depopulate them
- * asynchronously.
- */
-static struct list_head pcpu_depopulate_list[PCPU_NR_CHUNK_TYPES];
-
-/*
- * List of previously depopulated chunks.  They are not usually used for new
- * allocations, but can be returned back to service if a need arises.
- */
-static struct list_head pcpu_sideline_list[PCPU_NR_CHUNK_TYPES];
-
+int pcpu_nr_isolated_empty_pop_pages[PCPU_NR_CHUNK_TYPES];
 
 /*
  * The number of populated pages in use by the allocator, protected by
@@ -250,7 +244,7 @@ static int __pcpu_size_to_slot(int size)
 static int pcpu_size_to_slot(int size)
 {
 	if (size == pcpu_unit_size)
-		return pcpu_nr_slots - 1;
+		return pcpu_free_slot;
 	return __pcpu_size_to_slot(size);
 }
 
@@ -575,14 +569,43 @@ static void pcpu_chunk_relocate(struct pcpu_chunk *chunk, int oslot)
 {
 	int nslot = pcpu_chunk_slot(chunk);
 
-	/*
-	 * Keep isolated and depopulated chunks on a sideline.
-	 */
-	if (chunk->isolated || chunk->depopulated)
+	/* leave isolated chunks in-place */
+	if (chunk->isolated)
 		return;
 
 	if (oslot != nslot)
 		__pcpu_chunk_move(chunk, nslot, oslot < nslot);
+}
+
+static void pcpu_isolate_chunk(struct pcpu_chunk *chunk)
+{
+	enum pcpu_chunk_type type = pcpu_chunk_type(chunk);
+	struct list_head *pcpu_slot = pcpu_chunk_list(type);
+
+	lockdep_assert_held(&pcpu_lock);
+
+	if (!chunk->isolated) {
+		chunk->isolated = true;
+		pcpu_nr_empty_pop_pages[type] -= chunk->nr_empty_pop_pages;
+		pcpu_nr_isolated_empty_pop_pages[type] +=
+			chunk->nr_empty_pop_pages;
+		list_move(&chunk->list, &pcpu_slot[pcpu_sidelined_slot]);
+	}
+}
+
+static void pcpu_reintegrate_chunk(struct pcpu_chunk *chunk)
+{
+	enum pcpu_chunk_type type = pcpu_chunk_type(chunk);
+
+	lockdep_assert_held(&pcpu_lock);
+
+	if (chunk->isolated) {
+		chunk->isolated = false;
+		pcpu_nr_empty_pop_pages[type] += chunk->nr_empty_pop_pages;
+		pcpu_nr_isolated_empty_pop_pages[type] -=
+			chunk->nr_empty_pop_pages;
+		pcpu_chunk_relocate(chunk, -1);
+	}
 }
 
 /*
@@ -596,9 +619,16 @@ static void pcpu_chunk_relocate(struct pcpu_chunk *chunk, int oslot)
  */
 static inline void pcpu_update_empty_pages(struct pcpu_chunk *chunk, int nr)
 {
+	enum pcpu_chunk_type type = pcpu_chunk_type(chunk);
+
 	chunk->nr_empty_pop_pages += nr;
-	if (chunk != pcpu_reserved_chunk)
-		pcpu_nr_empty_pop_pages[pcpu_chunk_type(chunk)] += nr;
+	if (chunk != pcpu_reserved_chunk) {
+		if (chunk->isolated)
+			pcpu_nr_isolated_empty_pop_pages[type] += nr;
+		else
+			pcpu_nr_empty_pop_pages[type] += nr;
+
+	}
 }
 
 /*
@@ -1792,7 +1822,7 @@ static void __percpu *pcpu_alloc(size_t size, size_t align, bool reserved,
 
 restart:
 	/* search through normal chunks */
-	for (slot = pcpu_size_to_slot(size); slot < pcpu_nr_slots; slot++) {
+	for (slot = pcpu_size_to_slot(size); slot <= pcpu_sidelined_slot; slot++) {
 		list_for_each_entry_safe(chunk, next, &pcpu_slot[slot], list) {
 			off = pcpu_find_block_fit(chunk, bits, bit_align,
 						  is_atomic);
@@ -1803,22 +1833,10 @@ restart:
 			}
 
 			off = pcpu_alloc_area(chunk, bits, bit_align, off);
-			if (off >= 0)
+			if (off >= 0) {
+				pcpu_reintegrate_chunk(chunk);
 				goto area_found;
-
-		}
-	}
-
-	/* search through sidelined depopulated chunks */
-	list_for_each_entry(chunk, &pcpu_sideline_list[type], list) {
-		/*
-		 * If the allocation can fit the chunk, place the chunk back
-		 * into corresponding slot and restart the scanning.
-		 */
-		if (pcpu_check_chunk_hint(&chunk->chunk_md, bits, bit_align)) {
-			chunk->depopulated = false;
-			pcpu_chunk_relocate(chunk, -1);
-			goto restart;
+			}
 		}
 	}
 
@@ -1834,7 +1852,7 @@ restart:
 		goto fail;
 	}
 
-	if (list_empty(&pcpu_slot[pcpu_nr_slots - 1])) {
+	if (list_empty(&pcpu_slot[pcpu_free_slot])) {
 		chunk = pcpu_create_chunk(type, pcpu_gfp);
 		if (!chunk) {
 			err = "failed to allocate new chunk";
@@ -1979,14 +1997,17 @@ void __percpu *__alloc_reserved_percpu(size_t size, size_t align)
 /**
  * pcpu_balance_free - manage the amount of free chunks
  * @type: chunk type
+ * @empty_only: free chunks only if there are no populated pages
  *
- * Reclaim all fully free chunks except for the first one.
+ * If empty_only is %false, reclaim all fully free chunks regardless of the
+ * number of populated pages.  Otherwise, only reclaim chunks that have no
+ * populated pages.
  */
-static void pcpu_balance_free(enum pcpu_chunk_type type)
+static void pcpu_balance_free(enum pcpu_chunk_type type, bool empty_only)
 {
 	LIST_HEAD(to_free);
 	struct list_head *pcpu_slot = pcpu_chunk_list(type);
-	struct list_head *free_head = &pcpu_slot[pcpu_nr_slots - 1];
+	struct list_head *free_head = &pcpu_slot[pcpu_free_slot];
 	struct pcpu_chunk *chunk, *next;
 
 	/*
@@ -2002,7 +2023,8 @@ static void pcpu_balance_free(enum pcpu_chunk_type type)
 		if (chunk == list_first_entry(free_head, struct pcpu_chunk, list))
 			continue;
 
-		list_move(&chunk->list, &to_free);
+		if (!empty_only || chunk->nr_empty_pop_pages == 0)
+			list_move(&chunk->list, &to_free);
 	}
 
 	spin_unlock_irq(&pcpu_lock);
@@ -2023,7 +2045,7 @@ static void pcpu_balance_free(enum pcpu_chunk_type type)
 }
 
 /**
- * pcpu_grow_populated - populate chunk(s) to satisfy atomic allocations
+ * pcpu_balance_populated - manage the amount of populated pages
  * @type: chunk type
  *
  * Maintain a certain amount of populated pages to satisfy atomic allocations.
@@ -2032,16 +2054,36 @@ static void pcpu_balance_free(enum pcpu_chunk_type type)
  * allocation causes the failure as it is possible that requests can be
  * serviced from already backed regions.
  */
-static void pcpu_grow_populated(enum pcpu_chunk_type type, int nr_to_pop)
+static void pcpu_balance_populated(enum pcpu_chunk_type type)
 {
 	/* gfp flags passed to underlying allocators */
 	const gfp_t gfp = GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN;
 	struct list_head *pcpu_slot = pcpu_chunk_list(type);
 	struct pcpu_chunk *chunk;
-	int slot, ret;
+	int slot, nr_to_pop, ret;
 
+	/*
+	 * Ensure there are certain number of free populated pages for
+	 * atomic allocs.  Fill up from the most packed so that atomic
+	 * allocs don't increase fragmentation.  If atomic allocation
+	 * failed previously, always populate the maximum amount.  This
+	 * should prevent atomic allocs larger than PAGE_SIZE from keeping
+	 * failing indefinitely; however, large atomic allocs are not
+	 * something we support properly and can be highly unreliable and
+	 * inefficient.
+	 */
 retry_pop:
-	for (slot = pcpu_size_to_slot(PAGE_SIZE); slot < pcpu_nr_slots; slot++) {
+	if (pcpu_atomic_alloc_failed) {
+		nr_to_pop = PCPU_EMPTY_POP_PAGES_HIGH;
+		/* best effort anyway, don't worry about synchronization */
+		pcpu_atomic_alloc_failed = false;
+	} else {
+		nr_to_pop = clamp(PCPU_EMPTY_POP_PAGES_HIGH -
+				  pcpu_nr_empty_pop_pages[type],
+				  0, PCPU_EMPTY_POP_PAGES_HIGH);
+	}
+
+	for (slot = pcpu_size_to_slot(PAGE_SIZE); slot <= pcpu_free_slot; slot++) {
 		unsigned int nr_unpop = 0, rs, re;
 
 		if (!nr_to_pop)
@@ -2084,55 +2126,63 @@ retry_pop:
 		if (chunk) {
 			spin_lock_irq(&pcpu_lock);
 			pcpu_chunk_relocate(chunk, -1);
-			nr_to_pop = max_t(int, 0, nr_to_pop - chunk->nr_populated);
 			spin_unlock_irq(&pcpu_lock);
-			if (nr_to_pop)
-				goto retry_pop;
+			goto retry_pop;
 		}
 	}
 }
 
 /**
- * pcpu_shrink_populated - scan chunks and release unused pages to the system
+ * pcpu_reclaim_populated - scan over to_depopulate chunks and free empty pages
  * @type: chunk type
  *
- * Scan over chunks in the depopulate list, try to release unused populated
- * pages to the system.  Depopulated chunks are sidelined to prevent further
- * allocations without a need.  Skipped and fully free chunks are returned
- * to corresponding slots.  Stop depopulating if the number of empty populated
- * pages reaches the threshold.  Each chunk is scanned in the reverse order to
- * keep populated pages close to the beginning of the chunk.
+ * Scan over chunks in the depopulate list and try to release unused populated
+ * pages back to the system.  Depopulated chunks are sidelined to prevent
+ * repopulating these pages unless required.  Fully free chunks are reintegrated
+ * and freed accordingly (1 is kept around).  If we drop below the empty
+ * populated pages threshold, reintegrate the chunk if it has empty free pages.
+ * Each chunk is scanned in the reverse order to keep populated pages close to
+ * the beginning of the chunk.
  */
-static void pcpu_shrink_populated(enum pcpu_chunk_type type)
+static void pcpu_reclaim_populated(enum pcpu_chunk_type type)
 {
+	struct list_head *pcpu_slot = pcpu_chunk_list(type);
+	struct pcpu_chunk *chunk;
 	struct pcpu_block_md *block;
-	struct pcpu_chunk *chunk, *tmp;
 	LIST_HEAD(to_depopulate);
-	bool depopulated;
 	int i, end;
 
 	spin_lock_irq(&pcpu_lock);
 
-	list_splice_init(&pcpu_depopulate_list[type], &to_depopulate);
+	list_splice_init(&pcpu_slot[pcpu_to_depopulate_slot], &to_depopulate);
 
-	list_for_each_entry_safe(chunk, tmp, &to_depopulate, list) {
+restart:
+	/*
+	 * Once a chunk is isolated to the to_depopulate list, the chunk is no
+	 * longer discoverable to allocations whom may populate pages.  The only
+	 * other accessor is the free path which only returns area back to the
+	 * allocator not touching the populated bitmap.
+	 */
+	while (!list_empty(&to_depopulate)) {
+		chunk = list_first_entry(&to_depopulate, struct pcpu_chunk,
+					 list);
 		WARN_ON(chunk->immutable);
-		depopulated = false;
 
 		/*
 		 * Scan chunk's pages in the reverse order to keep populated
 		 * pages close to the beginning of the chunk.
 		 */
 		for (i = chunk->nr_pages - 1, end = -1; i >= 0; i--) {
-			/*
-			 * If the chunk has no empty pages or
-			 * we're short on empty pages in general,
-			 * just put the chunk back into the original slot.
-			 */
-			if (!chunk->nr_empty_pop_pages ||
-			    pcpu_nr_empty_pop_pages[type] <=
-			    PCPU_EMPTY_POP_PAGES_HIGH)
+			/* no more work to do */
+			if (chunk->nr_empty_pop_pages == 0)
 				break;
+
+			/* reintegrate chunk to prevent atomic alloc failures */
+			if (pcpu_nr_empty_pop_pages[type] <
+			    PCPU_EMPTY_POP_PAGES_HIGH) {
+				pcpu_reintegrate_chunk(chunk);
+				goto restart;
+			}
 
 			/*
 			 * If the page is empty and populated, start or
@@ -2150,14 +2200,9 @@ static void pcpu_shrink_populated(enum pcpu_chunk_type type)
 				i--;
 			}
 
-			/*
-			 * Otherwise check if there is an active range,
-			 * and if yes, depopulate it.
-			 */
+			/* depopulate if there is an active range */
 			if (end == -1)
 				continue;
-
-			depopulated = true;
 
 			spin_unlock_irq(&pcpu_lock);
 			pcpu_depopulate_chunk(chunk, i + 1, end + 1);
@@ -2166,81 +2211,52 @@ static void pcpu_shrink_populated(enum pcpu_chunk_type type)
 
 			pcpu_chunk_depopulated(chunk, i + 1, end + 1);
 
-			/*
-			 * Reset the range and continue.
-			 */
+			/* reset the range and continue */
 			end = -1;
 		}
 
-		chunk->isolated = false;
-		if (chunk->free_bytes == pcpu_unit_size || !depopulated) {
-			/*
-			 * If the chunk is empty or hasn't been depopulated,
-			 * return it to the original slot.
-			 */
-			pcpu_chunk_relocate(chunk, -1);
-		} else {
-			/*
-			 * Otherwise put the chunk to the list of depopulated
-			 * chunks.
-			 */
-			chunk->depopulated = true;
-			list_move(&chunk->list, &pcpu_sideline_list[type]);
-		}
+		if (chunk->free_bytes == pcpu_unit_size)
+			pcpu_reintegrate_chunk(chunk);
+		else
+			list_move(&chunk->list,
+				  &pcpu_slot[pcpu_sidelined_slot]);
+	}
+
+	if (pcpu_nr_isolated_empty_pop_pages[type] >=
+	    PCPU_EMPTY_POP_RECLAIM_THRESHOLD) {
+		list_splice_tail_init(&pcpu_slot[pcpu_sidelined_slot],
+				      &pcpu_slot[pcpu_to_depopulate_slot]);
+		pcpu_schedule_balance_work();
 	}
 
 	spin_unlock_irq(&pcpu_lock);
 }
 
 /**
- * pcpu_balance_populated - manage the amount of populated pages
- * @type: chunk type
- *
- * Populate or depopulate chunks to maintain a certain amount
- * of free pages to satisfy atomic allocations, but not waste
- * large amounts of memory.
- */
-static void pcpu_balance_populated(enum pcpu_chunk_type type)
-{
-	int nr_to_pop;
-
-	/*
-	 * Ensure there are certain number of free populated pages for
-	 * atomic allocs.  Fill up from the most packed so that atomic
-	 * allocs don't increase fragmentation.  If atomic allocation
-	 * failed previously, always populate the maximum amount.  This
-	 * should prevent atomic allocs larger than PAGE_SIZE from keeping
-	 * failing indefinitely; however, large atomic allocs are not
-	 * something we support properly and can be highly unreliable and
-	 * inefficient.
-	 */
-	if (pcpu_atomic_alloc_failed) {
-		nr_to_pop = PCPU_EMPTY_POP_PAGES_HIGH;
-		/* best effort anyway, don't worry about synchronization */
-		pcpu_atomic_alloc_failed = false;
-		pcpu_grow_populated(type, nr_to_pop);
-	} else if (pcpu_nr_empty_pop_pages[type] < PCPU_EMPTY_POP_PAGES_HIGH) {
-		nr_to_pop = PCPU_EMPTY_POP_PAGES_HIGH - pcpu_nr_empty_pop_pages[type];
-		pcpu_grow_populated(type, nr_to_pop);
-	} else if (!list_empty(&pcpu_depopulate_list[type])) {
-		pcpu_shrink_populated(type);
-	}
-}
-
-/**
  * pcpu_balance_workfn - manage the amount of free chunks and populated pages
  * @work: unused
  *
- * Call pcpu_balance_free() and pcpu_balance_populated() for each chunk type.
+ * For each chunk type, manage the number of fully free chunks and the number of
+ * populated pages.  An important thing to consider is when pages are free and
+ * how they contribute to the global counts.
  */
 static void pcpu_balance_workfn(struct work_struct *work)
 {
 	enum pcpu_chunk_type type;
 
+	/*
+	 * pcpu_balance_free() is called twice because the first time we may
+	 * trim pages in the active pcpu_nr_empty_pop_pages which may cause us
+	 * to grow other chunks.  This then gives pcpu_reclaim_populated() time
+	 * to move fully free chunks to the active list to be freed if
+	 * appropriate.
+	 */
 	for (type = 0; type < PCPU_NR_CHUNK_TYPES; type++) {
 		mutex_lock(&pcpu_alloc_mutex);
-		pcpu_balance_free(type);
+		pcpu_balance_free(type, false);
+		pcpu_reclaim_populated(type);
 		pcpu_balance_populated(type);
+		pcpu_balance_free(type, true);
 		mutex_unlock(&pcpu_alloc_mutex);
 	}
 }
@@ -2283,33 +2299,26 @@ void free_percpu(void __percpu *ptr)
 
 	/*
 	 * If there are more than one fully free chunks, wake up grim reaper.
-	 * Otherwise if at least 1/4 of its pages are empty and there is no
-	 * system-wide shortage of empty pages aside from this chunk, isolate
-	 * the chunk and schedule an async depopulation.  If the chunk was
-	 * depopulated previously and got free pages, depopulate it too.
+	 * If the chunk is isolated, it may be in the process of being
+	 * reclaimed.  Let reclaim manage cleaning up of that chunk.
 	 */
-	if (chunk->free_bytes == pcpu_unit_size) {
+	if (!chunk->isolated && chunk->free_bytes == pcpu_unit_size) {
 		struct pcpu_chunk *pos;
 
-		list_for_each_entry(pos, &pcpu_slot[pcpu_nr_slots - 1], list)
+		list_for_each_entry(pos, &pcpu_slot[pcpu_free_slot], list)
 			if (pos != chunk) {
 				need_balance = true;
 				break;
 			}
-		if (chunk->depopulated) {
-			chunk->depopulated = false;
-			pcpu_chunk_relocate(chunk, -1);
+	} else if (pcpu_should_reclaim_chunk(chunk)) {
+		pcpu_isolate_chunk(chunk);
+		if (chunk->free_bytes == pcpu_unit_size ||
+		    pcpu_nr_isolated_empty_pop_pages[pcpu_chunk_type(chunk)] >=
+		    PCPU_EMPTY_POP_RECLAIM_THRESHOLD) {
+			list_splice_tail_init(&pcpu_slot[pcpu_sidelined_slot],
+					      &pcpu_slot[pcpu_to_depopulate_slot]);
+			need_balance = true;
 		}
-	} else if (chunk != pcpu_first_chunk && chunk != pcpu_reserved_chunk &&
-		   !chunk->isolated &&
-		   (pcpu_nr_empty_pop_pages[pcpu_chunk_type(chunk)] >
-		    PCPU_EMPTY_POP_PAGES_HIGH + chunk->nr_empty_pop_pages) &&
-		   ((chunk->depopulated && chunk->nr_empty_pop_pages) ||
-		    (chunk->nr_empty_pop_pages >= chunk->nr_pages / 4))) {
-		list_move(&chunk->list, &pcpu_depopulate_list[pcpu_chunk_type(chunk)]);
-		chunk->isolated = true;
-		chunk->depopulated = false;
-		need_balance = true;
 	}
 
 	trace_percpu_free_percpu(chunk->base_addr, off, ptr);
@@ -2727,7 +2736,10 @@ void __init pcpu_setup_first_chunk(const struct pcpu_alloc_info *ai,
 	 * Allocate chunk slots.  The additional last slot is for
 	 * empty chunks.
 	 */
-	pcpu_nr_slots = __pcpu_size_to_slot(pcpu_unit_size) + 2;
+	pcpu_free_slot = __pcpu_size_to_slot(pcpu_unit_size) + 1;
+	pcpu_sidelined_slot = pcpu_free_slot + 1;
+	pcpu_to_depopulate_slot = pcpu_sidelined_slot + 1;
+	pcpu_nr_slots = pcpu_to_depopulate_slot + 1;
 	pcpu_chunk_lists = memblock_alloc(pcpu_nr_slots *
 					  sizeof(pcpu_chunk_lists[0]) *
 					  PCPU_NR_CHUNK_TYPES,
@@ -2740,9 +2752,6 @@ void __init pcpu_setup_first_chunk(const struct pcpu_alloc_info *ai,
 	for (type = 0; type < PCPU_NR_CHUNK_TYPES; type++) {
 		for (i = 0; i < pcpu_nr_slots; i++)
 			INIT_LIST_HEAD(&pcpu_chunk_list(type)[i]);
-
-		INIT_LIST_HEAD(&pcpu_depopulate_list[type]);
-		INIT_LIST_HEAD(&pcpu_sideline_list[type]);
 	}
 
 	/*
