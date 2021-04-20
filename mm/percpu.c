@@ -2296,10 +2296,6 @@ void free_percpu(void __percpu *ptr)
 				need_balance = true;
 				break;
 			}
-		if (chunk->depopulated) {
-			chunk->depopulated = false;
-			pcpu_chunk_relocate(chunk, -1);
-		}
 	} else if (chunk != pcpu_first_chunk && chunk != pcpu_reserved_chunk &&
 		   !chunk->isolated &&
 		   (pcpu_nr_empty_pop_pages[pcpu_chunk_type(chunk)] >
