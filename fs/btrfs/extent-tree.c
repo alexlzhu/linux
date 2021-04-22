@@ -3748,12 +3748,44 @@ get_first_block_group(struct btrfs_space_info *space_info, int index,
 }
 
 static struct btrfs_block_group *
+get_next_block_group_slow(struct btrfs_space_info *space_info,
+			  struct btrfs_block_group *block_group, int index,
+			  int delalloc)
+{
+	struct btrfs_block_group *ret = NULL;
+	struct btrfs_block_group *pos = block_group;
+
+	if (!block_group)
+		pos = list_first_entry(&space_info->block_groups[index],
+				       struct btrfs_block_group,
+				       list);
+	else
+		pos = list_next_entry(pos, list);
+	list_for_each_entry_from(pos, &space_info->block_groups[index], list) {
+		if (pos->length != pos->used) {
+			ret = pos;
+			btrfs_get_block_group(ret);
+			break;
+		}
+	}
+	if (block_group)
+		btrfs_release_block_group(block_group, delalloc);
+	if (ret)
+		btrfs_lock_block_group(ret, delalloc);
+	return ret;
+}
+
+static struct btrfs_block_group *
 get_next_block_group(struct btrfs_space_info *space_info,
 		     struct btrfs_block_group *block_group, int index,
-		     int delalloc)
+		     int delalloc, bool full_search)
 {
 	struct btrfs_block_group *ret = NULL;
 	struct rb_node *n;
+
+	if (full_search)
+		return get_next_block_group_slow(space_info, block_group,
+						 index, delalloc);
 
 	read_lock(&space_info->groups_lock);
 	if (!block_group)
@@ -3942,7 +3974,7 @@ search:
 	down_read(&space_info->groups_sem);
 	while ((block_group =
 		get_next_block_group(space_info, block_group, ffe_ctl.index,
-				     delalloc)) != NULL) {
+				     delalloc, full_search)) != NULL) {
 		/* If the block group is read-only, we can skip it entirely. */
 		if (unlikely(block_group->ro))
 			continue;
