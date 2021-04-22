@@ -10602,12 +10602,7 @@ out:
 	if (this_rq->nr_running != this_rq->cfs.h_nr_running)
 		pulled_task = -1;
 
-	/*
-	 * If we are no longer idle, do not let the time spent here pull
-	 * down this_rq->avg_idle. That could lead to newidle_balance not
-	 * doing enough work, and the CPU actually going idle.
-	 */
-	if (pulled_task || this_rq->ttwu_pending)
+	if (pulled_task)
 		this_rq->idle_stamp = 0;
 
 	rq_repin_lock(this_rq, rf);
