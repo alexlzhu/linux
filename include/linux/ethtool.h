@@ -748,7 +748,7 @@ struct ethtool_phy_ops {
  */
 void ethtool_set_ethtool_phy_ops(const struct ethtool_phy_ops *ops);
 
-/**
+/*
  * ethtool_params_from_link_mode - Derive link parameters from a given link mode
  * @link_ksettings: Link parameters to be derived from the link mode
  * @link_mode: Link mode
