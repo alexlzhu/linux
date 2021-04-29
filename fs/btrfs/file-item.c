@@ -247,9 +247,11 @@ blk_status_t btrfs_lookup_bio_sums(struct inode *inode, struct bio *bio,
 						offset + fs_info->sectorsize - 1,
 						EXTENT_NODATASUM);
 				} else {
-					btrfs_info_rl(fs_info,
-						   "no csum found for inode %llu start %llu",
-					       btrfs_ino(BTRFS_I(inode)), offset);
+					btrfs_crit_rl(fs_info,
+						   "no csum found for root %llu inode %llu start %llu %ld",
+					       BTRFS_I(inode)->root->root_key.objectid,
+					       btrfs_ino(BTRFS_I(inode)), offset,
+					       PTR_ERR(item));
 				}
 				item = NULL;
 				btrfs_release_path(path);
