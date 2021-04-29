@@ -67,6 +67,10 @@ def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = Tr
     info = buildinfo()
     uname = info.kernelversion + "-" + extra_version(info, flavor, debug)
 
+    llvm_macro = ""
+    if flavor and "clang" in flavor:
+        llvm_macro = "LLVM=1 LLVM_IAS=1"
+
     # convenience rule to inspect uname
     native.genrule(
         name = name + "-uname",
@@ -105,9 +109,9 @@ def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = Tr
         cmd = """cd /ro/source
         # there needs to be a writable .config
         cp /tmp/config /rw/compile/.config
-        make EXTRAVERSION=-{extra} O=/rw/compile olddefconfig
-        make EXTRAVERSION=-{extra} O=/rw/compile -s -j`nproc`
-        """.format(extra = extra_version(info, flavor, debug)),
+        make EXTRAVERSION=-{extra} O=/rw/compile {llvm_macro} olddefconfig
+        make EXTRAVERSION=-{extra} O=/rw/compile {llvm_macro} -s -j`nproc`
+        """.format(extra = extra_version(info, flavor, debug), llvm_macro = llvm_macro),
         bind_ro = [
             ("//:sources", "/ro/source"),
             (config_target, "/tmp/config"),

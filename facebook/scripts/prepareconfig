@@ -19,7 +19,7 @@ shift
 fconf=()
 for flavor in $* ; do
   FCONF=$(find ${family}/config | \
-          egrep "flavor.*${flavor}.*\.config" | \
+          egrep "flavor.*-${flavor}-.*\.config" | \
           egrep "${arch}|common")
   if [ -z "$FCONF" ]; then
     echo "Found no flavor configuration for '${flavor}'." 1>&2
