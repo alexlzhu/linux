@@ -1,6 +1,9 @@
 load(":defs.bzl", "buildinfo", "kernel")
 load("//facebook/build:container.bzl", "container_genrule")
 load("//facebook/config:defs.bzl", "DEBUG_OPTIONS", "FLAVORS")
+load("//facebook/build:modules.bzl", "standalone_module")
+
+standalone_module()
 
 # hack to just bind the repo root into the container - this is somewhat
 # against buck's idea of explicit dependencies, but we can reasonably
