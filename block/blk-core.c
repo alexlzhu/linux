@@ -1404,12 +1404,10 @@ static unsigned long __part_start_io_acct(struct hd_struct *part,
 	const int sgrp = op_stat_group(op);
 	unsigned long now = READ_ONCE(jiffies);
 
-	part_stat_lock();
 	update_io_ticks(part, now, false);
 	part_stat_inc(part, ios[sgrp]);
 	part_stat_add(part, sectors[sgrp], sectors);
 	part_stat_local_inc(part, in_flight[op_is_write(op)]);
-	part_stat_unlock();
 
 	return now;
 }
@@ -1417,6 +1415,9 @@ static unsigned long __part_start_io_acct(struct hd_struct *part,
 unsigned long part_start_io_acct(struct gendisk *disk, struct hd_struct **part,
 				 struct bio *bio)
 {
+	unsigned long ret;
+
+	part_stat_lock();
 	*part = disk_map_sector_rcu(disk, bio->bi_iter.bi_sector);
 	if (!hd_struct_try_get(*part)) {
 		/*
@@ -1431,14 +1432,21 @@ unsigned long part_start_io_acct(struct gendisk *disk, struct hd_struct **part,
 		hd_struct_get(*part);
 	}
 
-	return __part_start_io_acct(*part, bio_sectors(bio), bio_op(bio));
+	ret =  __part_start_io_acct(*part, bio_sectors(bio), bio_op(bio));
+	part_stat_unlock();
+	return ret;
 }
 EXPORT_SYMBOL_GPL(part_start_io_acct);
 
 unsigned long disk_start_io_acct(struct gendisk *disk, unsigned int sectors,
 				 unsigned int op)
 {
-	return __part_start_io_acct(&disk->part0, sectors, op);
+	unsigned long ret;
+
+	part_stat_lock();
+	ret = __part_start_io_acct(&disk->part0, sectors, op);
+	part_stat_unlock();
+	return ret;
 }
 EXPORT_SYMBOL(disk_start_io_acct);
 
