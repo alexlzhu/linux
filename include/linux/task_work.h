@@ -13,8 +13,12 @@ init_task_work(struct callback_head *twork, task_work_func_t func)
 	twork->func = func;
 }
 
-#define TWA_RESUME	1
-#define TWA_SIGNAL	2
+enum task_work_notify_mode {
+	TWA_NONE,
+	TWA_RESUME,
+	TWA_SIGNAL,
+};
+
 int task_work_add(struct task_struct *task, struct callback_head *twork, int);
 
 struct callback_head *task_work_cancel(struct task_struct *, task_work_func_t);
