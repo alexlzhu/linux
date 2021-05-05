@@ -125,7 +125,10 @@ def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = Tr
         name = name + "-sign",
         cmd = """
         if [ "{sign}" == "true" ]; then
-          autograph_client.par kmod --sign-key {sign_key} --kernel-tree $(location :{name}-compile)
+          # we have actual modules to sign - lol and kdump doesn't have any
+          if [ "`find $(location :{name}-compile) -name '*.ko' -print -quit`" != "" ]; then
+            autograph_client.par kmod --sign-key {sign_key} --kernel-tree $(location :{name}-compile)
+          fi
         fi
         """.format(sign = sign, name = name, sign_key = sign_key),
         out = ".",
