@@ -1625,6 +1625,47 @@ static void mlx5_esw_mode_change_notify(struct mlx5_eswitch *esw, u16 mode)
 	blocking_notifier_call_chain(&esw->n_head, 0, &info);
 }
 
+static int mlx5_esw_acls_ns_init(struct mlx5_eswitch *esw)
+{
+	struct mlx5_core_dev *dev = esw->dev;
+	int total_vports;
+	int err;
+
+	total_vports = mlx5_eswitch_get_total_vports(dev);
+
+	if (MLX5_CAP_ESW_EGRESS_ACL(dev, ft_support)) {
+		err = mlx5_fs_egress_acls_init(dev, total_vports);
+		if (err)
+			return err;
+	} else {
+		esw_warn(dev, "engress ACL is not supported by FW\n");
+	}
+
+	if (MLX5_CAP_ESW_INGRESS_ACL(dev, ft_support)) {
+		err = mlx5_fs_ingress_acls_init(dev, total_vports);
+		if (err)
+			goto err;
+	} else {
+		esw_warn(dev, "ingress ACL is not supported by FW\n");
+	}
+	return 0;
+
+err:
+	if (MLX5_CAP_ESW_EGRESS_ACL(dev, ft_support))
+		mlx5_fs_egress_acls_cleanup(dev);
+	return err;
+}
+
+static void mlx5_esw_acls_ns_cleanup(struct mlx5_eswitch *esw)
+{
+	struct mlx5_core_dev *dev = esw->dev;
+
+	if (MLX5_CAP_ESW_INGRESS_ACL(dev, ft_support))
+		mlx5_fs_ingress_acls_cleanup(dev);
+	if (MLX5_CAP_ESW_EGRESS_ACL(dev, ft_support))
+		mlx5_fs_egress_acls_cleanup(dev);
+}
+
 /**
  * mlx5_eswitch_enable_locked - Enable eswitch
  * @esw:	Pointer to eswitch
@@ -1653,13 +1694,11 @@ int mlx5_eswitch_enable_locked(struct mlx5_eswitch *esw, int mode, int num_vfs)
 		return -EOPNOTSUPP;
 	}
 
-	if (!MLX5_CAP_ESW_INGRESS_ACL(esw->dev, ft_support))
-		esw_warn(esw->dev, "ingress ACL is not supported by FW\n");
-
-	if (!MLX5_CAP_ESW_EGRESS_ACL(esw->dev, ft_support))
-		esw_warn(esw->dev, "engress ACL is not supported by FW\n");
-
 	mlx5_eswitch_get_devlink_param(esw);
+
+	err = mlx5_esw_acls_ns_init(esw);
+	if (err)
+		return err;
 
 	mlx5_eswitch_update_num_of_vfs(esw, num_vfs);
 
@@ -1696,6 +1735,7 @@ abort:
 		mlx5_rescan_drivers(esw->dev);
 
 	esw_destroy_tsar(esw);
+	mlx5_esw_acls_ns_cleanup(esw);
 	return err;
 }
 
@@ -1764,6 +1804,7 @@ void mlx5_eswitch_disable_locked(struct mlx5_eswitch *esw, bool clear_vf)
 		mlx5_rescan_drivers(esw->dev);
 
 	esw_destroy_tsar(esw);
+	mlx5_esw_acls_ns_cleanup(esw);
 
 	if (clear_vf)
 		mlx5_eswitch_clear_vf_vports_info(esw);
@@ -2034,6 +2075,10 @@ int mlx5_eswitch_set_vport_state(struct mlx5_eswitch *esw,
 		vport = 0;
 	}
 	mutex_lock(&esw->state_lock);
+	if (esw->mode != MLX5_ESWITCH_LEGACY) {
+		err = -EOPNOTSUPP;
+		goto unlock;
+	}
 
 	err = mlx5_modify_vport_admin_state(esw->dev, opmod, vport, other_vport, link_state);
 	if (err) {
@@ -2105,7 +2150,7 @@ int mlx5_eswitch_set_vport_vlan(struct mlx5_eswitch *esw,
 				u16 vport, u16 vlan, u8 qos)
 {
 	u8 set_flags = 0;
-	int err;
+	int err = 0;
 
 	if (!ESW_ALLOWED(esw))
 		return -EPERM;
@@ -2114,9 +2159,18 @@ int mlx5_eswitch_set_vport_vlan(struct mlx5_eswitch *esw,
 		set_flags = SET_VLAN_STRIP | SET_VLAN_INSERT;
 
 	mutex_lock(&esw->state_lock);
-	err = __mlx5_eswitch_set_vport_vlan(esw, vport, vlan, qos, set_flags);
-	mutex_unlock(&esw->state_lock);
+	if (esw->mode != MLX5_ESWITCH_LEGACY) {
+		if (!vlan)
+			goto unlock; /* compatibility with libvirt */
 
+		err = -EOPNOTSUPP;
+		goto unlock;
+	}
+
+	err = __mlx5_eswitch_set_vport_vlan(esw, vport, vlan, qos, set_flags);
+
+unlock:
+	mutex_unlock(&esw->state_lock);
 	return err;
 }
 
@@ -2133,6 +2187,10 @@ int mlx5_eswitch_set_vport_spoofchk(struct mlx5_eswitch *esw,
 		return PTR_ERR(evport);
 
 	mutex_lock(&esw->state_lock);
+	if (esw->mode != MLX5_ESWITCH_LEGACY) {
+		err = -EOPNOTSUPP;
+		goto unlock;
+	}
 	pschk = evport->info.spoofchk;
 	evport->info.spoofchk = spoofchk;
 	if (pschk && !is_valid_ether_addr(evport->info.mac))
@@ -2143,8 +2201,9 @@ int mlx5_eswitch_set_vport_spoofchk(struct mlx5_eswitch *esw,
 		err = esw_acl_ingress_lgcy_setup(esw, evport);
 	if (err)
 		evport->info.spoofchk = pschk;
-	mutex_unlock(&esw->state_lock);
 
+unlock:
+	mutex_unlock(&esw->state_lock);
 	return err;
 }
 
@@ -2265,6 +2324,7 @@ int mlx5_eswitch_set_vport_trust(struct mlx5_eswitch *esw,
 				 u16 vport, bool setting)
 {
 	struct mlx5_vport *evport = mlx5_eswitch_get_vport(esw, vport);
+	int err = 0;
 
 	if (!ESW_ALLOWED(esw))
 		return -EPERM;
@@ -2272,12 +2332,17 @@ int mlx5_eswitch_set_vport_trust(struct mlx5_eswitch *esw,
 		return PTR_ERR(evport);
 
 	mutex_lock(&esw->state_lock);
+	if (esw->mode != MLX5_ESWITCH_LEGACY) {
+		err = -EOPNOTSUPP;
+		goto unlock;
+	}
 	evport->info.trusted = setting;
 	if (evport->enabled)
 		esw_vport_change_handle_locked(evport);
-	mutex_unlock(&esw->state_lock);
 
-	return 0;
+unlock:
+	mutex_unlock(&esw->state_lock);
+	return err;
 }
 
 static u32 calculate_vports_min_rate_divider(struct mlx5_eswitch *esw)
@@ -2552,3 +2617,16 @@ void mlx5_esw_event_notifier_unregister(struct mlx5_eswitch *esw, struct notifie
 {
 	blocking_notifier_chain_unregister(&esw->n_head, nb);
 }
+
+/**
+ * mlx5_eswitch_get_total_vports - Get total vports of the eswitch
+ *
+ * @dev: Pointer to core device
+ *
+ * mlx5_eswitch_get_total_vports returns total number of eswitch vports.
+ */
+u16 mlx5_eswitch_get_total_vports(const struct mlx5_core_dev *dev)
+{
+	return MLX5_SPECIAL_VPORTS(dev) + mlx5_core_max_vfs(dev) + mlx5_sf_max_functions(dev);
+}
+EXPORT_SYMBOL_GPL(mlx5_eswitch_get_total_vports);
