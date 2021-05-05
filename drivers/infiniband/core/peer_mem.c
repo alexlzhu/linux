@@ -307,6 +307,17 @@ static void ib_unmap_peer_client(struct ib_umem_peer *umem_p)
 
 	lockdep_assert_held(&umem_p->mapping_lock);
 
+	if (umem_p->last_sg) {
+		umem_p->last_sg->length = umem_p->last_length;
+		sg_dma_len(umem_p->last_sg) = umem_p->last_dma_length;
+	}
+
+	if (umem_p->first_sg) {
+		umem_p->first_sg->dma_address = umem_p->first_dma_address;
+		umem_p->first_sg->length = umem_p->first_length;
+		sg_dma_len(umem_p->first_sg) = umem_p->first_dma_length;
+	}
+
 	peer_mem->dma_unmap(&umem_p->umem.sg_head, umem_p->peer_client_context,
 			    umem_p->umem.ibdev->dma_device);
 	peer_mem->put_pages(&umem_p->umem.sg_head, umem_p->peer_client_context);
@@ -334,6 +345,7 @@ static int ib_invalidate_peer_memory(void *reg_handle, u64 core_context)
 	 * proper kref, an xarray is used.
 	 */
 	xa_lock(&ib_peer_client->umem_xa);
+	ib_peer_client->stats.num_free_callbacks += 1;
 	umem_p = xa_load(&ib_peer_client->umem_xa, core_context);
 	if (!umem_p)
 		goto out_unlock;
@@ -381,10 +393,49 @@ void ib_umem_activate_invalidation_notifier(struct ib_umem *umem,
 }
 EXPORT_SYMBOL(ib_umem_activate_invalidation_notifier);
 
+static void fix_peer_sgls(struct ib_umem_peer *umem_p, unsigned long peer_page_size)
+{
+	struct ib_umem *umem = &umem_p->umem;
+	struct scatterlist *sg;
+	int i;
+
+	for_each_sg(umem_p->umem.sg_head.sgl, sg, umem_p->umem.nmap, i) {
+		if (i == 0) {
+			unsigned long offset;
+
+			umem_p->first_sg = sg;
+			umem_p->first_dma_address = sg->dma_address;
+			umem_p->first_dma_length = sg_dma_len(sg);
+			umem_p->first_length = sg->length;
+
+			offset = ALIGN_DOWN(umem->address, PAGE_SIZE) -
+				 ALIGN_DOWN(umem->address, peer_page_size);
+			sg->dma_address += offset;
+			sg_dma_len(sg) -= offset;
+			sg->length -= offset;
+		}
+
+		if (i == umem_p->umem.nmap - 1) {
+			unsigned long trim;
+
+			umem_p->last_sg = sg;
+			umem_p->last_dma_length = sg_dma_len(sg);
+			umem_p->last_length = sg->length;
+
+			trim = ALIGN(umem->address + umem->length,
+				     peer_page_size) -
+			       ALIGN(umem->address + umem->length, PAGE_SIZE);
+			sg_dma_len(sg) -= trim;
+			sg->length -= trim;
+		}
+	}
+}
+
 struct ib_umem *ib_peer_umem_get(struct ib_umem *old_umem, int old_ret,
 				 unsigned long peer_mem_flags)
 {
 	struct ib_peer_memory_client *ib_peer_client;
+	unsigned long peer_page_size;
 	void *peer_client_context;
 	struct ib_umem_peer *umem_p;
 	int ret;
@@ -435,15 +486,16 @@ struct ib_umem *ib_peer_umem_get(struct ib_umem *old_umem, int old_ret,
 	if (ret)
 		goto err_xa;
 
-	umem_p->umem.page_shift =
-		ilog2(ib_peer_client->peer_mem->get_page_size(peer_client_context));
-
 	ret = ib_peer_client->peer_mem->dma_map(&umem_p->umem.sg_head,
 						peer_client_context,
 						umem_p->umem.ibdev->dma_device,
 						0, &umem_p->umem.nmap);
 	if (ret)
 		goto err_pages;
+
+	peer_page_size = ib_peer_client->peer_mem->get_page_size(peer_client_context);
+	if (peer_page_size != PAGE_SIZE)
+		fix_peer_sgls(umem_p, peer_page_size);
 
 	umem_p->mapped = true;
 	atomic64_add(umem_p->umem.nmap, &ib_peer_client->stats.num_reg_pages);
@@ -500,10 +552,8 @@ void ib_peer_umem_release(struct ib_umem *umem)
 	umem_p->ib_peer_client = NULL;
 
 	/* Must match ib_umem_release() */
-	if (umem->owning_mm) {
-		ib_umem_unaccount_mem(umem, ib_umem_num_pages(umem));
-		mmdrop(umem->owning_mm);
-		umem->owning_mm = NULL;
-	}
+	atomic64_sub(ib_umem_num_pages(umem), &umem->owning_mm->pinned_vm);
+	mmdrop(umem->owning_mm);
+
 	kref_put(&umem_p->kref, ib_peer_umem_kref_release);
 }

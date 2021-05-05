@@ -123,7 +123,7 @@ struct peer_memory_client {
 	 * sg_head must be freed on return.
 	 */
 	void (*put_pages)(struct sg_table *sg_head, void *client_context);
-	/* Obsolete, not used */
+	/* Client should always return PAGE_SIZE */
 	unsigned long (*get_page_size)(void *client_context);
 	/**
 	 * release - Undo acquire
