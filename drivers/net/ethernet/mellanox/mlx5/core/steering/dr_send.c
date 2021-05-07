@@ -213,7 +213,7 @@ static void dr_destroy_qp(struct mlx5_core_dev *mdev,
 static void dr_cmd_notify_hw(struct mlx5dr_qp *dr_qp, void *ctrl)
 {
 	dma_wmb();
-	*dr_qp->wq.sq.db = cpu_to_be32(dr_qp->sq.pc & 0xfffff);
+	*dr_qp->wq.sq.db = cpu_to_be32(dr_qp->sq.pc & 0xffff);
 
 	/* After wmb() the hw aware of new work */
 	wmb();
@@ -223,7 +223,7 @@ static void dr_cmd_notify_hw(struct mlx5dr_qp *dr_qp, void *ctrl)
 
 static void dr_rdma_segments(struct mlx5dr_qp *dr_qp, u64 remote_addr,
 			     u32 rkey, struct dr_data_seg *data_seg,
-			     u32 opcode, int nreq)
+			     u32 opcode, bool notify_hw)
 {
 	struct mlx5_wqe_raddr_seg *wq_raddr;
 	struct mlx5_wqe_ctrl_seg *wq_ctrl;
@@ -255,16 +255,16 @@ static void dr_rdma_segments(struct mlx5dr_qp *dr_qp, u64 remote_addr,
 
 	dr_qp->sq.wqe_head[idx] = dr_qp->sq.pc++;
 
-	if (nreq)
+	if (notify_hw)
 		dr_cmd_notify_hw(dr_qp, wq_ctrl);
 }
 
 static void dr_post_send(struct mlx5dr_qp *dr_qp, struct postsend_info *send_info)
 {
 	dr_rdma_segments(dr_qp, send_info->remote_addr, send_info->rkey,
-			 &send_info->write, MLX5_OPCODE_RDMA_WRITE, 0);
+			 &send_info->write, MLX5_OPCODE_RDMA_WRITE, false);
 	dr_rdma_segments(dr_qp, send_info->remote_addr, send_info->rkey,
-			 &send_info->read, MLX5_OPCODE_RDMA_READ, 1);
+			 &send_info->read, MLX5_OPCODE_RDMA_READ, true);
 }
 
 /**
@@ -406,7 +406,7 @@ static int dr_get_tbl_copy_details(struct mlx5dr_domain *dmn,
 		alloc_size = *num_stes * DR_STE_SIZE;
 	}
 
-	*data = kzalloc(alloc_size, GFP_KERNEL);
+	*data = kvzalloc(alloc_size, GFP_KERNEL);
 	if (!*data)
 		return -ENOMEM;
 
@@ -505,7 +505,7 @@ int mlx5dr_send_postsend_htbl(struct mlx5dr_domain *dmn,
 	}
 
 out_free:
-	kfree(data);
+	kvfree(data);
 	return ret;
 }
 
@@ -562,7 +562,7 @@ int mlx5dr_send_postsend_formatted_htbl(struct mlx5dr_domain *dmn,
 	}
 
 out_free:
-	kfree(data);
+	kvfree(data);
 	return ret;
 }
 
@@ -572,12 +572,12 @@ int mlx5dr_send_postsend_action(struct mlx5dr_domain *dmn,
 	struct postsend_info send_info = {};
 	int ret;
 
-	send_info.write.addr = (uintptr_t)action->rewrite.data;
-	send_info.write.length = action->rewrite.num_of_actions *
+	send_info.write.addr = (uintptr_t)action->rewrite->data;
+	send_info.write.length = action->rewrite->num_of_actions *
 				 DR_MODIFY_ACTION_SIZE;
 	send_info.write.lkey = 0;
-	send_info.remote_addr = action->rewrite.chunk->mr_addr;
-	send_info.rkey = action->rewrite.chunk->rkey;
+	send_info.remote_addr = action->rewrite->chunk->mr_addr;
+	send_info.rkey = action->rewrite->chunk->rkey;
 
 	ret = dr_postsend_icm_data(dmn, &send_info);
 

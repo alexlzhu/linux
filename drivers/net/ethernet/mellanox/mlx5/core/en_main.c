@@ -1137,8 +1137,6 @@ static int mlx5e_alloc_txqsq(struct mlx5e_channel *c,
 		set_bit(MLX5E_SQ_STATE_VLAN_NEED_L2_INLINE, &sq->state);
 	if (MLX5_IPSEC_DEV(c->priv->mdev))
 		set_bit(MLX5E_SQ_STATE_IPSEC, &sq->state);
-	if (mlx5_accel_is_tls_device(c->priv->mdev))
-		set_bit(MLX5E_SQ_STATE_TLS, &sq->state);
 	if (param->is_mpw)
 		set_bit(MLX5E_SQ_STATE_MPWQE, &sq->state);
 	sq->stop_room = param->stop_room;
@@ -1414,8 +1412,17 @@ int mlx5e_open_icosq(struct mlx5e_channel *c, struct mlx5e_params *params,
 	if (err)
 		goto err_free_icosq;
 
+	if (param->is_tls) {
+		sq->ktls_resync = mlx5e_ktls_rx_resync_create_resp_list();
+		if (IS_ERR(sq->ktls_resync)) {
+			err = PTR_ERR(sq->ktls_resync);
+			goto err_destroy_icosq;
+		}
+	}
 	return 0;
 
+err_destroy_icosq:
+	mlx5e_destroy_sq(c->mdev, sq->sqn);
 err_free_icosq:
 	mlx5e_free_icosq(sq);
 
@@ -1437,6 +1444,8 @@ void mlx5e_close_icosq(struct mlx5e_icosq *sq)
 {
 	struct mlx5e_channel *c = sq->channel;
 
+	if (sq->ktls_resync)
+		mlx5e_ktls_rx_resync_destroy_resp_list(sq->ktls_resync);
 	mlx5e_destroy_sq(c->mdev, sq->sqn);
 	mlx5e_free_icosq_descs(sq);
 	mlx5e_free_icosq(sq);
