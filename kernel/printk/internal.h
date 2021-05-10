@@ -12,6 +12,11 @@
 
 extern raw_spinlock_t logbuf_lock;
 
+enum printk_info_flags {
+	LOG_NEWLINE	= 2,	/* text ended with a newline */
+	LOG_CONT	= 8,	/* text is a fragment of a continuation line */
+};
+
 __printf(5, 0)
 int vprintk_store(int facility, int level,
 		  const char *dict, size_t dictlen,

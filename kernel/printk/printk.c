@@ -361,11 +361,6 @@ static int console_msg_format = MSG_FORMAT_DEFAULT;
  * non-prinatable characters are escaped in the "\xff" notation.
  */
 
-enum log_flags {
-	LOG_NEWLINE	= 2,	/* text ended with a newline */
-	LOG_CONT	= 8,	/* text is a fragment of a continuation line */
-};
-
 struct printk_log {
 	u64 ts_nsec;		/* timestamp in nanoseconds */
 	u16 len;		/* length of entire record */
@@ -615,7 +610,7 @@ static u32 truncate_msg(u16 *text_len, u16 *trunc_msg_len,
 
 /* insert record into the buffer, discard old ones, update heads */
 static int log_store(u32 caller_id, int facility, int level,
-		     enum log_flags flags, u64 ts_nsec,
+		     enum printk_info_flags flags, u64 ts_nsec,
 		     const char *dict, u16 dict_len,
 		     const char *text, u16 text_len)
 {
@@ -1859,7 +1854,7 @@ static struct cont {
 	u64 ts_nsec;			/* time of first print */
 	u8 level;			/* log level of first message */
 	u8 facility;			/* log facility of first message */
-	enum log_flags flags;		/* prefix, newline flags */
+	enum printk_info_flags flags;		/* prefix, newline flags */
 } cont;
 
 static void cont_flush(void)
@@ -1873,7 +1868,7 @@ static void cont_flush(void)
 }
 
 static bool cont_add(u32 caller_id, int facility, int level,
-		     enum log_flags flags, const char *text, size_t len)
+		     enum printk_info_flags flags, const char *text, size_t len)
 {
 	/* If the line gets too long, split it up in separate records. */
 	if (cont.len + len > sizeof(cont.buf)) {
@@ -1902,7 +1897,7 @@ static bool cont_add(u32 caller_id, int facility, int level,
 	return true;
 }
 
-static size_t log_output(int facility, int level, enum log_flags lflags, const char *dict, size_t dictlen, char *text, size_t text_len)
+static size_t log_output(int facility, int level, enum printk_info_flags lflags, const char *dict, size_t dictlen, char *text, size_t text_len)
 {
 	const u32 caller_id = printk_caller_id();
 
@@ -1942,7 +1937,7 @@ int vprintk_store(int facility, int level,
 	static char textbuf[LOG_LINE_MAX];
 	char *text = textbuf;
 	size_t text_len;
-	enum log_flags lflags = 0;
+	enum printk_info_flags lflags = 0;
 
 	/*
 	 * The printf needs to come first; we need the syslog
