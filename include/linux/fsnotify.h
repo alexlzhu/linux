@@ -217,6 +217,21 @@ static inline void fsnotify_unlink(struct inode *dir, struct dentry *dentry)
 }
 
 /*
+ * fsnotify_delete - 'name' was unlinked
+ *
+ * Caller must make sure that dentry->d_name is stable.
+ */
+static inline void fsnotify_delete(struct inode *dir, struct dentry *dentry,
+				   struct inode *inode)
+{
+	__u32 mask = FS_DELETE;
+
+	if (S_ISDIR(inode->i_mode))
+		mask |= FS_ISDIR;
+	fsnotify_name(dir, mask, inode, &dentry->d_name, 0);
+}
+
+/*
  * fsnotify_mkdir - directory 'name' was created
  */
 static inline void fsnotify_mkdir(struct inode *inode, struct dentry *dentry)
