@@ -2,6 +2,7 @@ load(":defs.bzl", "buildinfo", "kernel")
 load("//facebook/build:container.bzl", "container_genrule")
 load("//facebook/config:defs.bzl", "DEBUG_OPTIONS", "FLAVORS")
 load("//facebook/build:modules.bzl", "standalone_module")
+load("//facebook/build:klp.bzl", "klp")
 
 standalone_module()
 
@@ -77,3 +78,5 @@ genrule(
     cmd = "echo {} > $OUT".format(buildinfo().kernelversion),
     out = "kernelversion",
 )
+
+klp()

@@ -3,7 +3,7 @@ load(":defs.bzl", "DEBUG_OPTIONS", "FLAVORS", "config")
 filegroup(
     name = "files",
     srcs = glob(["*.config"]),
-    visibility = ["//facebook/configs/..."],
+    visibility = ["PUBLIC"],
 )
 
 # generate one config that is a base config, so that we can more efficiently

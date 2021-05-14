@@ -7,9 +7,9 @@ export_file(
 http_file(
     name = "build-image",
     urls = [
-        "https://interncache-all.fbcdn.net/manifold/linux_kernel/tree/build_images/D26426538",
+        "https://interncache-all.fbcdn.net/manifold/linux_kernel/tree/build_images/D28455602",
     ],
-    sha256 = "0e3f5efc16daa3a304a01edafc249cf954ac8cd1a131ed21438e646b6581f188",
+    sha256 = "a112f90127809db62dd61b1bbcafce707b8ba6791efd3116b2a84adabfacc67e",
     visibility = ["PUBLIC"],
 )
 

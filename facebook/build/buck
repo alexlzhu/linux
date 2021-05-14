@@ -69,6 +69,14 @@ fi
 subcmd="$1"
 shift
 
+# buck cache is broken by all means in this repo
+# buck is not aware of dependecy between his targets and soruce code
+# and even if it would be aware caching entire kernel tree takes forever
+# so this amazing tool is not amazing itself but also even less amazing for kernel repo
+# we force-clean everything prior to invocation
+# otherwise you may see unexpected results
+buck clean
+
 # pass the variable config options to buck as cli configs, so that we don't
 # pollute any local files with runtime build info
 buck "$subcmd" -c build_info.fakegit=false -c build_info.kernelversion="$kernelversion" -c build_info.gittish="$gittish" -c build_info.fbk_tag="$fbk_tag" "$@"
