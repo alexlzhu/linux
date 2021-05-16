@@ -689,7 +689,7 @@ enum {
 	REQ_F_BUFFER_SELECT_BIT	= IOSQE_BUFFER_SELECT_BIT,
 
 	/* first byte is taken by user flags, shift it to not overlap */
-	REQ_F_FAIL_LINK_BIT	= 8,
+	REQ_F_FAIL_BIT		= 8,
 	REQ_F_INFLIGHT_BIT,
 	REQ_F_CUR_POS_BIT,
 	REQ_F_NOWAIT_BIT,
@@ -725,7 +725,7 @@ enum {
 	REQ_F_BUFFER_SELECT	= BIT(REQ_F_BUFFER_SELECT_BIT),
 
 	/* fail rest of links */
-	REQ_F_FAIL_LINK		= BIT(REQ_F_FAIL_LINK_BIT),
+	REQ_F_FAIL		= BIT(REQ_F_FAIL_BIT),
 	/* on inflight list, should be cancelled and waited on exit reliably */
 	REQ_F_INFLIGHT		= BIT(REQ_F_INFLIGHT_BIT),
 	/* read/write uses file position */
@@ -1102,10 +1102,9 @@ static bool io_match_task(struct io_kiocb *head, struct task_struct *task,
 	return false;
 }
 
-static inline void req_set_fail_links(struct io_kiocb *req)
+static inline void req_set_fail(struct io_kiocb *req)
 {
-	if (req->flags & REQ_F_LINK)
-		req->flags |= REQ_F_FAIL_LINK;
+	req->flags |= REQ_F_FAIL;
 }
 
 static void io_ring_ctx_ref_free(struct percpu_ref *ref)
@@ -1574,7 +1573,7 @@ static void io_req_complete_post(struct io_kiocb *req, long res,
 		struct io_comp_state *cs = &ctx->submit_state.comp;
 
 		if (req->flags & (REQ_F_LINK | REQ_F_HARDLINK)) {
-			if (req->flags & (REQ_F_LINK_TIMEOUT | REQ_F_FAIL_LINK))
+			if (req->flags & (REQ_F_LINK_TIMEOUT | REQ_F_FAIL))
 				io_disarm_next(req);
 			if (req->link) {
 				io_req_task_queue(req->link);
@@ -1630,7 +1629,7 @@ static inline void io_req_complete(struct io_kiocb *req, long res)
 
 static void io_req_complete_failed(struct io_kiocb *req, long res)
 {
-	req_set_fail_links(req);
+	req_set_fail(req);
 	io_put_req(req);
 	io_req_complete_post(req, res, 0);
 }
@@ -1809,7 +1808,7 @@ static bool io_disarm_next(struct io_kiocb *req)
 
 	if (likely(req->flags & REQ_F_LINK_TIMEOUT))
 		posted = io_kill_linked_timeout(req);
-	if (unlikely((req->flags & REQ_F_FAIL_LINK) &&
+	if (unlikely((req->flags & REQ_F_FAIL) &&
 		     !(req->flags & REQ_F_HARDLINK))) {
 		posted |= (req->link != NULL);
 		io_fail_links(req);
@@ -1827,7 +1826,7 @@ static struct io_kiocb *__io_req_find_next(struct io_kiocb *req)
 	 * dependencies to the next request. In case of failure, fail the rest
 	 * of the chain.
 	 */
-	if (req->flags & (REQ_F_LINK_TIMEOUT | REQ_F_FAIL_LINK)) {
+	if (req->flags & (REQ_F_LINK_TIMEOUT | REQ_F_FAIL)) {
 		struct io_ring_ctx *ctx = req->ctx;
 		unsigned long flags;
 		bool posted;
@@ -2466,7 +2465,7 @@ static void __io_complete_rw(struct io_kiocb *req, long res, long res2,
 			req->flags |= REQ_F_REISSUE;
 			return;
 		}
-		req_set_fail_links(req);
+		req_set_fail(req);
 	}
 	if (req->flags & REQ_F_BUFFER_SELECTED)
 		cflags = io_put_rw_kbuf(req);
@@ -2489,7 +2488,7 @@ static void io_complete_rw_iopoll(struct kiocb *kiocb, long res, long res2)
 	if (unlikely(res != req->result)) {
 		if (!(res == -EAGAIN && io_rw_should_reissue(req) &&
 		    io_resubmit_prep(req))) {
-			req_set_fail_links(req);
+			req_set_fail(req);
 			req->flags |= REQ_F_DONT_REISSUE;
 		}
 	}
@@ -2747,7 +2746,7 @@ static void kiocb_done(struct kiocb *kiocb, ssize_t ret,
 		} else {
 			int cflags = 0;
 
-			req_set_fail_links(req);
+			req_set_fail(req);
 			if (req->flags & REQ_F_BUFFER_SELECTED)
 				cflags = io_put_rw_kbuf(req);
 			__io_req_complete(req, issue_flags, ret, cflags);
@@ -3465,7 +3464,7 @@ static int io_shutdown(struct io_kiocb *req, unsigned int issue_flags)
 
 	ret = __sys_shutdown_sock(sock, req->shutdown.how);
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	io_req_complete(req, ret);
 	return 0;
 #else
@@ -3523,7 +3522,7 @@ static int io_tee(struct io_kiocb *req, unsigned int issue_flags)
 	req->flags &= ~REQ_F_NEED_CLEANUP;
 
 	if (ret != sp->len)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	io_req_complete(req, ret);
 	return 0;
 }
@@ -3560,7 +3559,7 @@ static int io_splice(struct io_kiocb *req, unsigned int issue_flags)
 	req->flags &= ~REQ_F_NEED_CLEANUP;
 
 	if (ret != sp->len)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	io_req_complete(req, ret);
 	return 0;
 }
@@ -3613,7 +3612,7 @@ static int io_fsync(struct io_kiocb *req, unsigned int issue_flags)
 				end > 0 ? end : LLONG_MAX,
 				req->sync.flags & IORING_FSYNC_DATASYNC);
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	io_req_complete(req, ret);
 	return 0;
 }
@@ -3642,7 +3641,7 @@ static int io_fallocate(struct io_kiocb *req, unsigned int issue_flags)
 	ret = vfs_fallocate(req->file, req->sync.mode, req->sync.off,
 				req->sync.len);
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	io_req_complete(req, ret);
 	return 0;
 }
@@ -3761,7 +3760,7 @@ err:
 	putname(req->open.filename);
 	req->flags &= ~REQ_F_NEED_CLEANUP;
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
 }
@@ -3833,7 +3832,7 @@ static int io_remove_buffers(struct io_kiocb *req, unsigned int issue_flags)
 	if (head)
 		ret = __io_remove_buffers(ctx, head, p->bgid, p->nbufs);
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 
 	/* complete before unlock, IOPOLL may need the lock */
 	__io_req_complete(req, issue_flags, ret, 0);
@@ -3924,7 +3923,7 @@ static int io_provide_buffers(struct io_kiocb *req, unsigned int issue_flags)
 			__io_remove_buffers(ctx, head, p->bgid, -1U);
 	}
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 
 	/* complete before unlock, IOPOLL may need the lock */
 	__io_req_complete(req, issue_flags, ret, 0);
@@ -3971,7 +3970,7 @@ static int io_epoll_ctl(struct io_kiocb *req, unsigned int issue_flags)
 		return -EAGAIN;
 
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
 #else
@@ -4007,7 +4006,7 @@ static int io_madvise(struct io_kiocb *req, unsigned int issue_flags)
 
 	ret = do_madvise(ma->addr, ma->len, ma->advice);
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	io_req_complete(req, ret);
 	return 0;
 #else
@@ -4046,7 +4045,7 @@ static int io_fadvise(struct io_kiocb *req, unsigned int issue_flags)
 
 	ret = vfs_fadvise(req->file, fa->offset, fa->len, fa->advice);
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
 }
@@ -4081,7 +4080,7 @@ static int io_statx(struct io_kiocb *req, unsigned int issue_flags)
 		       ctx->buffer);
 
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	io_req_complete(req, ret);
 	return 0;
 }
@@ -4139,7 +4138,7 @@ static int io_close(struct io_kiocb *req, unsigned int issue_flags)
 	ret = filp_close(file, current->files);
 err:
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	if (file)
 		fput(file);
 	__io_req_complete(req, issue_flags, ret, 0);
@@ -4172,7 +4171,7 @@ static int io_sync_file_range(struct io_kiocb *req, unsigned int issue_flags)
 	ret = sync_file_range(req->file, req->sync.off, req->sync.len,
 				req->sync.flags);
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	io_req_complete(req, ret);
 	return 0;
 }
@@ -4276,7 +4275,7 @@ static int io_sendmsg(struct io_kiocb *req, unsigned int issue_flags)
 		kfree(kmsg->free_iov);
 	req->flags &= ~REQ_F_NEED_CLEANUP;
 	if (ret < min_ret)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
 }
@@ -4318,7 +4317,7 @@ static int io_send(struct io_kiocb *req, unsigned int issue_flags)
 		ret = -EINTR;
 
 	if (ret < min_ret)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
 }
@@ -4512,7 +4511,7 @@ static int io_recvmsg(struct io_kiocb *req, unsigned int issue_flags)
 		kfree(kmsg->free_iov);
 	req->flags &= ~REQ_F_NEED_CLEANUP;
 	if (ret < min_ret || ((flags & MSG_WAITALL) && (kmsg->msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC))))
-		req_set_fail_links(req);
+		req_set_fail(req);
 	__io_req_complete(req, issue_flags, ret, cflags);
 	return 0;
 }
@@ -4567,7 +4566,7 @@ out_free:
 	if (req->flags & REQ_F_BUFFER_SELECTED)
 		cflags = io_put_recv_kbuf(req);
 	if (ret < min_ret || ((flags & MSG_WAITALL) && (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC))))
-		req_set_fail_links(req);
+		req_set_fail(req);
 	__io_req_complete(req, issue_flags, ret, cflags);
 	return 0;
 }
@@ -4606,7 +4605,7 @@ static int io_accept(struct io_kiocb *req, unsigned int issue_flags)
 	if (ret < 0) {
 		if (ret == -ERESTARTSYS)
 			ret = -EINTR;
-		req_set_fail_links(req);
+		req_set_fail(req);
 	}
 	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
@@ -4671,7 +4670,7 @@ static int io_connect(struct io_kiocb *req, unsigned int issue_flags)
 		ret = -EINTR;
 out:
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
 }
@@ -5142,7 +5141,7 @@ static bool io_poll_remove_one(struct io_kiocb *req)
 	if (do_complete) {
 		io_cqring_fill_event(req->ctx, req->user_data, -ECANCELED, 0);
 		io_commit_cqring(req->ctx);
-		req_set_fail_links(req);
+		req_set_fail(req);
 		io_put_req_deferred(req, 1);
 	}
 
@@ -5352,7 +5351,7 @@ static int io_poll_update(struct io_kiocb *req, unsigned int issue_flags)
 err:
 	if (ret < 0) {
 		spin_unlock_irq(&ctx->completion_lock);
-		req_set_fail_links(req);
+		req_set_fail(req);
 		io_req_complete(req, ret);
 		return 0;
 	}
@@ -5372,7 +5371,7 @@ err:
 	if (!completing) {
 		ret = io_poll_add(preq, issue_flags);
 		if (ret < 0) {
-			req_set_fail_links(preq);
+			req_set_fail(preq);
 			io_req_complete(preq, ret);
 		}
 	}
@@ -5397,7 +5396,7 @@ static enum hrtimer_restart io_timeout_fn(struct hrtimer *timer)
 	spin_unlock_irqrestore(&ctx->completion_lock, flags);
 
 	io_cqring_ev_posted(ctx);
-	req_set_fail_links(req);
+	req_set_fail(req);
 	io_put_req(req);
 	return HRTIMER_NORESTART;
 }
@@ -5433,7 +5432,7 @@ static int io_timeout_cancel(struct io_ring_ctx *ctx, __u64 user_data)
 	if (IS_ERR(req))
 		return PTR_ERR(req);
 
-	req_set_fail_links(req);
+	req_set_fail(req);
 	io_cqring_fill_event(ctx, req->user_data, -ECANCELED, 0);
 	io_put_req_deferred(req, 1);
 	return 0;
@@ -5512,7 +5511,7 @@ static int io_timeout_remove(struct io_kiocb *req, unsigned int issue_flags)
 	spin_unlock_irq(&ctx->completion_lock);
 	io_cqring_ev_posted(ctx);
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	io_put_req(req);
 	return 0;
 }
@@ -5665,7 +5664,7 @@ done:
 	io_cqring_ev_posted(ctx);
 
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 }
 
 static int io_async_cancel_prep(struct io_kiocb *req,
@@ -5722,7 +5721,7 @@ done:
 	io_cqring_ev_posted(ctx);
 
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	io_put_req(req);
 	return 0;
 }
@@ -5764,7 +5763,7 @@ static int io_files_update(struct io_kiocb *req, unsigned int issue_flags)
 	mutex_unlock(&ctx->uring_lock);
 
 	if (ret < 0)
-		req_set_fail_links(req);
+		req_set_fail(req);
 	__io_req_complete(req, issue_flags, ret, 0);
 	return 0;
 }
@@ -6450,7 +6449,7 @@ static int io_submit_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
 fail_req:
 		if (link->head) {
 			/* fail even hard links since we don't submit */
-			link->head->flags |= REQ_F_FAIL_LINK;
+			req_set_fail(link->head);
 			io_req_complete_failed(link->head, -ECANCELED);
 			link->head = NULL;
 		}
