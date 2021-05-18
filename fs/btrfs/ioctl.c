@@ -1796,6 +1796,7 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 	char *devstr = NULL;
 	int ret = 0;
 	int mod = 0;
+	bool cancel;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
@@ -1804,20 +1805,23 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 	if (ret)
 		return ret;
 
-	if (!btrfs_exclop_start(fs_info, BTRFS_EXCLOP_RESIZE)) {
-		mnt_drop_write_file(file);
-		return BTRFS_ERROR_DEV_EXCL_RUN_IN_PROGRESS;
-	}
-
+	/*
+	 * Read the arguments before checking exclusivity to be able to
+	 * distinguish regular resize and cancel
+	 */
 	vol_args = memdup_user(arg, sizeof(*vol_args));
 	if (IS_ERR(vol_args)) {
 		ret = PTR_ERR(vol_args);
-		goto out;
+		goto out_drop;
 	}
-
 	vol_args->name[BTRFS_PATH_NAME_MAX] = '\0';
-
 	sizestr = vol_args->name;
+	cancel = (strcmp("cancel", sizestr) == 0);
+	ret = exclop_start_or_cancel_reloc(fs_info, BTRFS_EXCLOP_RESIZE, cancel);
+	if (ret)
+		goto out_free;
+	/* Exclusive operation is now claimed */
+
 	devstr = strchr(sizestr, ':');
 	if (devstr) {
 		sizestr = devstr + 1;
@@ -1825,10 +1829,10 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		devstr = vol_args->name;
 		ret = kstrtoull(devstr, 10, &devid);
 		if (ret)
-			goto out_free;
+			goto out_finish;
 		if (!devid) {
 			ret = -EINVAL;
-			goto out_free;
+			goto out_finish;
 		}
 		btrfs_info(fs_info, "resizing devid %llu", devid);
 	}
@@ -1838,7 +1842,7 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		btrfs_info(fs_info, "resizer unable to find device %llu",
 			   devid);
 		ret = -ENODEV;
-		goto out_free;
+		goto out_finish;
 	}
 
 	if (!test_bit(BTRFS_DEV_STATE_WRITEABLE, &device->dev_state)) {
@@ -1846,7 +1850,7 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 			   "resizer unable to apply on readonly device %llu",
 		       devid);
 		ret = -EPERM;
-		goto out_free;
+		goto out_finish;
 	}
 
 	if (!strcmp(sizestr, "max"))
@@ -1862,13 +1866,13 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		new_size = memparse(sizestr, &retptr);
 		if (*retptr != '\0' || new_size == 0) {
 			ret = -EINVAL;
-			goto out_free;
+			goto out_finish;
 		}
 	}
 
 	if (test_bit(BTRFS_DEV_STATE_REPLACE_TGT, &device->dev_state)) {
 		ret = -EPERM;
-		goto out_free;
+		goto out_finish;
 	}
 
 	old_size = btrfs_device_get_total_bytes(device);
@@ -1876,24 +1880,24 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 	if (mod < 0) {
 		if (new_size > old_size) {
 			ret = -EINVAL;
-			goto out_free;
+			goto out_finish;
 		}
 		new_size = old_size - new_size;
 	} else if (mod > 0) {
 		if (new_size > ULLONG_MAX - old_size) {
 			ret = -ERANGE;
-			goto out_free;
+			goto out_finish;
 		}
 		new_size = old_size + new_size;
 	}
 
 	if (new_size < SZ_256M) {
 		ret = -EINVAL;
-		goto out_free;
+		goto out_finish;
 	}
 	if (new_size > device->bdev->bd_inode->i_size) {
 		ret = -EFBIG;
-		goto out_free;
+		goto out_finish;
 	}
 
 	new_size = round_down(new_size, fs_info->sectorsize);
@@ -1902,7 +1906,7 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		trans = btrfs_start_transaction(root, 0);
 		if (IS_ERR(trans)) {
 			ret = PTR_ERR(trans);
-			goto out_free;
+			goto out_finish;
 		}
 		ret = btrfs_grow_device(trans, device, new_size);
 		btrfs_commit_transaction(trans);
@@ -1915,10 +1919,11 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 			"resize device %s (devid %llu) from %llu to %llu",
 			rcu_str_deref(device->name), device->devid,
 			old_size, new_size);
+out_finish:
+	btrfs_exclop_finish(fs_info);
 out_free:
 	kfree(vol_args);
-out:
-	btrfs_exclop_finish(fs_info);
+out_drop:
 	mnt_drop_write_file(file);
 	return ret;
 }
