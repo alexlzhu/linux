@@ -9560,6 +9560,7 @@ static int btrfs_rename2(struct user_namespace *mnt_userns, struct inode *old_di
 
 struct btrfs_delalloc_work {
 	struct inode *inode;
+	int sync_mode;
 	struct completion completion;
 	struct list_head list;
 	struct btrfs_work work;
@@ -9569,20 +9570,28 @@ static void btrfs_run_delalloc_work(struct btrfs_work *work)
 {
 	struct btrfs_delalloc_work *delalloc_work;
 	struct inode *inode;
+	int (*flush_func)(struct address_space *);
 
 	delalloc_work = container_of(work, struct btrfs_delalloc_work,
 				     work);
+
+	if (delalloc_work->sync_mode == WB_SYNC_NONE)
+		flush_func = filemap_flush;
+	else
+		flush_func = filemap_fdatawrite;
+
 	inode = delalloc_work->inode;
-	filemap_flush(inode->i_mapping);
+	flush_func(inode->i_mapping);
 	if (test_bit(BTRFS_INODE_HAS_ASYNC_EXTENT,
 				&BTRFS_I(inode)->runtime_flags))
-		filemap_flush(inode->i_mapping);
+		flush_func(inode->i_mapping);
 
 	iput(inode);
 	complete(&delalloc_work->completion);
 }
 
-static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode)
+static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode,
+							     int sync_mode)
 {
 	struct btrfs_delalloc_work *work;
 
@@ -9593,6 +9602,7 @@ static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode
 	init_completion(&work->completion);
 	INIT_LIST_HEAD(&work->list);
 	work->inode = inode;
+	work->sync_mode = sync_mode;
 	btrfs_init_work(&work->work, btrfs_run_delalloc_work, NULL, NULL);
 
 	return work;
@@ -9642,7 +9652,7 @@ static int start_delalloc_inodes(struct btrfs_root *root,
 			set_bit(BTRFS_INODE_SNAPSHOT_FLUSH,
 				&binode->runtime_flags);
 		if (full_flush) {
-			work = btrfs_alloc_delalloc_work(inode);
+			work = btrfs_alloc_delalloc_work(inode, wbc->sync_mode);
 			if (!work) {
 				iput(inode);
 				ret = -ENOMEM;
@@ -9686,7 +9696,7 @@ int btrfs_start_delalloc_snapshot(struct btrfs_root *root)
 {
 	struct writeback_control wbc = {
 		.nr_to_write = LONG_MAX,
-		.sync_mode = WB_SYNC_NONE,
+		.sync_mode = WB_SYNC_ALL,
 		.range_start = 0,
 		.range_end = LLONG_MAX,
 	};
@@ -9713,6 +9723,9 @@ int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, long nr,
 
 	if (test_bit(BTRFS_FS_STATE_ERROR, &fs_info->fs_state))
 		return -EROFS;
+
+	if (!in_reclaim_context)
+		wbc.sync_mode = WB_SYNC_ALL;
 
 	INIT_LIST_HEAD(&splice);
 
