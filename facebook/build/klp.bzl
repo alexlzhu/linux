@@ -131,12 +131,6 @@ def klp(flavor=None, label=None):
         bind_rw=bind_rws,
         cacheable=False,
     )
-    native.genrule(
-        name="klp",
-        cmd="cp $(location :klp-build)/* $OUT",
-        out = "klp.ko",
-        cacheable=False,
-    )
     # prepare packaging
     bind_ros.append(("$(location :klp-spec)", "/tmp/klp.spec"))
     bind_ros.append(("$(location :klp)", "/tmp/module"))
@@ -150,6 +144,23 @@ def klp(flavor=None, label=None):
         out = "klp.spec",
         cacheable=False,
     )
+
+    sign = native.read_config('kernel', 'sign_mod', 'false')
+    sign_key = native.read_config('kernel', 'sign_mod_key', 'autograph-test')
+
+    native.genrule(
+        name = "klp",
+        cmd = """
+        if [ "{sign}" == "true" ]; then
+          autograph_client.par kmod --sign-key {sign_key} --kernel-tree $(location :klp-build)
+        fi
+        cp -a $(location :klp-build)/* $OUT
+        """.format(sign = sign, sign_key = sign_key),
+        out = "klp.ko",
+        cacheable=False,
+    )
+
+
     container_genrule(
         name="klp-rpm",
         cmd="""
