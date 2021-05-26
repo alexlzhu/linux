@@ -789,14 +789,17 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		 * commit the transaction.  If nothing has changed the next go
 		 * around then we can force a chunk allocation.
 		 */
-		if (flush_state == ALLOC_CHUNK_FORCE && !should_force_chunk) {
-			flush_state++;
-
-			/*
-			 * We are skipping the forced chunk this time, but next
-			 * time we should definitely do it.
-			 */
-			should_force_chunk = 1;
+		if (flush_state == ALLOC_CHUNK_FORCE) {
+			if (!should_force_chunk) {
+				/*
+				 * We are skipping the forced chunk this time,
+				 * but next time we should definitely do it.
+				 */
+				flush_state++;
+				should_force_chunk = 1;
+			} else {
+				should_force_chunk = 0;
+			}
 		}
 
 		if (flush_state > COMMIT_TRANS) {
