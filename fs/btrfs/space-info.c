@@ -423,6 +423,7 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 	struct reserve_ticket *ticket = NULL;
 	struct btrfs_block_rsv *delayed_rsv = &fs_info->delayed_block_rsv;
 	struct btrfs_block_rsv *delayed_refs_rsv = &fs_info->delayed_refs_rsv;
+	struct btrfs_block_rsv *trans_rsv = &fs_info->trans_block_rsv;
 	struct btrfs_trans_handle *trans;
 	u64 bytes_needed;
 	u64 reclaim_bytes = 0;
@@ -485,6 +486,11 @@ static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 	spin_lock(&delayed_refs_rsv->lock);
 	reclaim_bytes += delayed_refs_rsv->reserved;
 	spin_unlock(&delayed_refs_rsv->lock);
+
+	spin_lock(&trans_rsv->lock);
+	reclaim_bytes += trans_rsv->reserved;
+	spin_unlock(&trans_rsv->lock);
+
 	if (reclaim_bytes >= bytes_needed)
 		goto commit;
 	bytes_needed -= reclaim_bytes;
@@ -783,14 +789,17 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		 * commit the transaction.  If nothing has changed the next go
 		 * around then we can force a chunk allocation.
 		 */
-		if (flush_state == ALLOC_CHUNK_FORCE && !should_force_chunk) {
-			flush_state++;
-
-			/*
-			 * We are skipping the forced chunk this time, but next
-			 * time we should definitely do it.
-			 */
-			should_force_chunk = 1;
+		if (flush_state == ALLOC_CHUNK_FORCE) {
+			if (!should_force_chunk) {
+				/*
+				 * We are skipping the forced chunk this time,
+				 * but next time we should definitely do it.
+				 */
+				flush_state++;
+				should_force_chunk = 1;
+			} else {
+				should_force_chunk = 0;
+			}
 		}
 
 		if (flush_state > COMMIT_TRANS) {
@@ -801,6 +810,7 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 						  "reserve metadata bytes failed, possible early enospc");
 					__btrfs_dump_space_info(fs_info, space_info);
 				}
+				trace_btrfs_fail_tickets(fs_info, space_info);
 				if (maybe_fail_all_tickets(fs_info, space_info)) {
 					flush_state = FLUSH_DELAYED_ITEMS_NR;
 					commit_cycles--;
@@ -941,11 +951,14 @@ static int handle_reserve_ticket(struct btrfs_fs_info *fs_info,
 	ret = ticket->error;
 	if (ticket->bytes || ticket->error) {
 		/*
-		 * Need to delete here for priority tickets. For regular tickets
-		 * either the async reclaim job deletes the ticket from the list
-		 * or we delete it ourselves at wait_reserve_ticket().
+		 * We were a priority ticket, so we need to delete ourselves
+		 * from the list.  Because we could have other priority tickets
+		 * behind us that require less space, run
+		 * btrfs_try_granting_tickets() to see if their reservations can
+		 * now be made.
 		 */
 		list_del_init(&ticket->list);
+		btrfs_try_granting_tickets(fs_info, space_info);
 		if (!ret)
 			ret = -ENOSPC;
 	}
