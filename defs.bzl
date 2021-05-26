@@ -18,13 +18,26 @@ def buildinfo():
     major = ".".join(kernelversion.split(".")[:2])
 
     rc_version = None
+    hotfix = None
 
     # parse the rc version and fbk name out of the tag (eg v5.2-fbk1-rc1)
     fbk_pieces = fbk_tag.split("-")
-    if len(fbk_pieces) == 3:
-        rc_version = fbk_pieces[2]
-    elif len(fbk_pieces) != 2:
-        fail("expected either 2 or 3 pieces in fbk_tag: '{}', found {}".format(fbk_tag, fbk_pieces))
+    if len(fbk_pieces) > 4 or len(fbk_pieces) < 2:
+        fail("expected either 2 to 4 pieces in fbk_tag: '{}', found {}".format(fbk_tag, fbk_pieces))
+
+    if len(fbk_pieces) == 4:
+        if "hotfix" not in fbk_pieces[-1]:
+            fail("fbk_tag have to look like v5.2-fbk1[-rc1|-rc1-hotfix1|-hotfix1], got: %s" % fbk_tag)
+        else:
+            hotfix = fbk_pieces[-1]
+            rc_version = fbk_pieces[-2]
+    elif len(fbk_pieces) == 3:
+      if "hotfix" in fbk_pieces[-1]:
+        hotfix = fbk_pieces[-1]
+      elif "rc" in fbk_pieces[-1]:
+        rc_version = fbk_pieces[-1]
+      else:
+        fail("fbk_tag supposed to have rc or hotfix suffix, it is: %s" % fbk_tag)
 
     return struct(
         major = major,
@@ -39,6 +52,7 @@ def buildinfo():
         # Starting with 5.6 this is constantly set to 0, because it is not
         # required anymore.
         rpm_number = "0",
+        hotfix = hotfix,
         # custom_tag allows a user to inject an arbitrary string into the
         # EXTRAVERSION, for example to indicate -debug
         custom_tag = native.read_config("build_info", "custom_tag", ""),

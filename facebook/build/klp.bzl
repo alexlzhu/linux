@@ -1,26 +1,42 @@
 load("//facebook/config:defs.bzl", "config")
 load("//facebook/build:container.bzl", "container_genrule")
 load("//:defs.bzl", "buildinfo")
-def klp(flavor=None):
+def klp(flavor=None, label=None):
+    notempty_cmd = " && [ -s $OUT ] || exit 1"
+
+    # overrides
+    patch_to = native.read_config("klp", "patch_to", None)
+    patch_from = native.read_config("klp", "patch_from", None)
+
+    notempty_cmd = " && [ -s $OUT ] || exit 1"
+    to_cmd = """git show-ref --tags -d | grep "^`git log --pretty="%h" -n1`" |
+        awk -F '[ /]' '{print $NF}' | grep hotfix | head -n1 > $OUT"""
+    if patch_to:
+      to_cmd = "echo {} > $OUT".format(patch_to)
+
+    from_cmd = "cat $(location :top_lvl_tag) | sed -e 's|-hotfix[0-9]*$||' > $OUT"
+    if patch_from:
+      from_cmd = "echo {} > $OUT".format(patch_from)
+
     # tag on the current HEAD
     native.genrule(
         name="top_lvl_tag",
-        cmd="""git show-ref --tags -d | grep "^`git log --pretty="%h" -n1`" |
-            awk -F '[ /]' '{print $NF}' | grep hotfix | head -n1 > $OUT; [ -s $OUT ] || exit 1
-        """,
+        cmd=to_cmd + notempty_cmd,
         out="top_lvl_tag",
         cacheable=False,
     )
+
     native.genrule(
         name="hotfix",
-        cmd="cat $(location :top_lvl_tag) | sed -e 's|.*\\(hotfix[0-9]\\).*|\\1|g' > $OUT; [ -s $OUT ] || exit 1",
+        cmd="cat $(location :top_lvl_tag) | sed -e 's|.*\\(hotfix[0-9]*\\).*|\\1|g' > $OUT" + notempty_cmd,
         out="hotfix",
         cacheable=False,
     )
+
     # baseline for diff
     native.genrule(
         name="baseline",
-        cmd="cat $(location :top_lvl_tag) | sed -e 's|-hotfix[0-9]*$||' > $OUT",
+        cmd=from_cmd + notempty_cmd,
         out="baseline",
         cacheable=False,
     )
@@ -32,20 +48,16 @@ def klp(flavor=None):
         cacheable=False,
     )
     # download published rpms for baseline
-    info = buildinfo()
-    baseline_version = "{}-{}_{}".format(info.kernelversion, info.rpm_number, info.fbk)
-    if flavor:
-      baseline_version = "{}_{}".format(baseline_version, flavor)
     native.genrule(
-        name="kernel-devel-{}".format(baseline_version),
-        cmd="mkdir -p $OUT && kernelctl download --devel --out-dir $OUT {} && mv $OUT/*.rpm $OUT/kernel-devel.rpm".format(baseline_version),
-        out="kernel-devel",
+        name="kernel-devel-klp",
+        cmd="mkdir -p $OUT && kernelctl download --devel --out-dir $OUT `cat $(location :baseline-rpm-version)` && mv $OUT/*.rpm $OUT/kernel-devel.rpm",
+        out="kernel-devel-klp",
         cacheable=False,
     )
     native.genrule(
-        name="kernel-bin-{}".format(baseline_version),
-        cmd="mkdir -p $OUT && kernelctl download --kernel --out-dir $OUT {} && mv $OUT/*.rpm $OUT/kernel-bin.rpm".format(baseline_version),
-        out="kernel-bin",
+        name="kernel-bin-klp",
+        cmd="mkdir -p $OUT && kernelctl download --kernel --out-dir $OUT `cat $(location :baseline-rpm-version)` && mv $OUT/*.rpm $OUT/kernel-bin.rpm",
+        out="kernel-bin-klp",
         cacheable=False,
     )
     # build config for flavor
@@ -54,8 +66,8 @@ def klp(flavor=None):
         flavor=flavor,
     )
     bind_ros = [
-        ("$(location :kernel-devel-{})".format(baseline_version), "/tmp/kernel-devel"),
-        ("$(location :kernel-bin-{})".format(baseline_version), "/tmp/kernel-bin"),
+        ("$(location :kernel-devel-klp)", "/tmp/kernel-devel"),
+        ("$(location :kernel-bin-klp)", "/tmp/kernel-bin"),
         ("$(location :patches)", "/tmp/patches"),
         ("$(location :top_lvl_tag)", "/tmp/top_lvl_tag"),
         ("$(location :config)", "/tmp/config"),
@@ -76,10 +88,33 @@ def klp(flavor=None):
         out="baseline-sources",
     )
 
+    #build the rpm version
+    #more details on versioning available in buildinfo()
+    #i don't have better idea on how to map between git tag/branch and rpm
+    #v5.6-fbk13-rc1 -> 5.6.13-0_fbk13_rc1
+    flavor_ver = "_%s" % flavor if flavor else ""
+    label_ver = "_%s" % label if label else ""
+    native.genrule(
+        name = "baseline-rpm-version",
+        cmd = """
+            pushd $(location :baseline-sources)
+            majorver=`make kernelversion EXTRAVERSION=`
+            popd
+            rpm_n=0
+            fbkv=`cat $(location :baseline) | sed -e 's|.*-\\(fbk[0-9]*\\).*|\\1|g'`
+            rc=`cat $(location :baseline) | sed -e 's|.*\\(-rc[0-9]*\\)$|\\1|g' | tr '-' '_'`
+            flavor="%s"
+            label="%s"
+            echo "${majorver}-${rpm_n}_${fbkv}${flavor}${rc}${label}" > $OUT
+        """ % (flavor_ver, label_ver),
+        out="baseline-rpm-version",
+    )
+
+
     #uname of original kernel
     native.genrule(
         name = "uname-klp",
-        cmd = "rpm -qp --queryformat '%{version}-%{release}' $(location :kernel-devel-" + "{})/kernel-devel.rpm > $OUT".format(baseline_version),
+        cmd = "rpm -qp --queryformat '%{version}-%{release}' $(location :kernel-devel-klp)/kernel-devel.rpm > $OUT",
         out = "uname",
         cacheable=False,
     )
