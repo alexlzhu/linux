@@ -2184,6 +2184,7 @@ static u64 add_bytes_to_bitmap(struct btrfs_free_space_ctl *ctl,
 	 * anymore.
 	 */
 	info->max_extent_size = 0;
+	ctl->max_extent_size = 0;
 
 	return bytes_to_set;
 
@@ -2616,7 +2617,7 @@ link:
 	ret = link_free_space(ctl, info);
 	if (ret)
 		kmem_cache_free(btrfs_free_space_cachep, info);
-	if (ctl->max_extent_size < info->bytes)
+	if (ctl->max_extent_size && ctl->max_extent_size < info->bytes)
 		ctl->max_extent_size = info->bytes;
 out:
 	btrfs_discard_update_discardable(block_group);
@@ -3462,7 +3463,8 @@ int btrfs_find_space_cluster(struct btrfs_block_group *block_group,
 	 * If we know we don't have enough space to make a cluster don't even
 	 * bother doing all the work to try and find one.
 	 */
-	if (ctl->free_space < bytes || ctl->max_extent_size < cont1_bytes) {
+	if (ctl->free_space < bytes ||
+	    (ctl->max_extent_size && (ctl->max_extent_size < cont1_bytes))) {
 		spin_unlock(&ctl->tree_lock);
 		return -ENOSPC;
 	}

@@ -3000,8 +3000,11 @@ void btrfs_free_reserved_bytes(struct btrfs_block_group *cache,
 		struct btrfs_free_space_ctl *ctl = cache->free_space_ctl;
 
 		spin_lock(&ctl->tree_lock);
-		if (ctl->max_extent_size > space_info->max_extent_size)
+		if (ctl->max_extent_size &&
+		    ctl->max_extent_size > space_info->max_extent_size)
 			space_info->max_extent_size = ctl->max_extent_size;
+		else if (!ctl->max_extent_size)
+			space_info->max_extent_size = 0;
 		spin_unlock(&ctl->tree_lock);
 	}
 
