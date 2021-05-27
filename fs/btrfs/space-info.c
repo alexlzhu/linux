@@ -352,9 +352,11 @@ static void shrink_delalloc(struct btrfs_fs_info *fs_info, u64 to_reclaim,
 	long time_left;
 	int loops;
 
-	/* Calc the number of the pages we need flush for space reservation */
-	items = calc_reclaim_items_nr(fs_info, to_reclaim);
-	to_reclaim = items * EXTENT_SIZE_PER_ITEM;
+	if (to_reclaim != U64_MAX) {
+		/* Calc the number of the pages we need flush for space reservation */
+		items = calc_reclaim_items_nr(fs_info, to_reclaim);
+		to_reclaim = items * EXTENT_SIZE_PER_ITEM;
+	}
 
 	trans = (struct btrfs_trans_handle *)current->journal_info;
 	space_info = btrfs_find_space_info(fs_info, BTRFS_BLOCK_GROUP_METADATA);
@@ -541,7 +543,9 @@ static void flush_space(struct btrfs_fs_info *fs_info,
 		break;
 	case FLUSH_DELALLOC:
 	case FLUSH_DELALLOC_WAIT:
-		shrink_delalloc(fs_info, num_bytes * 2, num_bytes,
+		if (num_bytes != U64_MAX)
+			num_bytes *= 2;
+		shrink_delalloc(fs_info, num_bytes, num_bytes,
 				state == FLUSH_DELALLOC_WAIT);
 		break;
 	case FLUSH_DELAYED_REFS_NR:
@@ -778,6 +782,14 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 			if (commit_cycles)
 				commit_cycles--;
 		}
+
+		/*
+		 * We shrink delalloc based on pages now, so if we're under a
+		 * decent amount of pressure and have gone through the whole
+		 * flushing state once, flush all of the pages this go around.
+		 */
+		if (flush_state == FLUSH_DELALLOC_WAIT && commit_cycles)
+			to_reclaim = U64_MAX;
 
 		/*
 		 * We don't want to force a chunk allocation until we've tried
