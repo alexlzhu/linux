@@ -970,6 +970,14 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		}
 
 		/*
+		 * We shrink delalloc based on pages now, so if we're under a
+		 * decent amount of pressure and have gone through the whole
+		 * flushing state once, flush all of the pages this go around.
+		 */
+		if (flush_state == FLUSH_DELALLOC_WAIT && commit_cycles)
+			to_reclaim = U64_MAX;
+
+		/*
 		 * We don't want to force a chunk allocation until we've tried
 		 * pretty hard to reclaim space.  Think of the case where we
 		 * freed up a bunch of space and so have a lot of pinned space
