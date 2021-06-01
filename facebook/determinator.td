@@ -30,7 +30,7 @@ def build(alias, do_kerneltest, notify, tags = None, priority = None, modules = 
     if not tags:
         tags = []
     if "diff" in tags:
-        args["sign_modules"] = True
+        args["sign_modules"] = False
         args["sign_modules_key"] = "autograph-test"
 
     tags = ["kernel", "linux-kernel", "kernel-contbuild"] + tags
