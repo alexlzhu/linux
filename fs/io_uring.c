@@ -8114,6 +8114,7 @@ static int io_buffer_account_pin(struct io_ring_ctx *ctx, struct page **pages,
 {
 	int i, ret;
 
+	imu->acct_pages = 0;
 	for (i = 0; i < nr_pages; i++) {
 		if (!PageCompound(pages[i])) {
 			imu->acct_pages++;
@@ -8925,11 +8926,16 @@ static void io_uring_clean_tctx(struct io_uring_task *tctx)
 	struct io_tctx_node *node;
 	unsigned long index;
 
-	tctx->io_wq = NULL;
 	xa_for_each(&tctx->xa, index, node)
 		io_uring_del_task_file(index);
-	if (wq)
+	if (wq) {
+		/*
+		 * Must be after io_uring_del_task_file() (removes nodes under
+		 * uring_lock) to avoid race with io_uring_try_cancel_iowq().
+		 */
+		tctx->io_wq = NULL;
 		io_wq_put_and_exit(wq);
+	}
 }
 
 static s64 tctx_inflight(struct io_uring_task *tctx, bool tracked)
@@ -8964,6 +8970,9 @@ static void io_uring_cancel_sqpoll(struct io_sq_data *sqd)
 
 	if (!current->io_uring)
 		return;
+	if (tctx->io_wq)
+		io_wq_exit_start(tctx->io_wq);
+
 	WARN_ON_ONCE(!sqd || sqd->thread != current);
 
 	atomic_inc(&tctx->in_idle);
@@ -8997,6 +9006,9 @@ void __io_uring_cancel(struct files_struct *files)
 	struct io_uring_task *tctx = current->io_uring;
 	DEFINE_WAIT(wait);
 	s64 inflight;
+
+	if (tctx->io_wq)
+		io_wq_exit_start(tctx->io_wq);
 
 	/* make sure overflow events are dropped */
 	atomic_inc(&tctx->in_idle);
