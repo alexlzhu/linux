@@ -102,7 +102,7 @@ def klp(flavor=None, label=None):
             popd
             rpm_n=0
             fbkv=`cat $(location :baseline) | sed -e 's|.*-\\(fbk[0-9]*\\).*|\\1|g'`
-            rc=`cat $(location :baseline) | sed -e 's|.*\\(-rc[0-9]*\\)$|\\1|g' | tr '-' '_'`
+            rc=`cat $(location :baseline) | grep -oE '\\b-rc[0-9]\\b$' | tr '-' '_'`
             flavor="%s"
             label="%s"
             echo "${majorver}-${rpm_n}_${fbkv}${flavor}${rc}${label}" > $OUT
