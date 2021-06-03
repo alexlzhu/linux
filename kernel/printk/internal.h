@@ -55,6 +55,9 @@ bool printk_percpu_data_ready(void);
 		local_irq_enable();		\
 	} while (0)
 
+u16 printk_parse_prefix(const char *text, int *level,
+			enum printk_info_flags *flags);
+
 void defer_console_output(void);
 
 #else
