@@ -9670,7 +9670,7 @@ static void btrfs_run_delalloc_work(struct btrfs_work *work)
 				&BTRFS_I(inode)->runtime_flags))
 		flush_func(inode->i_mapping);
 
-	iput(inode);
+	btrfs_add_delayed_iput(inode);
 	complete(&delalloc_work->completion);
 }
 
