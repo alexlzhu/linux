@@ -2008,9 +2008,10 @@ TRACE_EVENT(btrfs_convert_extent_bit,
 
 DECLARE_EVENT_CLASS(btrfs_dump_space_info,
 	TP_PROTO(const struct btrfs_fs_info *fs_info,
-		 const struct btrfs_space_info *sinfo),
+		 const struct btrfs_space_info *sinfo,
+		 u64 delalloc, u64 ordered),
 
-	TP_ARGS(fs_info, sinfo),
+	TP_ARGS(fs_info, sinfo, delalloc, ordered),
 
 	TP_STRUCT__entry_btrfs(
 		__field(	u64,	flags			)
@@ -2025,6 +2026,8 @@ DECLARE_EVENT_CLASS(btrfs_dump_space_info,
 		__field(	u64,	delayed_refs_reserved	)
 		__field(	u64,	delayed_reserved	)
 		__field(	u64,	free_chunk_space	)
+		__field(	u64,	delalloc_bytes		)
+		__field(	u64,	ordered_bytes		)
 	),
 
 	TP_fast_assign_btrfs(fs_info,
@@ -2040,6 +2043,8 @@ DECLARE_EVENT_CLASS(btrfs_dump_space_info,
 		__entry->delayed_refs_reserved	=	fs_info->delayed_refs_rsv.reserved;
 		__entry->delayed_reserved	=	fs_info->delayed_block_rsv.reserved;
 		__entry->free_chunk_space	=	atomic64_read(&fs_info->free_chunk_space);
+		__entry->delalloc_bytes		=	delalloc;
+		__entry->ordered_bytes		=	ordered;
 	),
 
 	TP_printk_btrfs("flags=%s total_bytes=%llu bytes_used=%llu "
@@ -2047,20 +2052,23 @@ DECLARE_EVENT_CLASS(btrfs_dump_space_info,
 			"bytes_may_use=%llu bytes_readonly=%llu "
 			"global_reserved=%llu "
 			"trans_reserved=%llu delayed_refs_reserved=%llu "
-			"delayed_reserved=%llu chunk_free_space=%llu",
+			"delayed_reserved=%llu chunk_free_space=%llu "
+			"delalloc_bytes=%llu ordered_bytes=%llu",
 			__print_flags(__entry->flags, "|", BTRFS_GROUP_FLAGS),
 			__entry->total_bytes, __entry->bytes_used,
 			__entry->bytes_pinned, __entry->bytes_reserved,
 			__entry->bytes_may_use, __entry->bytes_readonly,
 			__entry->global_reserved, __entry->trans_reserved,
 			__entry->delayed_refs_reserved,
-			__entry->delayed_reserved, __entry->free_chunk_space)
+			__entry->delayed_reserved, __entry->free_chunk_space,
+			__entry->delalloc_bytes, __entry->ordered_bytes)
 );
 
 DEFINE_EVENT(btrfs_dump_space_info, btrfs_fail_tickets,
 	TP_PROTO(const struct btrfs_fs_info *fs_info,
-		 const struct btrfs_space_info *sinfo),
-	TP_ARGS(fs_info, sinfo)
+		 const struct btrfs_space_info *sinfo, u64 delalloc,
+		 u64 ordered),
+	TP_ARGS(fs_info, sinfo, delalloc, ordered)
 );
 
 DECLARE_EVENT_CLASS(btrfs_sleep_tree_lock,
