@@ -9705,7 +9705,7 @@ static int start_delalloc_inodes(struct btrfs_root *root,
 	struct list_head works;
 	struct list_head splice;
 	int ret = 0;
-	bool full_flush = wbc->nr_to_write == LONG_MAX;
+	bool full_flush = wbc->reason != WB_REASON_FS_FREE_SPACE;
 
 	INIT_LIST_HEAD(&works);
 	INIT_LIST_HEAD(&splice);
@@ -9788,13 +9788,14 @@ int btrfs_start_delalloc_snapshot(struct btrfs_root *root)
 }
 
 int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, u64 nr,
-			       int sync_mode)
+			       int sync_mode, bool enospc)
 {
 	struct writeback_control wbc = {
 		.nr_to_write = (nr == U64_MAX) ? LONG_MAX : (unsigned long)nr,
 		.sync_mode = sync_mode,
 		.range_start = 0,
 		.range_end = LLONG_MAX,
+		.reason = enospc ? WB_REASON_FS_FREE_SPACE : 0,
 	};
 	struct btrfs_root *root;
 	struct list_head splice;

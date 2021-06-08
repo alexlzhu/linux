@@ -384,7 +384,8 @@ static void shrink_delalloc(struct btrfs_fs_info *fs_info, u64 to_reclaim,
 	while ((delalloc_bytes || ordered_bytes) && loops < 3) {
 		u64 nr_pages = min(delalloc_bytes, to_reclaim) >> PAGE_SHIFT;
 
-		btrfs_start_delalloc_roots(fs_info, nr_pages, WB_SYNC_NONE);
+		btrfs_start_delalloc_roots(fs_info, nr_pages, WB_SYNC_NONE,
+					   true);
 
 		loops++;
 		if (wait_ordered && !trans) {
