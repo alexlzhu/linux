@@ -5507,7 +5507,8 @@ long btrfs_ioctl(struct file *file, unsigned int
 	case BTRFS_IOC_SYNC: {
 		int ret;
 
-		ret = btrfs_start_delalloc_roots(fs_info, U64_MAX, WB_SYNC_ALL);
+		ret = btrfs_start_delalloc_roots(fs_info, U64_MAX, WB_SYNC_ALL,
+						 false);
 		if (ret)
 			return ret;
 		ret = btrfs_sync_fs(inode->i_sb, 1);
