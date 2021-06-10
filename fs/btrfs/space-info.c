@@ -382,7 +382,7 @@ static void shrink_delalloc(struct btrfs_fs_info *fs_info, u64 to_reclaim,
 
 	loops = 0;
 	while ((delalloc_bytes || ordered_bytes) && loops < 3) {
-		u64 nr_pages;
+		u64 nr_pages, async_pages;
 
 		if (to_reclaim == U64_MAX)
 			nr_pages = U64_MAX;
@@ -392,6 +392,25 @@ static void shrink_delalloc(struct btrfs_fs_info *fs_info, u64 to_reclaim,
 		btrfs_start_delalloc_roots(fs_info, nr_pages, WB_SYNC_NONE,
 					   true);
 
+		/*
+		 * We have to do this to make sure all the async work has
+		 * completed and our normal page waiting stuff is done.  Don't
+		 * remove this unless you make sure the writeback stuff is
+		 * actually doing the right thing wrt async extents.
+		 */
+		async_pages = atomic_read(&fs_info->async_delalloc_pages);
+		if (!async_pages)
+			goto skip_async;
+
+		if (async_pages <= nr_pages)
+			async_pages = 0;
+		else
+			async_pages -= nr_pages;
+
+		wait_event(fs_info->async_submit_wait,
+			   atomic_read(&fs_info->async_delalloc_pages) <=
+			   (int)async_pages);
+skip_async:
 		loops++;
 		if (wait_ordered && !trans) {
 			btrfs_wait_ordered_roots(fs_info, items, 0, (u64)-1);
