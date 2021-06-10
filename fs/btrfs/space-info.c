@@ -274,16 +274,18 @@ static void __btrfs_dump_space_info(struct btrfs_fs_info *fs_info,
 {
 	lockdep_assert_held(&info->lock);
 
-	btrfs_info(fs_info, "space_info %llu has %llu free, is %sfull",
+	btrfs_err(fs_info, "space_info %llu has %llu free, is %sfull",
 		   info->flags,
 		   info->total_bytes - btrfs_space_info_used(info, true),
 		   info->full ? "" : "not ");
-	btrfs_info(fs_info,
-		"space_info total=%llu, used=%llu, pinned=%llu, reserved=%llu, may_use=%llu, readonly=%llu, disk_used=%llu, total_bytes_pinned=%llu",
+	btrfs_err(fs_info,
+		"space_info total=%llu, used=%llu, pinned=%llu, reserved=%llu, may_use=%llu, readonly=%llu, disk_used=%llu, total_bytes_pinned=%llu delalloc=%llu ordered=%llu",
 		info->total_bytes, info->bytes_used, info->bytes_pinned,
 		info->bytes_reserved, info->bytes_may_use,
 		info->bytes_readonly, info->disk_used,
-		percpu_counter_sum_positive(&info->total_bytes_pinned));
+		percpu_counter_sum_positive(&info->total_bytes_pinned),
+		percpu_counter_sum_positive(&fs_info->delalloc_bytes),
+		percpu_counter_sum_positive(&fs_info->ordered_bytes));
 
 	DUMP_BLOCK_RSV(fs_info, global_block_rsv);
 	DUMP_BLOCK_RSV(fs_info, trans_block_rsv);
@@ -843,11 +845,9 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		if (flush_state > COMMIT_TRANS) {
 			commit_cycles++;
 			if (commit_cycles > 2) {
-				if (btrfs_test_opt(fs_info, ENOSPC_DEBUG)) {
-					btrfs_err(fs_info,
-						  "reserve metadata bytes failed, possible early enospc");
-					__btrfs_dump_space_info(fs_info, space_info);
-				}
+				btrfs_err(fs_info,
+					  "reserve metadata bytes failed, possible early enospc");
+				__btrfs_dump_space_info(fs_info, space_info);
 				trace_btrfs_fail_tickets(fs_info, space_info,
 							 percpu_counter_sum_positive(&fs_info->delalloc_bytes),
 							 percpu_counter_sum_positive(&fs_info->ordered_bytes));
