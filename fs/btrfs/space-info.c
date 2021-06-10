@@ -274,16 +274,18 @@ static void __btrfs_dump_space_info(struct btrfs_fs_info *fs_info,
 {
 	lockdep_assert_held(&info->lock);
 
-	btrfs_info(fs_info, "space_info %llu has %llu free, is %sfull",
+	btrfs_err(fs_info, "space_info %llu has %llu free, is %sfull",
 		   info->flags,
 		   info->total_bytes - btrfs_space_info_used(info, true),
 		   info->full ? "" : "not ");
-	btrfs_info(fs_info,
-		"space_info total=%llu, used=%llu, pinned=%llu, reserved=%llu, may_use=%llu, readonly=%llu, disk_used=%llu, total_bytes_pinned=%llu",
+	btrfs_err(fs_info,
+		"space_info total=%llu, used=%llu, pinned=%llu, reserved=%llu, may_use=%llu, readonly=%llu, disk_used=%llu, total_bytes_pinned=%llu delalloc=%llu ordered=%llu",
 		info->total_bytes, info->bytes_used, info->bytes_pinned,
 		info->bytes_reserved, info->bytes_may_use,
 		info->bytes_readonly, info->disk_used,
-		percpu_counter_sum_positive(&info->total_bytes_pinned));
+		percpu_counter_sum_positive(&info->total_bytes_pinned),
+		percpu_counter_sum_positive(&fs_info->delalloc_bytes),
+		percpu_counter_sum_positive(&fs_info->ordered_bytes));
 
 	DUMP_BLOCK_RSV(fs_info, global_block_rsv);
 	DUMP_BLOCK_RSV(fs_info, trans_block_rsv);
@@ -382,11 +384,35 @@ static void shrink_delalloc(struct btrfs_fs_info *fs_info, u64 to_reclaim,
 
 	loops = 0;
 	while ((delalloc_bytes || ordered_bytes) && loops < 3) {
-		u64 nr_pages = min(delalloc_bytes, to_reclaim) >> PAGE_SHIFT;
+		u64 nr_pages, async_pages;
+
+		if (to_reclaim == U64_MAX)
+			nr_pages = U64_MAX;
+		else
+			nr_pages = min(delalloc_bytes, to_reclaim) >> PAGE_SHIFT;
 
 		btrfs_start_delalloc_roots(fs_info, nr_pages, WB_SYNC_NONE,
 					   true);
 
+		/*
+		 * We have to do this to make sure all the async work has
+		 * completed and our normal page waiting stuff is done.  Don't
+		 * remove this unless you make sure the writeback stuff is
+		 * actually doing the right thing wrt async extents.
+		 */
+		async_pages = atomic_read(&fs_info->async_delalloc_pages);
+		if (!async_pages)
+			goto skip_async;
+
+		if (async_pages <= nr_pages)
+			async_pages = 0;
+		else
+			async_pages -= nr_pages;
+
+		wait_event(fs_info->async_submit_wait,
+			   atomic_read(&fs_info->async_delalloc_pages) <=
+			   (int)async_pages);
+skip_async:
 		loops++;
 		if (wait_ordered && !trans) {
 			btrfs_wait_ordered_roots(fs_info, items, 0, (u64)-1);
@@ -819,11 +845,9 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		if (flush_state > COMMIT_TRANS) {
 			commit_cycles++;
 			if (commit_cycles > 2) {
-				if (btrfs_test_opt(fs_info, ENOSPC_DEBUG)) {
-					btrfs_err(fs_info,
-						  "reserve metadata bytes failed, possible early enospc");
-					__btrfs_dump_space_info(fs_info, space_info);
-				}
+				btrfs_err(fs_info,
+					  "reserve metadata bytes failed, possible early enospc");
+				__btrfs_dump_space_info(fs_info, space_info);
 				trace_btrfs_fail_tickets(fs_info, space_info,
 							 percpu_counter_sum_positive(&fs_info->delalloc_bytes),
 							 percpu_counter_sum_positive(&fs_info->ordered_bytes));

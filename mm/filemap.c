@@ -405,7 +405,6 @@ static int filemap_check_and_keep_errors(struct address_space *mapping)
 int __filemap_fdatawrite_range(struct address_space *mapping, loff_t start,
 				loff_t end, int sync_mode)
 {
-	int ret;
 	struct writeback_control wbc = {
 		.sync_mode = sync_mode,
 		.nr_to_write = LONG_MAX,
@@ -417,11 +416,20 @@ int __filemap_fdatawrite_range(struct address_space *mapping, loff_t start,
 	    !mapping_tagged(mapping, PAGECACHE_TAG_DIRTY))
 		return 0;
 
-	wbc_attach_fdatawrite_inode(&wbc, mapping->host);
-	ret = do_writepages(mapping, &wbc);
-	wbc_detach_inode(&wbc);
+	return filemap_fdatawrite_wbc(mapping, &wbc);
+}
+
+int filemap_fdatawrite_wbc(struct address_space *mapping,
+			   struct writeback_control *wbc)
+{
+	int ret;
+
+	wbc_attach_fdatawrite_inode(wbc, mapping->host);
+	ret = do_writepages(mapping, wbc);
+	wbc_detach_inode(wbc);
 	return ret;
 }
+EXPORT_SYMBOL(filemap_fdatawrite_wbc);
 
 static inline int __filemap_fdatawrite(struct address_space *mapping,
 	int sync_mode)
