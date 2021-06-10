@@ -3456,6 +3456,9 @@ int spi_nor_scan(struct spi_nor *nor, const char *name,
 	if (!nor->bouncebuf)
 		return -ENOMEM;
 
+	/* soft reset to wakeup/prepare chip */
+	spi_nor_soft_reset(nor);
+
 	info = spi_nor_get_flash_info(nor, name);
 	if (IS_ERR(info))
 		return PTR_ERR(info);
