@@ -554,8 +554,9 @@ unsigned long invalidate_mapping_pages(struct address_space *mapping,
 				break;
 
 			if (xa_is_value(page)) {
-				invalidate_exceptional_entry(mapping, index,
-							     page);
+				count += invalidate_exceptional_entry(mapping,
+								      index,
+								      page);
 				continue;
 			}
 
