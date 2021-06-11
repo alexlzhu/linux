@@ -350,7 +350,7 @@ static void shrink_delalloc(struct btrfs_fs_info *fs_info, u64 to_reclaim,
 	struct btrfs_trans_handle *trans;
 	u64 delalloc_bytes;
 	u64 ordered_bytes;
-	u64 items;
+	u64 items = U64_MAX;
 	long time_left;
 	int loops;
 
