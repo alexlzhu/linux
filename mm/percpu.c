@@ -2878,6 +2878,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 	 * Related to atom_size, which could be much larger than the unit_size.
 	 */
 	last_allocs = INT_MAX;
+	best_upa = 0;
 	for (upa = max_upa; upa; upa--) {
 		int allocs = 0, wasted = 0;
 
@@ -2904,6 +2905,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 		last_allocs = allocs;
 		best_upa = upa;
 	}
+	BUG_ON(!best_upa);
 	upa = best_upa;
 
 	/* allocate and fill alloc_info */
