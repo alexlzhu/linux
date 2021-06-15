@@ -60,6 +60,8 @@ bool printk_percpu_data_ready(void);
 
 void defer_console_output(void);
 
+u16 printk_parse_prefix(const char *text, int *level,
+			enum printk_info_flags *flags);
 #else
 
 __printf(1, 0) int vprintk_func(const char *fmt, va_list args) { return 0; }
