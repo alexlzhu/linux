@@ -687,7 +687,7 @@ config PRINTK_INDEX
 
 	  This can be used as part of maintaining daemons which monitor
 	  /dev/kmsg, as it permits auditing the printk formats present in a
-	  kernel, allowing monitoring of cases where monitored printks are
+	  kernel, allowing detection of cases where monitored printks are
 	  changed or no longer present.
 
 	  There is no additional runtime cost to printk with this enabled.

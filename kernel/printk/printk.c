@@ -610,7 +610,7 @@ static u32 truncate_msg(u16 *text_len, u16 *trunc_msg_len,
 
 /* insert record into the buffer, discard old ones, update heads */
 static int log_store(u32 caller_id, int facility, int level,
-		     enum log_flags flags, u64 ts_nsec,
+		     enum printk_info_flags flags, u64 ts_nsec,
 		     const char *dict, u16 dict_len,
 		     const char *text, u16 text_len)
 {
@@ -1854,7 +1854,7 @@ static struct cont {
 	u64 ts_nsec;			/* time of first print */
 	u8 level;			/* log level of first message */
 	u8 facility;			/* log facility of first message */
-	enum log_flags flags;		/* prefix, newline flags */
+	enum printk_info_flags flags;		/* prefix, newline flags */
 } cont;
 
 static void cont_flush(void)
@@ -1868,7 +1868,7 @@ static void cont_flush(void)
 }
 
 static bool cont_add(u32 caller_id, int facility, int level,
-		     enum log_flags flags, const char *text, size_t len)
+		     enum printk_info_flags flags, const char *text, size_t len)
 {
 	/* If the line gets too long, split it up in separate records. */
 	if (cont.len + len > sizeof(cont.buf)) {
@@ -1897,51 +1897,7 @@ static bool cont_add(u32 caller_id, int facility, int level,
 	return true;
 }
 
-/**
- * parse_prefix - Parse level and control flags.
- *
- * @text:     The terminated text message.
- * @level:    A pointer to the current level value, will be updated.
- * @lflags:   A pointer to the current log flags, will be updated.
- *
- * @level may be NULL if the caller is not interested in the parsed value.
- * Otherwise the variable pointed to by @level must be set to
- * LOGLEVEL_DEFAULT in order to be updated with the parsed value.
- *
- * @lflags may be NULL if the caller is not interested in the parsed value.
- * Otherwise the variable pointed to by @lflags will be OR'd with the parsed
- * value.
- *
- * Return: The length of the parsed level and control flags.
- */
-u16 parse_prefix(const char *text, int *level, enum log_flags *lflags)
-{
-	u16 prefix_len = 0;
-	int kern_level;
-
-	while (*text) {
-		kern_level = printk_get_level(text);
-		if (!kern_level)
-			break;
-
-		switch (kern_level) {
-		case '0' ... '7':
-			if (level && *level == LOGLEVEL_DEFAULT)
-				*level = kern_level - '0';
-			break;
-		case 'c':	/* KERN_CONT */
-			if (lflags)
-				*lflags |= LOG_CONT;
-		}
-
-		prefix_len += 2;
-		text += 2;
-	}
-
-	return prefix_len;
-}
-
-static size_t log_output(int facility, int level, enum log_flags lflags, const char *dict, size_t dictlen, char *text, size_t text_len)
+static size_t log_output(int facility, int level, enum printk_info_flags lflags, const char *dict, size_t dictlen, char *text, size_t text_len)
 {
 	const u32 caller_id = printk_caller_id();
 
@@ -1973,6 +1929,51 @@ static size_t log_output(int facility, int level, enum log_flags lflags, const c
 			 dict, dictlen, text, text_len);
 }
 
+/**
+ * printk_parse_prefix - Parse level and control flags.
+ *
+ * @text:     The terminated text message.
+ * @level:    A pointer to the current level value, will be updated.
+ * @flags:    A pointer to the current printk_info flags, will be updated.
+ *
+ * @level may be NULL if the caller is not interested in the parsed value.
+ * Otherwise the variable pointed to by @level must be set to
+ * LOGLEVEL_DEFAULT in order to be updated with the parsed value.
+ *
+ * @flags may be NULL if the caller is not interested in the parsed value.
+ * Otherwise the variable pointed to by @flags will be OR'd with the parsed
+ * value.
+ *
+ * Return: The length of the parsed level and control flags.
+ */
+u16 printk_parse_prefix(const char *text, int *level,
+			enum printk_info_flags *flags)
+{
+	u16 prefix_len = 0;
+	int kern_level;
+
+	while (*text) {
+		kern_level = printk_get_level(text);
+		if (!kern_level)
+			break;
+
+		switch (kern_level) {
+		case '0' ... '7':
+			if (level && *level == LOGLEVEL_DEFAULT)
+				*level = kern_level - '0';
+			break;
+		case 'c':       /* KERN_CONT */
+			if (flags)
+				*flags |= LOG_CONT;
+		}
+
+		prefix_len += 2;
+		text += 2;
+	}
+
+	return prefix_len;
+}
+
 /* Must be called under logbuf_lock. */
 int vprintk_store(int facility, int level,
 		  const char *dict, size_t dictlen,
@@ -1981,7 +1982,7 @@ int vprintk_store(int facility, int level,
 	static char textbuf[LOG_LINE_MAX];
 	char *text = textbuf;
 	size_t text_len;
-	enum log_flags lflags = 0;
+	enum printk_info_flags lflags = 0;
 
 	/*
 	 * The printf needs to come first; we need the syslog
@@ -2105,7 +2106,7 @@ EXPORT_SYMBOL_GPL(vprintk_default);
  *
  * This is _printk(). It can be called from any context. We want it to work.
  *
- * If printk indexing is enabled, _printk() is called from pi_sec_elf_embed.
+ * If printk indexing is enabled, _printk() is called from printk_index_wrap.
  * Otherwise, printk is simply #defined to _printk.
  *
  * We try to grab the console_lock. If we succeed, it's easy - we log the

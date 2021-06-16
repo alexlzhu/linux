@@ -301,17 +301,6 @@
 #define ACPI_PROBE_TABLE(name)
 #endif
 
-#ifdef CONFIG_PRINTK_INDEX
-#define PRINTK_INDEX							\
-	.printk_index : AT(ADDR(.printk_index) - LOAD_OFFSET) {		\
-		__start_printk_index = .;				\
-		*(.printk_index)						\
-		__stop_printk_index = .;					\
-	}
-#else
-#define PRINTK_INDEX
-#endif
-
 #ifdef CONFIG_THERMAL
 #define THERMAL_TABLE(name)						\
 	. = ALIGN(8);							\
@@ -864,6 +853,17 @@
 	}
 #else
 #define TRACEDATA
+#endif
+
+#ifdef CONFIG_PRINTK_INDEX
+#define PRINTK_INDEX							\
+	.printk_index : AT(ADDR(.printk_index) - LOAD_OFFSET) {		\
+		__start_printk_index = .;				\
+		*(.printk_index)					\
+		__stop_printk_index = .;				\
+	}
+#else
+#define PRINTK_INDEX
 #endif
 
 #define NOTES								\

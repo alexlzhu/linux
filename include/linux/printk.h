@@ -159,11 +159,6 @@ static inline void printk_nmi_direct_exit(void) { }
 #endif /* PRINTK_NMI */
 
 #ifdef CONFIG_PRINTK
-enum log_flags {
-	LOG_NEWLINE	= 2,	/* text ended with a newline */
-	LOG_CONT	= 8,	/* text is a fragment of a continuation line */
-};
-
 asmlinkage __printf(5, 0)
 int vprintk_emit(int facility, int level,
 		 const char *dict, size_t dictlen,
@@ -206,7 +201,6 @@ void __init setup_log_buf(int early);
 __printf(1, 2) void dump_stack_set_arch_desc(const char *fmt, ...);
 void dump_stack_print_info(const char *log_lvl);
 void show_regs_print_info(const char *log_lvl);
-u16 parse_prefix(const char *text, int *level, enum log_flags *lflags);
 extern asmlinkage void dump_stack(void) __cold;
 extern void printk_safe_flush(void);
 extern void printk_safe_flush_on_panic(void);
@@ -289,70 +283,99 @@ extern int kptr_restrict;
 #define pr_fmt(fmt) fmt
 #endif
 
+struct module;
+
+#ifdef CONFIG_PRINTK_INDEX
+struct pi_entry {
+	const char *fmt;
+	const char *func;
+	const char *file;
+	unsigned int line;
+
+	/*
+	 * While printk and pr_* have the level stored in the string at compile
+	 * time, some subsystems dynamically add it at runtime through the
+	 * format string. For these dynamic cases, we allow the subsystem to
+	 * tell us the level at compile time.
+	 *
+	 * NULL indicates that the level, if any, is stored in fmt.
+	 */
+	const char *level;
+
+	/*
+	 * The format string used by various subsystem specific printk()
+	 * wrappers to prefix the message.
+	 *
+	 * Note that the static prefix defined by the pr_fmt() macro is stored
+	 * directly in the message format (@fmt), not here.
+	 */
+	const char *subsys_fmt_prefix;
+} __packed;
+
+#define __printk_index_emit(_fmt, _level, _subsys_fmt_prefix)		\
+	do {								\
+		if (__builtin_constant_p(_fmt) && __builtin_constant_p(_level)) { \
+			/*
+			 * We check __builtin_constant_p multiple times here
+			 * for the same input because GCC will produce an error
+			 * if we try to assign a static variable to fmt if it
+			 * is not a constant, even with the outer if statement.
+			 */						\
+			static const struct pi_entry _entry		\
+			__used = {					\
+				.fmt = __builtin_constant_p(_fmt) ? (_fmt) : NULL, \
+				.func = __func__,			\
+				.file = __FILE__,			\
+				.line = __LINE__,			\
+				.level = __builtin_constant_p(_level) ? (_level) : NULL, \
+				.subsys_fmt_prefix = _subsys_fmt_prefix,\
+			};						\
+			static const struct pi_entry *_entry_ptr	\
+			__used __section(".printk_index") = &_entry;	\
+		}							\
+	} while (0)
+
+#else /* !CONFIG_PRINTK_INDEX */
+#define __printk_index_emit(...) do {} while (0)
+#endif /* CONFIG_PRINTK_INDEX */
+
+/*
+ * Some subsystems have their own custom printk that applies a va_format to a
+ * generic format, for example, to include a device number or other metadata
+ * alongside the format supplied by the caller.
+ *
+ * In order to store these in the way they would be emitted by the printk
+ * infrastructure, the subsystem provides us with the start, fixed string, and
+ * any subsequent text in the format string.
+ *
+ * We take a variable argument list as pr_fmt/dev_fmt/etc are sometimes passed
+ * as multiple arguments (eg: `"%s: ", "blah"`), and we must only take the
+ * first one.
+ *
+ * subsys_fmt_prefix must be known at compile time, or compilation will fail
+ * (since this is a mistake). If fmt or level is not known at compile time, no
+ * index entry will be made (since this can legitimately happen).
+ */
+#define printk_index_subsys_emit(subsys_fmt_prefix, level, fmt, ...) \
+	__printk_index_emit(fmt, level, subsys_fmt_prefix)
+
+#define printk_index_wrap(_p_func, _fmt, ...)				\
+	({								\
+		__printk_index_emit(_fmt, NULL, NULL);			\
+		_p_func(_fmt, ##__VA_ARGS__);				\
+	})
+
+
+#define printk(fmt, ...) printk_index_wrap(_printk, fmt, ##__VA_ARGS__)
+#define printk_deferred(fmt, ...)					\
+	printk_index_wrap(_printk_deferred, fmt, ##__VA_ARGS__)
+
 /*
  * These can be used to print at the various log levels.
  * All of these will print unconditionally, although note that pr_debug()
  * and other debug macros are compiled out unless either DEBUG is defined
  * or CONFIG_DYNAMIC_DEBUG is set.
  */
-struct module;
-
-#ifdef CONFIG_PRINTK_INDEX
-extern void pi_sec_store(struct module *mod);
-extern void pi_sec_remove(struct module *mod);
-
-struct pi_object {
-	const char *fmt;
-	const char *func;
-	const char *file;
-	unsigned int line;
-};
-
-extern struct pi_object __start_printk_index[];
-extern struct pi_object __stop_printk_index[];
-
-#define pi_sec_elf_embed(_p_func, _fmt, ...)				       \
-	({								       \
-		int _p_ret;						       \
-									       \
-		if (__builtin_constant_p(_fmt)) {			       \
-			/*
-			 * The compiler may not be able to eliminate this, so
-			 * we need to make sure that it doesn't see any
-			 * hypothetical assignment for non-constants even
-			 * though this is already inside the
-			 * __builtin_constant_p guard.
-			 */						       \
-			static struct pi_object _pi			       \
-			__section(".printk_index") = {			       \
-				.fmt = __builtin_constant_p(_fmt) ? (_fmt) : NULL, \
-				.func = __func__,			       \
-				.file = __FILE__,			       \
-				.line = __LINE__,			       \
-			};						       \
-			_p_ret = _p_func(_pi.fmt, ##__VA_ARGS__);	       \
-		} else							       \
-			_p_ret = _p_func(_fmt, ##__VA_ARGS__);		       \
-									       \
-		_p_ret;							       \
-	})
-
-#define printk(fmt, ...) pi_sec_elf_embed(_printk, fmt, ##__VA_ARGS__)
-#define printk_deferred(fmt, ...)					       \
-	pi_sec_elf_embed(_printk_deferred, fmt, ##__VA_ARGS__)
-#else /* !CONFIG_PRINTK_INDEX */
-static inline void pi_sec_store(struct module *mod)
-{
-}
-
-static inline void pi_sec_remove(struct module *mod)
-{
-}
-
-#define printk(...) _printk(__VA_ARGS__)
-#define printk_deferred(...) _printk_deferred(__VA_ARGS__)
-#endif /* CONFIG_PRINTK_INDEX */
-
 #define pr_emerg(fmt, ...) \
 	printk(KERN_EMERG pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_alert(fmt, ...) \
