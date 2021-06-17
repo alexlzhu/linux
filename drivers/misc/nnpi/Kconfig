@@ -1,0 +1,12 @@
+config SPH
+        tristate "Driver for Intel SPH"
+        help
+          Driver for Intel SPH
+
+config SPH_ULT
+	def_bool n
+        depends on SPH
+
+config  SPH_HW_LAYER_SPH
+        def_bool y
+        depends on SPH

@@ -1,0 +1,34 @@
+include $(MAKE_DIR)/commondefs
+
+ifdef SPH_ULT
+export CONFIG_SPH_ULT=y
+endif
+
+ifeq ($(HW_LAYER),SPH)
+export CONFIG_SPH_HW_LAYER_SPH=y
+endif
+
+ifeq ($(HW_LAYER),LOCAL)
+export CONFIG_SPH_HW_LAYER_LOCAL=y
+endif
+
+export SPH_HOST_UAPI_DIR = $(ROOT)/src/host
+export SPH_EXTRA_MODULE_COMPILE_FLAGS = -I$(CURDIR) $(SPH_DEBUG_FLAGS) -DGIT_HASH=$(GIT_HASH) -DHW_LAYER_$(HW_LAYER) -I$(ROOT)/src/common/include
+export SPH_HOST_INTERFACE_DIR
+
+ifneq (,$(findstring fbk11,$(KERNEL_VER)))
+SPH_EXTRA_MODULE_COMPILE_FLAGS += -DFBK=11
+endif
+
+ifeq ($(SPH_VERSION),)
+major = $(shell grep -w "define SPH_MAJOR" $(ROOT)/src/common/include/sph_version.h | cut '-d ' -f3)
+minor = $(shell grep -w "define SPH_MINOR" $(ROOT)/src/common/include/sph_version.h | cut '-d ' -f3)
+patch = $(shell grep -w "define SPH_PATCH" $(ROOT)/src/common/include/sph_version.h | cut '-d ' -f3)
+patch_minor = $(shell grep -w "define SPH_PATCH_MINOR" $(ROOT)/src/common/include/sph_version.h | cut '-d ' -f3)
+export SPH_VERSION = "VERSION: v.$(major).$(minor).$(patch).$(patch_minor)"
+endif
+
+PACKAGE = host_driver
+include Kbuild
+
+include $(MAKE_DIR)/commonrules

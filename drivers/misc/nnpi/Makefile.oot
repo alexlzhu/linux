@@ -1,0 +1,22 @@
+KERNEL_DIR = /lib/modules/`uname -r`/build
+
+export CONFIG_SPH_HW_LAYER_SPH=y
+export SPH_EXTRA_MODULE_COMPILE_FLAGS = -I$(shell pwd)
+
+ifeq ($(SPH_HOST_INTERFACE_DIR),)
+.PHONY: host_if
+host_if:
+	@echo "SPH_HOST_INTERFACE_DIR must be defined"
+	@exit -1
+endif
+
+ifeq ($(SPH_HOST_UAPI_DIR),)
+.PHONY: uapi_if
+uapi_if:
+	@echo "SPH_HOST_UAPI_DIR must be defined"
+	@exit -1
+endif
+
+.PHONY: sphdrv.ko
+sphdrv.ko:
+	make -C $(KERNEL_DIR) M=`pwd` modules
