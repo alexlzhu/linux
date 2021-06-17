@@ -1876,7 +1876,7 @@ static void tctx_task_work(struct callback_head *cb)
 
 	clear_bit(0, &tctx->task_state);
 
-	while (!wq_list_empty(&tctx->task_list)) {
+	while (1) {
 		struct io_wq_work_node *node;
 
 		spin_lock_irq(&tctx->task_lock);
@@ -1897,6 +1897,8 @@ static void tctx_task_work(struct callback_head *cb)
 			req->task_work.func(&req->task_work);
 			node = next;
 		}
+		if (wq_list_empty(&tctx->task_list))
+			break;
 		cond_resched();
 	}
 
