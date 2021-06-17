@@ -1870,13 +1870,13 @@ static void ctx_flush_and_put(struct io_ring_ctx *ctx)
 
 static void tctx_task_work(struct callback_head *cb)
 {
+	struct io_ring_ctx *ctx = NULL;
 	struct io_uring_task *tctx = container_of(cb, struct io_uring_task,
 						  task_work);
 
 	clear_bit(0, &tctx->task_state);
 
 	while (!wq_list_empty(&tctx->task_list)) {
-		struct io_ring_ctx *ctx = NULL;
 		struct io_wq_work_list list;
 		struct io_wq_work_node *node;
 
@@ -1900,11 +1900,12 @@ static void tctx_task_work(struct callback_head *cb)
 			node = next;
 		}
 
-		ctx_flush_and_put(ctx);
 		if (!list.first)
 			break;
 		cond_resched();
 	}
+
+	ctx_flush_and_put(ctx);
 }
 
 static int io_req_task_work_add(struct io_kiocb *req)
