@@ -358,6 +358,7 @@ static netdev_tx_t bnxt_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct pci_dev *pdev = bp->pdev;
 	struct bnxt_tx_ring_info *txr;
 	struct bnxt_sw_tx_bd *tx_buf;
+	__le32 lflags = 0;
 
 	i = skb_get_queue_mapping(skb);
 	if (unlikely(i >= bp->tx_nr_rings)) {
@@ -397,6 +398,11 @@ static netdev_tx_t bnxt_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		 */
 		if (skb->vlan_proto == htons(ETH_P_8021Q))
 			vlan_tag_flags |= 1 << TX_BD_CFA_META_TPID_SHIFT;
+	}
+
+	if (unlikely(skb->no_fcs)) {
+		lflags |= cpu_to_le32(TX_BD_FLAGS_NO_CRC);
+		goto normal_tx;
 	}
 
 	if (free_size == bp->tx_ring_size && length <= bp->tx_push_thresh) {
@@ -500,7 +506,7 @@ normal_tx:
 	txbd1 = (struct tx_bd_ext *)
 		&txr->tx_desc_ring[TX_RING(prod)][TX_IDX(prod)];
 
-	txbd1->tx_bd_hsize_lflags = 0;
+	txbd1->tx_bd_hsize_lflags = lflags;
 	if (skb_is_gso(skb)) {
 		u32 hdr_len;
 
@@ -512,14 +518,14 @@ normal_tx:
 			hdr_len = skb_transport_offset(skb) +
 				tcp_hdrlen(skb);
 
-		txbd1->tx_bd_hsize_lflags = cpu_to_le32(TX_BD_FLAGS_LSO |
+		txbd1->tx_bd_hsize_lflags |= cpu_to_le32(TX_BD_FLAGS_LSO |
 					TX_BD_FLAGS_T_IPID |
 					(hdr_len << (TX_BD_HSIZE_SHIFT - 1)));
 		length = skb_shinfo(skb)->gso_size;
 		txbd1->tx_bd_mss = cpu_to_le32(length);
 		length += hdr_len;
 	} else if (skb->ip_summed == CHECKSUM_PARTIAL) {
-		txbd1->tx_bd_hsize_lflags =
+		txbd1->tx_bd_hsize_lflags |=
 			cpu_to_le32(TX_BD_FLAGS_TCP_UDP_CHKSUM);
 		txbd1->tx_bd_mss = 0;
 	}
@@ -4147,7 +4153,7 @@ static void bnxt_free_mem(struct bnxt *bp, bool irq_re_init)
 	bnxt_free_ntp_fltrs(bp, irq_re_init);
 	if (irq_re_init) {
 		bnxt_free_ring_stats(bp);
-		if (!(bp->fw_cap & BNXT_FW_CAP_PORT_STATS_NO_RESET) ||
+		if (!(bp->phy_flags & BNXT_PHY_FL_PORT_STATS_NO_RESET) ||
 		    test_bit(BNXT_STATE_IN_FW_RESET, &bp->state))
 			bnxt_free_port_stats(bp);
 		bnxt_free_ring_grps(bp);
@@ -6906,17 +6912,10 @@ ctx_err:
 static void bnxt_hwrm_set_pg_attr(struct bnxt_ring_mem_info *rmem, u8 *pg_attr,
 				  __le64 *pg_dir)
 {
-	u8 pg_size = 0;
-
 	if (!rmem->nr_pages)
 		return;
 
-	if (BNXT_PAGE_SHIFT == 13)
-		pg_size = 1 << 4;
-	else if (BNXT_PAGE_SIZE == 16)
-		pg_size = 2 << 4;
-
-	*pg_attr = pg_size;
+	BNXT_SET_CTX_PAGE_ATTR(*pg_attr);
 	if (rmem->depth >= 1) {
 		if (rmem->depth == 2)
 			*pg_attr |= 2;
@@ -7288,7 +7287,7 @@ skip_rdma:
 	entries_sp = ctx->vnic_max_vnic_entries + ctx->qp_max_l2_entries +
 		     2 * (extra_qps + ctx->qp_min_qp1_entries) + min;
 	entries_sp = roundup(entries_sp, ctx->tqm_entries_multiple);
-	entries = ctx->qp_max_l2_entries + extra_qps + ctx->qp_min_qp1_entries;
+	entries = ctx->qp_max_l2_entries + 2 * (extra_qps + ctx->qp_min_qp1_entries);
 	entries = roundup(entries, ctx->tqm_entries_multiple);
 	entries = clamp_t(u32, entries, min, ctx->tqm_max_entries_per_ring);
 	for (i = 0; i < ctx->tqm_fp_rings_count + 1; i++) {
@@ -9079,8 +9078,9 @@ static char *bnxt_report_fec(struct bnxt_link_info *link_info)
 static void bnxt_report_link(struct bnxt *bp)
 {
 	if (bp->link_info.link_up) {
-		const char *duplex;
+		const char *signal = "";
 		const char *flow_ctrl;
+		const char *duplex;
 		u32 speed;
 		u16 fec;
 
@@ -9102,9 +9102,24 @@ static void bnxt_report_link(struct bnxt *bp)
 			flow_ctrl = "ON - receive";
 		else
 			flow_ctrl = "none";
-		netdev_info(bp->dev, "NIC Link is Up, %u Mbps %s duplex, Flow control: %s\n",
-			    speed, duplex, flow_ctrl);
-		if (bp->flags & BNXT_FLAG_EEE_CAP)
+		if (bp->link_info.phy_qcfg_resp.option_flags &
+		    PORT_PHY_QCFG_RESP_OPTION_FLAGS_SIGNAL_MODE_KNOWN) {
+			u8 sig_mode = bp->link_info.active_fec_sig_mode &
+				      PORT_PHY_QCFG_RESP_SIGNAL_MODE_MASK;
+			switch (sig_mode) {
+			case PORT_PHY_QCFG_RESP_SIGNAL_MODE_NRZ:
+				signal = "(NRZ) ";
+				break;
+			case PORT_PHY_QCFG_RESP_SIGNAL_MODE_PAM4:
+				signal = "(PAM4) ";
+				break;
+			default:
+				break;
+			}
+		}
+		netdev_info(bp->dev, "NIC Link is Up, %u Mbps %s%s duplex, Flow control: %s\n",
+			    speed, signal, duplex, flow_ctrl);
+		if (bp->phy_flags & BNXT_PHY_FL_EEE_CAP)
 			netdev_info(bp->dev, "EEE is %s\n",
 				    bp->eee.eee_active ? "active" :
 							 "not active");
@@ -9136,10 +9151,6 @@ static int bnxt_hwrm_phy_qcaps(struct bnxt *bp)
 	struct hwrm_port_phy_qcaps_output *resp = bp->hwrm_cmd_resp_addr;
 	struct bnxt_link_info *link_info = &bp->link_info;
 
-	bp->flags &= ~BNXT_FLAG_EEE_CAP;
-	if (bp->test_info)
-		bp->test_info->flags &= ~(BNXT_TEST_FL_EXT_LPBK |
-					  BNXT_TEST_FL_AN_PHY_LPBK);
 	if (bp->hwrm_spec_code < 0x10201)
 		return 0;
 
@@ -9150,31 +9161,17 @@ static int bnxt_hwrm_phy_qcaps(struct bnxt *bp)
 	if (rc)
 		goto hwrm_phy_qcaps_exit;
 
+	bp->phy_flags = resp->flags;
 	if (resp->flags & PORT_PHY_QCAPS_RESP_FLAGS_EEE_SUPPORTED) {
 		struct ethtool_eee *eee = &bp->eee;
 		u16 fw_speeds = le16_to_cpu(resp->supported_speeds_eee_mode);
 
-		bp->flags |= BNXT_FLAG_EEE_CAP;
 		eee->supported = _bnxt_fw_to_ethtool_adv_spds(fw_speeds, 0);
 		bp->lpi_tmr_lo = le32_to_cpu(resp->tx_lpi_timer_low) &
 				 PORT_PHY_QCAPS_RESP_TX_LPI_TIMER_LOW_MASK;
 		bp->lpi_tmr_hi = le32_to_cpu(resp->valid_tx_lpi_timer_high) &
 				 PORT_PHY_QCAPS_RESP_TX_LPI_TIMER_HIGH_MASK;
 	}
-	if (resp->flags & PORT_PHY_QCAPS_RESP_FLAGS_EXTERNAL_LPBK_SUPPORTED) {
-		if (bp->test_info)
-			bp->test_info->flags |= BNXT_TEST_FL_EXT_LPBK;
-	}
-	if (resp->flags & PORT_PHY_QCAPS_RESP_FLAGS_AUTONEG_LPBK_SUPPORTED) {
-		if (bp->test_info)
-			bp->test_info->flags |= BNXT_TEST_FL_AN_PHY_LPBK;
-	}
-	if (resp->flags & PORT_PHY_QCAPS_RESP_FLAGS_SHARED_PHY_CFG_SUPPORTED) {
-		if (BNXT_PF(bp))
-			bp->fw_cap |= BNXT_FW_CAP_SHARED_PORT_CFG;
-	}
-	if (resp->flags & PORT_PHY_QCAPS_RESP_FLAGS_CUMULATIVE_COUNTERS_ON_RESET)
-		bp->fw_cap |= BNXT_FW_CAP_PORT_STATS_NO_RESET;
 
 	if (bp->hwrm_spec_code >= 0x10a01) {
 		if (bnxt_phy_qcaps_no_speed(resp)) {
@@ -9265,7 +9262,7 @@ int bnxt_update_link(struct bnxt *bp, bool chng_link_state)
 			      PORT_PHY_QCFG_RESP_PHY_ADDR_MASK;
 	link_info->module_status = resp->module_status;
 
-	if (bp->flags & BNXT_FLAG_EEE_CAP) {
+	if (bp->phy_flags & BNXT_PHY_FL_EEE_CAP) {
 		struct ethtool_eee *eee = &bp->eee;
 		u16 fw_speeds;
 
@@ -9501,7 +9498,8 @@ static int bnxt_hwrm_shutdown_link(struct bnxt *bp)
 	if (!BNXT_SINGLE_PF(bp))
 		return 0;
 
-	if (pci_num_vf(bp->pdev))
+	if (pci_num_vf(bp->pdev) &&
+	    !(bp->phy_flags & BNXT_PHY_FL_FW_MANAGED_LKDN))
 		return 0;
 
 	bnxt_hwrm_cmd_hdr_init(bp, &req, HWRM_PORT_PHY_CFG, -1, -1);
@@ -9536,8 +9534,8 @@ static int bnxt_try_recover_fw(struct bnxt *bp)
 		do {
 			sts = bnxt_fw_health_readl(bp, BNXT_FW_HEALTH_REG);
 			rc = __bnxt_hwrm_ver_get(bp, true);
-			if (!sts || (!BNXT_FW_IS_BOOTING(sts) &&
-				     !BNXT_FW_IS_RECOVERING(sts)))
+			if (!BNXT_FW_IS_BOOTING(sts) &&
+			    !BNXT_FW_IS_RECOVERING(sts))
 				break;
 			retry++;
 		} while (rc == -EBUSY && retry < BNXT_FW_RETRY);
@@ -9845,7 +9843,7 @@ static bool bnxt_eee_config_ok(struct bnxt *bp)
 	struct ethtool_eee *eee = &bp->eee;
 	struct bnxt_link_info *link_info = &bp->link_info;
 
-	if (!(bp->flags & BNXT_FLAG_EEE_CAP))
+	if (!(bp->phy_flags & BNXT_PHY_FL_EEE_CAP))
 		return true;
 
 	if (eee->eee_enabled) {
@@ -12633,12 +12631,17 @@ static int bnxt_probe_phy(struct bnxt *bp, bool fw_dflt)
 	int rc = 0;
 	struct bnxt_link_info *link_info = &bp->link_info;
 
+	bp->phy_flags = 0;
 	rc = bnxt_hwrm_phy_qcaps(bp);
 	if (rc) {
 		netdev_err(bp->dev, "Probe phy can't get phy capabilities (rc: %x)\n",
 			   rc);
 		return rc;
 	}
+	if (bp->phy_flags & BNXT_PHY_FL_NO_FCS)
+		bp->dev->priv_flags |= IFF_SUPP_NOFCS;
+	else
+		bp->dev->priv_flags &= ~IFF_SUPP_NOFCS;
 	if (!fw_dflt)
 		return 0;
 
@@ -13172,6 +13175,7 @@ static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 				   rc);
 	}
 
+	bnxt_inv_fw_health_reg(bp);
 	bnxt_dl_register(bp);
 
 	rc = register_netdev(dev);
