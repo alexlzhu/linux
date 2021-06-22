@@ -9724,7 +9724,9 @@ int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, long nr,
 	if (test_bit(BTRFS_FS_STATE_ERROR, &fs_info->fs_state))
 		return -EROFS;
 
-	if (!in_reclaim_context)
+	if (in_reclaim_context)
+		wbc.reason = WB_REASON_FS_FREE_SPACE;
+	else
 		wbc.sync_mode = WB_SYNC_ALL;
 
 	INIT_LIST_HEAD(&splice);
