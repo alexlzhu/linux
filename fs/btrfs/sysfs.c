@@ -72,6 +72,7 @@ static struct btrfs_feature_attr btrfs_attr_features_##_name = {	     \
 
 static inline struct btrfs_fs_info *to_fs_info(struct kobject *kobj);
 static inline struct btrfs_fs_devices *to_fs_devs(struct kobject *kobj);
+static inline struct kobject *get_btrfs_kobj(struct kobject *kobj);
 
 static struct btrfs_feature_attr *to_btrfs_feature_attr(struct kobj_attribute *a)
 {
@@ -379,12 +380,10 @@ static const struct attribute_group btrfs_static_feature_attr_group = {
 	.attrs = btrfs_supported_static_feature_attrs,
 };
 
-#ifdef CONFIG_BTRFS_DEBUG
-
 /*
  * Discard statistics and tunables
  */
-#define discard_to_fs_info(_kobj)	to_fs_info((_kobj)->parent->parent)
+#define discard_to_fs_info(_kobj)	to_fs_info((_kobj)->parent)
 
 static ssize_t btrfs_discardable_bytes_show(struct kobject *kobj,
 					    struct kobj_attribute *a,
@@ -544,6 +543,7 @@ static const struct attribute *discard_debug_attrs[] = {
 	NULL,
 };
 
+#ifdef CONFIG_BTRFS_DEBUG
 /*
  * Runtime debugging exported via sysfs
  *
@@ -640,6 +640,58 @@ static struct kobj_type btrfs_raid_ktype = {
 	.default_groups = raid_groups,
 };
 
+static ssize_t btrfs_space_info_force_chunk_alloc_show(struct kobject *kobj,
+						       struct kobj_attribute *a,
+						       char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "0\n");
+}
+
+static ssize_t btrfs_space_info_force_chunk_alloc(struct kobject *kobj,
+						  struct kobj_attribute *a,
+						  const char *buf, size_t len)
+{
+	struct btrfs_space_info *space_info = to_space_info(kobj);
+	struct btrfs_fs_info *fs_info = to_fs_info(get_btrfs_kobj(kobj));
+	struct btrfs_trans_handle *trans;
+	unsigned long val;
+	int ret;
+
+	if (!fs_info) {
+		printk(KERN_ERR "couldn't get fs_info\n");
+		return -EPERM;
+	}
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if (sb_rdonly(fs_info->sb))
+		return -EROFS;
+
+	ret = kstrtoul(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	/*
+	 * We don't really care, but if we echo 0 > force it seems silly to do
+	 * anything.
+	 */
+	if (val == 0)
+		return -EINVAL;
+
+	trans = btrfs_start_transaction(fs_info->extent_root, 0);
+	if (!trans)
+		return PTR_ERR(trans);
+	ret = btrfs_force_chunk_alloc(trans, space_info->flags);
+	btrfs_end_transaction(trans);
+	if (ret == 1)
+		return len;
+	return -ENOSPC;
+}
+BTRFS_ATTR_RW(space_info, force_chunk_alloc,
+	      btrfs_space_info_force_chunk_alloc_show,
+	      btrfs_space_info_force_chunk_alloc);
+
 #define SPACE_INFO_ATTR(field)						\
 static ssize_t btrfs_space_info_show_##field(struct kobject *kobj,	\
 					     struct kobj_attribute *a,	\
@@ -684,6 +736,7 @@ static struct attribute *space_info_attrs[] = {
 	BTRFS_ATTR_PTR(space_info, disk_used),
 	BTRFS_ATTR_PTR(space_info, disk_total),
 	BTRFS_ATTR_PTR(space_info, total_bytes_pinned),
+	BTRFS_ATTR_PTR(space_info, force_chunk_alloc),
 	NULL,
 };
 ATTRIBUTE_GROUPS(space_info);
@@ -965,6 +1018,48 @@ static ssize_t btrfs_read_policy_store(struct kobject *kobj,
 }
 BTRFS_ATTR_RW(, read_policy, btrfs_read_policy_show, btrfs_read_policy_store);
 
+static ssize_t write_time_checks_show(struct kobject *kobj,
+				      struct kobj_attribute *a, char *buf)
+{
+	struct btrfs_fs_info *fs_info = to_fs_info(kobj);
+	int enabled;
+
+	enabled = !test_bit(BTRFS_FS_WRITE_TIME_CHECKS_DISABLED,
+			    &fs_info->flags);
+	return snprintf(buf, PAGE_SIZE, "%d\n", enabled);
+}
+
+static ssize_t write_time_checks_store(struct kobject *kobj,
+				       struct kobj_attribute *a,
+				       const char *buf, size_t len)
+{
+	struct btrfs_fs_info *fs_info = to_fs_info(kobj);
+	unsigned long knob;
+	int err;
+
+	if (!fs_info)
+		return -EPERM;
+
+	if (!capable(CAP_SYS_RESOURCE))
+		return -EPERM;
+
+	err = kstrtoul(buf, 10, &knob);
+	if (err)
+		return err;
+	if (knob > 1)
+		return -EINVAL;
+
+	if (knob)
+		clear_bit(BTRFS_FS_WRITE_TIME_CHECKS_DISABLED,
+			  &fs_info->flags);
+	else
+		set_bit(BTRFS_FS_WRITE_TIME_CHECKS_DISABLED,
+			&fs_info->flags);
+	return len;
+}
+
+BTRFS_ATTR_RW(, write_time_checks, write_time_checks_show, write_time_checks_store);
+
 static const struct attribute *btrfs_attrs[] = {
 	BTRFS_ATTR_PTR(, label),
 	BTRFS_ATTR_PTR(, nodesize),
@@ -976,6 +1071,7 @@ static const struct attribute *btrfs_attrs[] = {
 	BTRFS_ATTR_PTR(, exclusive_operation),
 	BTRFS_ATTR_PTR(, generation),
 	BTRFS_ATTR_PTR(, read_policy),
+	BTRFS_ATTR_PTR(, write_time_checks),
 	NULL,
 };
 
@@ -1004,6 +1100,16 @@ static inline struct btrfs_fs_info *to_fs_info(struct kobject *kobj)
 	if (kobj->ktype != &btrfs_ktype)
 		return NULL;
 	return to_fs_devs(kobj)->fs_info;
+}
+
+static inline struct kobject *get_btrfs_kobj(struct kobject *kobj)
+{
+	while (kobj) {
+		if (kobj->ktype == &btrfs_ktype)
+			return kobj;
+		kobj = kobj->parent;
+	}
+	return NULL;
 }
 
 #define NUM_FEATURE_BITS 64
@@ -1119,13 +1225,13 @@ void btrfs_sysfs_remove_mounted(struct btrfs_fs_info *fs_info)
 		kobject_del(fs_info->space_info_kobj);
 		kobject_put(fs_info->space_info_kobj);
 	}
-#ifdef CONFIG_BTRFS_DEBUG
 	if (fs_info->discard_debug_kobj) {
 		sysfs_remove_files(fs_info->discard_debug_kobj,
 				   discard_debug_attrs);
 		kobject_del(fs_info->discard_debug_kobj);
 		kobject_put(fs_info->discard_debug_kobj);
 	}
+#ifdef CONFIG_BTRFS_DEBUG
 	if (fs_info->debug_kobj) {
 		sysfs_remove_files(fs_info->debug_kobj, btrfs_debug_mount_attrs);
 		kobject_del(fs_info->debug_kobj);
@@ -1627,9 +1733,10 @@ int btrfs_sysfs_add_mounted(struct btrfs_fs_info *fs_info)
 	if (error)
 		goto failure;
 
+#endif
 	/* Discard directory */
 	fs_info->discard_debug_kobj = kobject_create_and_add("discard",
-						     fs_info->debug_kobj);
+							     fsid_kobj);
 	if (!fs_info->discard_debug_kobj) {
 		error = -ENOMEM;
 		goto failure;
@@ -1639,7 +1746,6 @@ int btrfs_sysfs_add_mounted(struct btrfs_fs_info *fs_info)
 				   discard_debug_attrs);
 	if (error)
 		goto failure;
-#endif
 
 	error = addrm_unknown_feature_attrs(fs_info, true);
 	if (error)

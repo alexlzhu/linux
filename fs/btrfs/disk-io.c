@@ -452,11 +452,11 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct bio_vec *bvec
 	u64 found_start;
 	u8 result[BTRFS_CSUM_SIZE];
 	struct extent_buffer *eb;
-	int ret;
+	int ret = 0;
 
 	eb = (struct extent_buffer *)page->private;
 	if (page != eb->pages[0])
-		return 0;
+		return ret;
 
 	found_start = btrfs_header_bytenr(eb);
 
@@ -480,6 +480,9 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct bio_vec *bvec
 
 	csum_tree_block(eb, result);
 
+	if (test_bit(BTRFS_FS_WRITE_TIME_CHECKS_DISABLED, &fs_info->flags))
+		goto out;
+
 	if (btrfs_header_level(eb))
 		ret = btrfs_check_node(eb);
 	else
@@ -493,9 +496,10 @@ static int csum_dirty_buffer(struct btrfs_fs_info *fs_info, struct bio_vec *bvec
 		WARN_ON(IS_ENABLED(CONFIG_BTRFS_DEBUG));
 		return ret;
 	}
+out:
 	write_extent_buffer(eb, result, 0, fs_info->csum_size);
 
-	return 0;
+	return ret;
 }
 
 static int check_tree_block_fsid(struct extent_buffer *eb)
@@ -4271,6 +4275,8 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 		 * This is a very rare case.
 		 */
 		btrfs_flush_workqueue(fs_info->delayed_workers);
+
+		btrfs_flush_workqueue(fs_info->fixup_workers);
 
 		ret = btrfs_commit_super(fs_info);
 		if (ret)
