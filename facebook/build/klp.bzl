@@ -72,7 +72,8 @@ def klp(flavor=None, label=None):
         ("$(location :top_lvl_tag)", "/tmp/top_lvl_tag"),
         ("$(location :config)", "/tmp/config"),
         ("$(location :uname-klp)", "/tmp/uname"),
-        ("$(location :hotfix)", "/tmp/hotfix")
+        ("$(location :hotfix)", "/tmp/hotfix"),
+        ("$(location :baseline-rpm-version)", "/tmp/baseline_rpm_version")
     ]
 
     #checkout baseline
@@ -94,6 +95,7 @@ def klp(flavor=None, label=None):
     #v5.6-fbk13-rc1 -> 5.6.13-0_fbk13_rc1
     flavor_ver = "_%s" % flavor if flavor else ""
     label_ver = "_%s" % label if label else ""
+
     native.genrule(
         name = "baseline-rpm-version",
         cmd = """
@@ -110,7 +112,6 @@ def klp(flavor=None, label=None):
         out="baseline-rpm-version",
     )
 
-
     #uname of original kernel
     native.genrule(
         name = "uname-klp",
@@ -125,7 +126,7 @@ def klp(flavor=None, label=None):
         name="klp-build",
         cmd="""
             rpm -ivh /tmp/kernel-bin/*.rpm /tmp/kernel-devel/*.rpm
-            kpatch-build -s /rw/linux -c /tmp/config -v /boot/vmlinux* -o /rw/output -n klp_`cat /tmp/uname`_`cat /tmp/hotfix` /tmp/patches/* || (cp /root/.kpatch/build.log /rw/output/ && exit 1)
+            kpatch-build -s /rw/linux -c /tmp/config -v /boot/vmlinux* -o /rw/output -n klp_`cat /tmp/baseline_rpm_version`_`cat /tmp/hotfix` /tmp/patches/* || (cp /root/.kpatch/build.log /rw/output/ && exit 1)
         """,
         bind_ro=bind_ros,
         bind_rw=bind_rws,
@@ -165,7 +166,7 @@ def klp(flavor=None, label=None):
         name="klp-rpm",
         cmd="""
             cat /tmp/top_lvl_tag
-            rpmbuild -ba /tmp/klp.spec --define "rpm_kernel_version `cat /tmp/uname`" --define "module_path /tmp/module" --define "hf_name `cat /tmp/hotfix`"
+            rpmbuild -ba /tmp/klp.spec --define "short_kernel_version `cat /tmp/baseline_rpm_version`" --define "rpm_kernel_version `cat /tmp/uname`" --define "module_path /tmp/module" --define "hf_name `cat /tmp/hotfix`"
             cp -vR /root/rpmbuild/RPMS/x86_64/*.rpm /rw/output/
         """,
         bind_ro=bind_ros,

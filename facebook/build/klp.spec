@@ -15,10 +15,10 @@ URL: http://www.kernel.org
 
 %prep
 mkdir -p $RPM_BUILD_ROOT/var/lib/kpatch/%{rpm_kernel_version}/
-cp %{module_path} $RPM_BUILD_ROOT/var/lib/kpatch/%{rpm_kernel_version}/klp_%{rpm_kernel_version}.ko
+cp %{module_path} $RPM_BUILD_ROOT/var/lib/kpatch/%{rpm_kernel_version}/klp_%{short_kernel_version}.ko
 
 %files
-/var/lib/kpatch/%{rpm_kernel_version}/klp_%{rpm_kernel_version}.ko
+/var/lib/kpatch/%{rpm_kernel_version}/klp_%{short_kernel_version}.ko
 
 %post
 kpatch load --all
