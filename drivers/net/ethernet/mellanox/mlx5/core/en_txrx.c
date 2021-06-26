@@ -64,7 +64,7 @@ static void mlx5e_handle_rx_dim(struct mlx5e_rq *rq)
 	struct mlx5e_rq_stats *stats = rq->stats;
 	struct dim_sample dim_sample = {};
 
-	if (unlikely(!test_bit(MLX5E_RQ_STATE_AM, &rq->state)))
+	if (unlikely(!test_bit(MLX5E_RQ_STATE_AM, &rq->state) || !test_bit(MLX5E_RQ_STATE_ENABLED, &rq->state)))
 		return;
 
 	dim_update_sample(rq->cq.event_ctr, stats->packets, stats->bytes, &dim_sample);
@@ -143,7 +143,9 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 
 	mlx5e_poll_ico_cq(&c->icosq.cq);
 
-	busy |= rq->post_wqes(rq);
+	if (likely(test_bit(MLX5E_RQ_STATE_ENABLED, &rq->state)))
+		busy |= rq->post_wqes(rq);
+
 	if (xsk_open) {
 		if (mlx5e_poll_ico_cq(&c->xskicosq.cq))
 			/* Don't clear the flag if nothing was polled to prevent

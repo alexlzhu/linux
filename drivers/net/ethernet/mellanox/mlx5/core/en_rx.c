@@ -566,9 +566,6 @@ bool mlx5e_post_rx_wqes(struct mlx5e_rq *rq)
 	u8 wqe_bulk;
 	int err;
 
-	if (unlikely(!test_bit(MLX5E_RQ_STATE_ENABLED, &rq->state)))
-		return false;
-
 	wqe_bulk = rq->wqe.info.wqe_bulk;
 
 	if (mlx5_wq_cyc_missing(wq) < wqe_bulk)
@@ -669,9 +666,6 @@ bool mlx5e_post_rx_mpwqes(struct mlx5e_rq *rq)
 	int alloc_err = 0;
 	u8  missing, i;
 	u16 head;
-
-	if (unlikely(!test_bit(MLX5E_RQ_STATE_ENABLED, &rq->state)))
-		return false;
 
 	if (umr_completed) {
 		mlx5e_post_rx_mpwqe(rq, umr_completed);
