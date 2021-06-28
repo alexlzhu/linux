@@ -1586,6 +1586,10 @@ static char *memory_stat_format(struct mem_cgroup *memcg)
 		       memcg_events(memcg, PGLAZYFREE));
 	seq_buf_printf(&s, "%s %lu\n", vm_event_name(PGLAZYFREED),
 		       memcg_events(memcg, PGLAZYFREED));
+	seq_buf_printf(&s, "%s %lu\n", vm_event_name(PSWPIN),
+		       memcg_events(memcg, PSWPIN));
+	seq_buf_printf(&s, "%s %lu\n", vm_event_name(PSWPOUT),
+		       memcg_events(memcg, PSWPOUT));
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	seq_buf_printf(&s, "%s %lu\n", vm_event_name(THP_FAULT_ALLOC),

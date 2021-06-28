@@ -950,13 +950,20 @@ static inline void count_memcg_events(struct mem_cgroup *memcg,
 	local_irq_restore(flags);
 }
 
-static inline void count_memcg_page_event(struct page *page,
-					  enum vm_event_item idx)
+static inline void count_memcg_page_events(struct page *page,
+					   enum vm_event_item idx,
+					   unsigned long count)
 {
 	struct mem_cgroup *memcg = page_memcg(page);
 
 	if (memcg)
-		count_memcg_events(memcg, idx, 1);
+		count_memcg_events(memcg, idx, count);
+}
+
+static inline void count_memcg_page_event(struct page *page,
+					  enum vm_event_item idx)
+{
+	count_memcg_page_events(page, idx, 1);
 }
 
 static inline void count_memcg_event_mm(struct mm_struct *mm,
@@ -1338,6 +1345,12 @@ static inline void count_memcg_events(struct mem_cgroup *memcg,
 static inline void __count_memcg_events(struct mem_cgroup *memcg,
 					enum vm_event_item idx,
 					unsigned long count)
+{
+}
+
+static inline void count_memcg_page_events(struct page *page,
+					   int idx,
+					   unsigned long count)
 {
 }
 

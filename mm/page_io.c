@@ -12,6 +12,7 @@
  */
 
 #include <linux/mm.h>
+#include <linux/memcontrol.h>
 #include <linux/kernel_stat.h>
 #include <linux/gfp.h>
 #include <linux/pagemap.h>
@@ -281,6 +282,7 @@ static inline void count_swpout_vm_event(struct page *page)
 		count_vm_event(THP_SWPOUT);
 #endif
 	count_vm_events(PSWPOUT, hpage_nr_pages(page));
+	count_memcg_page_events(page, PSWPOUT, hpage_nr_pages(page));
 }
 
 int __swap_writepage(struct page *page, struct writeback_control *wbc,
@@ -381,6 +383,7 @@ int swap_readpage(struct page *page, bool synchronous)
 	}
 
 	count_vm_event(PSWPIN);
+	count_memcg_page_event(page, PSWPIN);
 	if (sis->flags & SWP_FS) {
 		struct file *swap_file = sis->swap_file;
 		struct address_space *mapping = swap_file->f_mapping;
