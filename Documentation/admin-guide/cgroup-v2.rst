@@ -1383,6 +1383,14 @@ PAGE_SIZE multiple when read back.
 
 		Amount of reclaimed lazyfree pages
 
+	  pswpin
+
+		Amount of swapped in pages
+
+	  pswpout
+
+		Amount of swapped out pages
+
 	  thp_fault_alloc
 
 		Number of transparent hugepages which were allocated to satisfy

@@ -12,6 +12,7 @@
  */
 
 #include <linux/mm.h>
+#include <linux/memcontrol.h>
 #include <linux/kernel_stat.h>
 #include <linux/gfp.h>
 #include <linux/pagemap.h>
@@ -281,6 +282,7 @@ static inline void count_swpout_vm_event(struct page *page)
 		count_vm_event(THP_SWPOUT);
 #endif
 	count_vm_events(PSWPOUT, hpage_nr_pages(page));
+	count_memcg_page_events(page, PSWPOUT, hpage_nr_pages(page));
 }
 
 int __swap_writepage(struct page *page, struct writeback_control *wbc,
@@ -291,6 +293,7 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 	struct swap_info_struct *sis = page_swap_info(page);
 
 	VM_BUG_ON_PAGE(!PageSwapCache(page), page);
+	count_swpout_vm_event(page);
 	if (sis->flags & SWP_FS) {
 		struct kiocb kiocb;
 		struct file *swap_file = sis->swap_file;
@@ -310,7 +313,6 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 		unlock_page(page);
 		ret = mapping->a_ops->direct_IO(&kiocb, &from);
 		if (ret == PAGE_SIZE) {
-			count_vm_event(PSWPOUT);
 			ret = 0;
 		} else {
 			/*
@@ -334,7 +336,6 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 
 	ret = bdev_write_page(sis->bdev, swap_page_sector(page), page, wbc);
 	if (!ret) {
-		count_swpout_vm_event(page);
 		return 0;
 	}
 
@@ -348,7 +349,6 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 	}
 	bio->bi_opf = REQ_OP_WRITE | REQ_SWAP | wbc_to_write_flags(wbc);
 	bio_associate_blkg_from_page(bio, page);
-	count_swpout_vm_event(page);
 	set_page_writeback(page);
 	unlock_page(page);
 	submit_bio(bio);
@@ -382,13 +382,13 @@ int swap_readpage(struct page *page, bool synchronous)
 		goto out;
 	}
 
+	count_vm_event(PSWPIN);
+	count_memcg_page_event(page, PSWPIN);
 	if (sis->flags & SWP_FS) {
 		struct file *swap_file = sis->swap_file;
 		struct address_space *mapping = swap_file->f_mapping;
 
 		ret = mapping->a_ops->readpage(swap_file, page);
-		if (!ret)
-			count_vm_event(PSWPIN);
 		goto out;
 	}
 
@@ -398,8 +398,6 @@ int swap_readpage(struct page *page, bool synchronous)
 			swap_slot_free_notify(page);
 			unlock_page(page);
 		}
-
-		count_vm_event(PSWPIN);
 		goto out;
 	}
 
@@ -421,7 +419,6 @@ int swap_readpage(struct page *page, bool synchronous)
 		get_task_struct(current);
 		bio->bi_private = current;
 	}
-	count_vm_event(PSWPIN);
 	bio_get(bio);
 	qc = submit_bio(bio);
 	while (synchronous) {
