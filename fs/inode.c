@@ -755,9 +755,8 @@ static enum lru_status inode_lru_isolate(struct list_head *item,
 		return LRU_REMOVED;
 	}
 
-	/* recently referenced & populated inodes get one more pass */
-	if ((inode->i_state & I_REFERENCED) ||
-	    inode->i_data.nrpages || inode->i_data.nrexceptional) {
+	/* recently referenced inodes get one more pass */
+	if (inode->i_state & I_REFERENCED) {
 		inode->i_state &= ~I_REFERENCED;
 		spin_unlock(&inode->i_lock);
 		return LRU_ROTATE;
