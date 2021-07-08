@@ -3092,6 +3092,7 @@ static inline void remove_inode_hash(struct inode *inode)
 }
 
 extern void inode_sb_list_add(struct inode *inode);
+extern void inode_add_lru(struct inode *inode);
 
 #ifdef CONFIG_BLOCK
 extern int bdev_read_only(struct block_device *);

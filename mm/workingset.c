@@ -468,13 +468,6 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
 	 * ~1.8% of available memory:
 	 *
 	 * PAGE_SIZE / xa_nodes / node_entries * 8 / PAGE_SIZE
-	 *
-	 * To break the circular dependency between inodes, which are
-	 * pinned by shadow entries, and shadow entries, which maximum
-	 * number depends on the size of the slab memory, which depends
-	 * on the number of inodes, exclude slabs from the calculation.
-	 * This is FB-only fix now, as in upstream shadow entries are
-	 * not pinning inodes (yet).
 	 */
 #ifdef CONFIG_MEMCG
 	if (sc->memcg) {
@@ -485,6 +478,10 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
 		for (pages = 0, i = 0; i < NR_LRU_LISTS; i++)
 			pages += lruvec_page_state_local(lruvec,
 							 NR_LRU_BASE + i);
+		pages += lruvec_page_state_local(
+			lruvec, NR_SLAB_RECLAIMABLE_B) >> PAGE_SHIFT;
+		pages += lruvec_page_state_local(
+			lruvec, NR_SLAB_UNRECLAIMABLE_B) >> PAGE_SHIFT;
 	} else
 #endif
 		pages = node_present_pages(sc->nid);
@@ -530,6 +527,13 @@ static enum lru_status shadow_lru_isolate(struct list_head *item,
 		goto out;
 	}
 
+	if (!spin_trylock(&mapping->host->i_lock)) {
+		xa_unlock(&mapping->i_pages);
+		spin_unlock_irq(lru_lock);
+		ret = LRU_RETRY;
+		goto out;
+	}
+
 	list_lru_isolate(lru, item);
 	__dec_lruvec_slab_state(node, WORKINGSET_NODES);
 
@@ -558,6 +562,9 @@ static enum lru_status shadow_lru_isolate(struct list_head *item,
 
 out_invalid:
 	xa_unlock_irq(&mapping->i_pages);
+	if (mapping_shrinkable(mapping))
+		inode_add_lru(mapping->host);
+	spin_unlock(&mapping->host->i_lock);
 	ret = LRU_REMOVED_RETRY;
 out:
 	cond_resched();
