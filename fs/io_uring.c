@@ -2336,11 +2336,15 @@ static int io_iopoll_check(struct io_ring_ctx *ctx, long min)
 		 * very same mutex.
 		 */
 		if (list_empty(&ctx->iopoll_list)) {
+			u32 tail = ctx->cached_cq_tail;
+
 			mutex_unlock(&ctx->uring_lock);
 			io_run_task_work();
 			mutex_lock(&ctx->uring_lock);
 
-			if (list_empty(&ctx->iopoll_list))
+			/* some requests don't go through iopoll_list */
+			if (tail != ctx->cached_cq_tail ||
+			    list_empty(&ctx->iopoll_list))
 				break;
 		}
 		ret = io_do_iopoll(ctx, &nr_events, min);
@@ -4842,7 +4846,7 @@ static int io_poll_double_wake(struct wait_queue_entry *wait, unsigned mode,
 
 	list_del_init(&wait->entry);
 
-	if (poll && poll->head) {
+	if (poll->head) {
 		bool done;
 
 		spin_lock(&poll->head->lock);
