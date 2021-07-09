@@ -1952,17 +1952,13 @@ static void tctx_task_work(struct callback_head *cb)
 	ctx_flush_and_put(ctx);
 }
 
-static int io_req_task_work_add(struct io_kiocb *req)
+static void io_req_task_work_add(struct io_kiocb *req)
 {
 	struct task_struct *tsk = req->task;
 	struct io_uring_task *tctx = tsk->io_uring;
 	enum task_work_notify_mode notify;
-	struct io_wq_work_node *node, *prev;
+	struct io_wq_work_node *node;
 	unsigned long flags;
-	int ret = 0;
-
-	if (unlikely(tsk->flags & PF_EXITING))
-		return -ESRCH;
 
 	WARN_ON_ONCE(!tctx);
 
@@ -1973,7 +1969,9 @@ static int io_req_task_work_add(struct io_kiocb *req)
 	/* task_work already pending, we're done */
 	if (test_bit(0, &tctx->task_state) ||
 	    test_and_set_bit(0, &tctx->task_state))
-		return 0;
+		return;
+	if (unlikely(tsk->flags & PF_EXITING))
+		goto fail;
 
 	/*
 	 * SQPOLL kernel thread doesn't need notification, just a wakeup. For
@@ -1982,36 +1980,24 @@ static int io_req_task_work_add(struct io_kiocb *req)
 	 * will do the job.
 	 */
 	notify = (req->ctx->flags & IORING_SETUP_SQPOLL) ? TWA_NONE : TWA_SIGNAL;
-
 	if (!task_work_add(tsk, &tctx->task_work, notify)) {
 		wake_up_process(tsk);
-		return 0;
+		return;
 	}
-
-	/*
-	 * Slow path - we failed, find and delete work. if the work is not
-	 * in the list, it got run and we're fine.
-	 */
-	spin_lock_irqsave(&tctx->task_lock, flags);
-	wq_list_for_each(node, prev, &tctx->task_list) {
-		if (&req->io_task_work.node == node) {
-			wq_list_del(&tctx->task_list, node, prev);
-			ret = 1;
-			break;
-		}
-	}
-	spin_unlock_irqrestore(&tctx->task_lock, flags);
+fail:
 	clear_bit(0, &tctx->task_state);
-	return ret;
-}
+	spin_lock_irqsave(&tctx->task_lock, flags);
+	node = tctx->task_list.first;
+	INIT_WQ_LIST(&tctx->task_list);
+	spin_unlock_irqrestore(&tctx->task_lock, flags);
 
-static void io_req_task_work_add_fallback(struct io_kiocb *req,
-					  io_req_tw_func_t cb)
-{
-	req->io_task_work.func = cb;
-	if (llist_add(&req->io_task_work.fallback_node,
-		      &req->ctx->fallback_llist))
-		schedule_delayed_work(&req->ctx->fallback_work, 1);
+	while (node) {
+		req = container_of(node, struct io_kiocb, io_task_work.node);
+		node = node->next;
+		if (llist_add(&req->io_task_work.fallback_node,
+			      &req->ctx->fallback_llist))
+			schedule_delayed_work(&req->ctx->fallback_work, 1);
+	}
 }
 
 static void io_req_task_cancel(struct io_kiocb *req)
@@ -2041,17 +2027,13 @@ static void io_req_task_queue_fail(struct io_kiocb *req, int ret)
 {
 	req->result = ret;
 	req->io_task_work.func = io_req_task_cancel;
-
-	if (unlikely(io_req_task_work_add(req)))
-		io_req_task_work_add_fallback(req, io_req_task_cancel);
+	io_req_task_work_add(req);
 }
 
 static void io_req_task_queue(struct io_kiocb *req)
 {
 	req->io_task_work.func = io_req_task_submit;
-
-	if (unlikely(io_req_task_work_add(req)))
-		io_req_task_queue_fail(req, -ECANCELED);
+	io_req_task_work_add(req);
 }
 
 static inline void io_queue_next(struct io_kiocb *req)
@@ -2165,8 +2147,7 @@ static inline void io_put_req(struct io_kiocb *req)
 static void io_free_req_deferred(struct io_kiocb *req)
 {
 	req->io_task_work.func = io_free_req;
-	if (unlikely(io_req_task_work_add(req)))
-		io_req_task_work_add_fallback(req, io_free_req);
+	io_req_task_work_add(req);
 }
 
 static inline void io_put_req_deferred(struct io_kiocb *req, int refs)
@@ -2375,11 +2356,15 @@ static int io_iopoll_check(struct io_ring_ctx *ctx, long min)
 		 * very same mutex.
 		 */
 		if (list_empty(&ctx->iopoll_list)) {
+			u32 tail = ctx->cached_cq_tail;
+
 			mutex_unlock(&ctx->uring_lock);
 			io_run_task_work();
 			mutex_lock(&ctx->uring_lock);
 
-			if (list_empty(&ctx->iopoll_list))
+			/* some requests don't go through iopoll_list */
+			if (tail != ctx->cached_cq_tail ||
+			    list_empty(&ctx->iopoll_list))
 				break;
 		}
 		ret = io_do_iopoll(ctx, &nr_events, min);
@@ -4823,8 +4808,6 @@ struct io_poll_table {
 static int __io_async_wake(struct io_kiocb *req, struct io_poll_iocb *poll,
 			   __poll_t mask, io_req_tw_func_t func)
 {
-	int ret;
-
 	/* for instances that support it check for an event match first: */
 	if (mask && !(mask & poll->events))
 		return 0;
@@ -4842,11 +4825,7 @@ static int __io_async_wake(struct io_kiocb *req, struct io_poll_iocb *poll,
 	 * of executing it. We can't safely execute it anyway, as we may not
 	 * have the needed state needed for it anyway.
 	 */
-	ret = io_req_task_work_add(req);
-	if (unlikely(ret)) {
-		WRITE_ONCE(poll->canceled, true);
-		io_req_task_work_add_fallback(req, func);
-	}
+	io_req_task_work_add(req);
 	return 1;
 }
 
@@ -4854,6 +4833,9 @@ static bool io_poll_rewait(struct io_kiocb *req, struct io_poll_iocb *poll)
 	__acquires(&req->ctx->completion_lock)
 {
 	struct io_ring_ctx *ctx = req->ctx;
+
+	if (unlikely(req->task->flags & PF_EXITING))
+		WRITE_ONCE(poll->canceled, true);
 
 	if (!req->result && !READ_ONCE(poll->canceled)) {
 		struct poll_table_struct pt = { ._key = poll->events };
@@ -4974,7 +4956,7 @@ static int io_poll_double_wake(struct wait_queue_entry *wait, unsigned mode,
 
 	list_del_init(&wait->entry);
 
-	if (poll && poll->head) {
+	if (poll->head) {
 		bool done;
 
 		spin_lock(&poll->head->lock);
@@ -6041,7 +6023,7 @@ static bool io_drain_req(struct io_kiocb *req)
 	io_prep_async_link(req);
 	de = kmalloc(sizeof(*de), GFP_KERNEL);
 	if (!de) {
-		io_req_complete_failed(req, ret);
+		io_req_complete_failed(req, -ENOMEM);
 		return true;
 	}
 
