@@ -302,6 +302,9 @@ static int pcpu_populate_chunk(struct pcpu_chunk *chunk,
  * For each cpu, depopulate and unmap pages [@page_start,@page_end)
  * from @chunk.
  *
+ * Caller is required to call pcpu_post_unmap_tlb_flush() if not returning the
+ * region back to vmalloc() which will lazily flush the tlb.
+ *
  * CONTEXT:
  * pcpu_alloc_mutex.
  */
@@ -323,18 +326,15 @@ static void pcpu_depopulate_chunk(struct pcpu_chunk *chunk,
 
 	pcpu_unmap_pages(chunk, pages, page_start, page_end);
 
-	/* no need to flush tlb, vmalloc will handle it lazily */
-
 	pcpu_free_pages(chunk, pages, page_start, page_end);
 }
 
-static struct pcpu_chunk *pcpu_create_chunk(enum pcpu_chunk_type type,
-					    gfp_t gfp)
+static struct pcpu_chunk *pcpu_create_chunk(gfp_t gfp)
 {
 	struct pcpu_chunk *chunk;
 	struct vm_struct **vms;
 
-	chunk = pcpu_alloc_chunk(type, gfp);
+	chunk = pcpu_alloc_chunk(gfp);
 	if (!chunk)
 		return NULL;
 
@@ -384,10 +384,11 @@ static int __init pcpu_verify_alloc_info(const struct pcpu_alloc_info *ai)
  *
  * This is the entry point for percpu reclaim.  If a chunk qualifies, it is then
  * isolated and managed in separate lists at the back of pcpu_slot: sidelined
- * and to_depopulate respectively.  The to_depopulate list are chunks slated for
- * depopulation.  They no longer contribute to pcpu_nr_empty_pop_pages once they
- * are on this list.  Once depopulated, they are moved onto the sidelined list
- * which enables them to be pulled back in for allocation.
+ * and to_depopulate respectively.  The to_depopulate list holds chunks slated
+ * for depopulation.  They no longer contribute to pcpu_nr_empty_pop_pages once
+ * they are on this list.  Once depopulated, they are moved onto the sidelined
+ * list which enables them to be pulled back in for allocation if no other chunk
+ * can suffice the allocation.
  */
 static bool pcpu_should_reclaim_chunk(struct pcpu_chunk *chunk)
 {
@@ -402,7 +403,7 @@ static bool pcpu_should_reclaim_chunk(struct pcpu_chunk *chunk)
 	 * chunk, move it to the to_depopulate list.
 	 */
 	return ((chunk->isolated && chunk->nr_empty_pop_pages) ||
-		(pcpu_nr_empty_pop_pages[pcpu_chunk_type(chunk)] >
-		 PCPU_EMPTY_POP_PAGES_HIGH + chunk->nr_empty_pop_pages &&
-		chunk->nr_empty_pop_pages >= chunk->nr_pages / 4));
+		(pcpu_nr_empty_pop_pages >
+		 (PCPU_EMPTY_POP_PAGES_HIGH + chunk->nr_empty_pop_pages) &&
+		 chunk->nr_empty_pop_pages >= chunk->nr_pages / 4));
 }
