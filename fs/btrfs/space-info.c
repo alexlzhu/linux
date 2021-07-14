@@ -872,6 +872,8 @@ static bool maybe_fail_all_tickets(struct btrfs_fs_info *fs_info,
 	u64 tickets_id = space_info->tickets_id;
 	u64 first_ticket_bytes = 0;
 
+	trace_btrfs_fail_all_tickets(fs_info, space_info);
+
 	if (btrfs_test_opt(fs_info, ENOSPC_DEBUG)) {
 		btrfs_info(fs_info, "cannot satisfy tickets, dumping space info");
 		__btrfs_dump_space_info(fs_info, space_info);
