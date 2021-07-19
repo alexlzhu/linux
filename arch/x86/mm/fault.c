@@ -777,6 +777,8 @@ show_signal_msg(struct pt_regs *regs, unsigned long error_code,
 
 	print_vma_addr(KERN_CONT " in ", regs->ip);
 
+	printk(KERN_CONT " on CPU %d", raw_smp_processor_id());
+
 	printk(KERN_CONT "\n");
 
 	show_opcodes(regs, loglvl);
