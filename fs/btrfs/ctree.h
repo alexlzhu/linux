@@ -482,16 +482,6 @@ struct btrfs_discard_ctl {
 	atomic64_t discard_bytes_saved;
 };
 
-/* delayed seq elem */
-struct seq_list {
-	struct list_head list;
-	u64 seq;
-};
-
-#define SEQ_LIST_INIT(name)	{ .list = LIST_HEAD_INIT((name).list), .seq = 0 }
-
-#define SEQ_LAST	((u64)-1)
-
 enum btrfs_orphan_cleanup_state {
 	ORPHAN_CLEANUP_STARTED	= 1,
 	ORPHAN_CLEANUP_DONE	= 2,
@@ -2932,13 +2922,6 @@ static inline void btrfs_clear_sb_rdonly(struct super_block *sb)
 	clear_bit(BTRFS_FS_STATE_RO, &btrfs_sb(sb)->fs_state);
 }
 
-/* tree mod log functions from ctree.c */
-u64 btrfs_get_tree_mod_seq(struct btrfs_fs_info *fs_info,
-			   struct seq_list *elem);
-void btrfs_put_tree_mod_seq(struct btrfs_fs_info *fs_info,
-			    struct seq_list *elem);
-int btrfs_old_root_level(struct btrfs_root *root, u64 time_seq);
-
 /* root-item.c */
 int btrfs_add_root_ref(struct btrfs_trans_handle *trans, u64 root_id,
 		       u64 ref_id, u64 dirid, u64 sequence, const char *name,
@@ -3182,6 +3165,7 @@ extern const struct iomap_dio_ops btrfs_dio_ops;
 /* Inode locking type flags, by default the exclusive lock is taken */
 #define BTRFS_ILOCK_SHARED	(1U << 0)
 #define BTRFS_ILOCK_TRY 	(1U << 1)
+#define BTRFS_ILOCK_MMAP	(1U << 2)
 
 int btrfs_inode_lock(struct inode *inode, unsigned int ilock_flags);
 void btrfs_inode_unlock(struct inode *inode, unsigned int ilock_flags);
