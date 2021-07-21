@@ -1248,11 +1248,6 @@ static noinline void async_cow_submit(struct btrfs_work *work)
 	nr_pages = (async_chunk->end - async_chunk->start + PAGE_SIZE) >>
 		PAGE_SHIFT;
 
-	/* atomic_sub_return implies a barrier */
-	if (atomic_sub_return(nr_pages, &fs_info->async_delalloc_pages) <
-	    5 * SZ_1M)
-		cond_wake_up_nomb(&fs_info->async_submit_wait);
-
 	/*
 	 * ->inode could be NULL if async_chunk_start has failed to compress,
 	 * in which case we don't have anything to submit, yet we need to
@@ -1261,6 +1256,11 @@ static noinline void async_cow_submit(struct btrfs_work *work)
 	 */
 	if (async_chunk->inode)
 		submit_compressed_extents(async_chunk);
+
+	/* atomic_sub_return implies a barrier */
+	if (atomic_sub_return(nr_pages, &fs_info->async_delalloc_pages) <
+	    5 * SZ_1M)
+		cond_wake_up_nomb(&fs_info->async_submit_wait);
 }
 
 static noinline void async_cow_free(struct btrfs_work *work)
@@ -2384,7 +2384,7 @@ blk_status_t btrfs_submit_data_bio(struct inode *inode, struct bio *bio,
 	enum btrfs_wq_endio_type metadata = BTRFS_WQ_ENDIO_DATA;
 	blk_status_t ret = 0;
 	int skip_sum;
-	int async = !atomic_read(&BTRFS_I(inode)->sync_writers);
+	int async = 0; /* we're never async for now, cgroup helpers need this */
 
 	skip_sum = (BTRFS_I(inode)->flags & BTRFS_INODE_NODATASUM) ||
 		   !fs_info->csum_root;
@@ -2422,10 +2422,10 @@ blk_status_t btrfs_submit_data_bio(struct inode *inode, struct bio *bio,
 				goto out;
 		}
 		goto mapit;
-	} else if (async && !skip_sum) {
+	} else if (root->root_key.objectid == BTRFS_DATA_RELOC_TREE_OBJECTID) {
 		/* csum items have already been cloned */
-		if (root->root_key.objectid == BTRFS_DATA_RELOC_TREE_OBJECTID)
-			goto mapit;
+		goto mapit;
+	} else if (async && !skip_sum) {
 		/* we're doing a write, do the async checksumming */
 		ret = btrfs_wq_submit_bio(inode, bio, mirror_num, bio_flags,
 					  0, btrfs_submit_bio_start);
@@ -9552,6 +9552,7 @@ static int btrfs_rename2(struct user_namespace *mnt_userns, struct inode *old_di
 
 struct btrfs_delalloc_work {
 	struct inode *inode;
+	int sync_mode;
 	struct completion completion;
 	struct list_head list;
 	struct btrfs_work work;
@@ -9561,20 +9562,28 @@ static void btrfs_run_delalloc_work(struct btrfs_work *work)
 {
 	struct btrfs_delalloc_work *delalloc_work;
 	struct inode *inode;
+	int (*flush_func)(struct address_space *);
 
 	delalloc_work = container_of(work, struct btrfs_delalloc_work,
 				     work);
+
+	if (delalloc_work->sync_mode == WB_SYNC_NONE)
+		flush_func = filemap_flush;
+	else
+		flush_func = filemap_fdatawrite;
+
 	inode = delalloc_work->inode;
-	filemap_flush(inode->i_mapping);
+	flush_func(inode->i_mapping);
 	if (test_bit(BTRFS_INODE_HAS_ASYNC_EXTENT,
 				&BTRFS_I(inode)->runtime_flags))
-		filemap_flush(inode->i_mapping);
+		flush_func(inode->i_mapping);
 
-	iput(inode);
+	btrfs_add_delayed_iput(inode);
 	complete(&delalloc_work->completion);
 }
 
-static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode)
+static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode,
+							     int sync_mode)
 {
 	struct btrfs_delalloc_work *work;
 
@@ -9585,6 +9594,7 @@ static struct btrfs_delalloc_work *btrfs_alloc_delalloc_work(struct inode *inode
 	init_completion(&work->completion);
 	INIT_LIST_HEAD(&work->list);
 	work->inode = inode;
+	work->sync_mode = sync_mode;
 	btrfs_init_work(&work->work, btrfs_run_delalloc_work, NULL, NULL);
 
 	return work;
@@ -9634,7 +9644,7 @@ static int start_delalloc_inodes(struct btrfs_root *root,
 			set_bit(BTRFS_INODE_SNAPSHOT_FLUSH,
 				&binode->runtime_flags);
 		if (full_flush) {
-			work = btrfs_alloc_delalloc_work(inode);
+			work = btrfs_alloc_delalloc_work(inode, wbc->sync_mode);
 			if (!work) {
 				iput(inode);
 				ret = -ENOMEM;
@@ -9644,11 +9654,7 @@ static int start_delalloc_inodes(struct btrfs_root *root,
 			btrfs_queue_work(root->fs_info->flush_workers,
 					 &work->work);
 		} else {
-			ret = sync_inode(inode, wbc);
-			if (!ret &&
-			    test_bit(BTRFS_INODE_HAS_ASYNC_EXTENT,
-				     &BTRFS_I(inode)->runtime_flags))
-				ret = sync_inode(inode, wbc);
+			ret = filemap_fdatawrite_wbc(inode->i_mapping, wbc);
 			btrfs_add_delayed_iput(inode);
 			if (ret || wbc->nr_to_write <= 0)
 				goto out;
@@ -9678,7 +9684,7 @@ int btrfs_start_delalloc_snapshot(struct btrfs_root *root)
 {
 	struct writeback_control wbc = {
 		.nr_to_write = LONG_MAX,
-		.sync_mode = WB_SYNC_NONE,
+		.sync_mode = WB_SYNC_ALL,
 		.range_start = 0,
 		.range_end = LLONG_MAX,
 	};
@@ -9705,6 +9711,11 @@ int btrfs_start_delalloc_roots(struct btrfs_fs_info *fs_info, long nr,
 
 	if (test_bit(BTRFS_FS_STATE_ERROR, &fs_info->fs_state))
 		return -EROFS;
+
+	if (in_reclaim_context)
+		wbc.reason = WB_REASON_FS_FREE_SPACE;
+	else
+		wbc.sync_mode = WB_SYNC_ALL;
 
 	INIT_LIST_HEAD(&splice);
 

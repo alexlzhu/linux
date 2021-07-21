@@ -537,11 +537,37 @@ static void shrink_delalloc(struct btrfs_fs_info *fs_info,
 
 	loops = 0;
 	while ((delalloc_bytes || ordered_bytes) && loops < 3) {
-		u64 temp = min(delalloc_bytes, to_reclaim) >> PAGE_SHIFT;
-		long nr_pages = min_t(u64, temp, LONG_MAX);
+		long nr_pages;
+		u64 async_pages;
+
+		if (to_reclaim == U64_MAX) {
+			nr_pages = LONG_MAX;;
+		} else {
+			u64 temp = min(delalloc_bytes, to_reclaim) >> PAGE_SHIFT;
+			nr_pages = min_t(u64, temp, LONG_MAX);
+		}
 
 		btrfs_start_delalloc_roots(fs_info, nr_pages, true);
 
+		/*
+		 * We have to do this to make sure all the async work has
+		 * completed and our normal page waiting stuff is done.  Don't
+		 * remove this unless you make sure the writeback stuff is
+		 * actually doing the right thing wrt async extents.
+		 */
+		async_pages = atomic_read(&fs_info->async_delalloc_pages);
+		if (!async_pages)
+			goto skip_async;
+
+		if (async_pages <= nr_pages)
+			async_pages = 0;
+		else
+			async_pages -= nr_pages;
+
+		wait_event(fs_info->async_submit_wait,
+			   atomic_read(&fs_info->async_delalloc_pages) <=
+			   (int)async_pages);
+skip_async:
 		loops++;
 		if (wait_ordered && !trans) {
 			btrfs_wait_ordered_roots(fs_info, items, 0, (u64)-1);
@@ -579,94 +605,17 @@ static void shrink_delalloc(struct btrfs_fs_info *fs_info,
 static int may_commit_transaction(struct btrfs_fs_info *fs_info,
 				  struct btrfs_space_info *space_info)
 {
-	struct reserve_ticket *ticket = NULL;
-	struct btrfs_block_rsv *delayed_rsv = &fs_info->delayed_block_rsv;
-	struct btrfs_block_rsv *delayed_refs_rsv = &fs_info->delayed_refs_rsv;
-	struct btrfs_block_rsv *trans_rsv = &fs_info->trans_block_rsv;
 	struct btrfs_trans_handle *trans;
-	u64 reclaim_bytes = 0;
-	u64 bytes_needed = 0;
-	u64 cur_free_bytes = 0;
 
 	trans = (struct btrfs_trans_handle *)current->journal_info;
 	if (trans)
 		return -EAGAIN;
 
-	spin_lock(&space_info->lock);
-	cur_free_bytes = btrfs_space_info_used(space_info, true);
-	if (cur_free_bytes < space_info->total_bytes)
-		cur_free_bytes = space_info->total_bytes - cur_free_bytes;
-	else
-		cur_free_bytes = 0;
-
-	if (!list_empty(&space_info->priority_tickets))
-		ticket = list_first_entry(&space_info->priority_tickets,
-					  struct reserve_ticket, list);
-	else if (!list_empty(&space_info->tickets))
-		ticket = list_first_entry(&space_info->tickets,
-					  struct reserve_ticket, list);
-	if (ticket)
-		bytes_needed = ticket->bytes;
-
-	if (bytes_needed > cur_free_bytes)
-		bytes_needed -= cur_free_bytes;
-	else
-		bytes_needed = 0;
-	spin_unlock(&space_info->lock);
-
-	if (!bytes_needed)
-		return 0;
-
 	trans = btrfs_join_transaction(fs_info->extent_root);
 	if (IS_ERR(trans))
 		return PTR_ERR(trans);
 
-	/*
-	 * See if there is enough pinned space to make this reservation, or if
-	 * we have block groups that are going to be freed, allowing us to
-	 * possibly do a chunk allocation the next loop through.
-	 */
-	if (test_bit(BTRFS_TRANS_HAVE_FREE_BGS, &trans->transaction->flags) ||
-	    __percpu_counter_compare(&space_info->total_bytes_pinned,
-				     bytes_needed,
-				     BTRFS_TOTAL_BYTES_PINNED_BATCH) >= 0)
-		goto commit;
-
-	/*
-	 * See if there is some space in the delayed insertion reserve for this
-	 * reservation.  If the space_info's don't match (like for DATA or
-	 * SYSTEM) then just go enospc, reclaiming this space won't recover any
-	 * space to satisfy those reservations.
-	 */
-	if (space_info != delayed_rsv->space_info)
-		goto enospc;
-
-	spin_lock(&delayed_rsv->lock);
-	reclaim_bytes += delayed_rsv->reserved;
-	spin_unlock(&delayed_rsv->lock);
-
-	spin_lock(&delayed_refs_rsv->lock);
-	reclaim_bytes += delayed_refs_rsv->reserved;
-	spin_unlock(&delayed_refs_rsv->lock);
-
-	spin_lock(&trans_rsv->lock);
-	reclaim_bytes += trans_rsv->reserved;
-	spin_unlock(&trans_rsv->lock);
-
-	if (reclaim_bytes >= bytes_needed)
-		goto commit;
-	bytes_needed -= reclaim_bytes;
-
-	if (__percpu_counter_compare(&space_info->total_bytes_pinned,
-				   bytes_needed,
-				   BTRFS_TOTAL_BYTES_PINNED_BATCH) < 0)
-		goto enospc;
-
-commit:
 	return btrfs_commit_transaction(trans);
-enospc:
-	btrfs_end_transaction(trans);
-	return -ENOSPC;
 }
 
 /*
@@ -923,6 +872,8 @@ static bool maybe_fail_all_tickets(struct btrfs_fs_info *fs_info,
 	u64 tickets_id = space_info->tickets_id;
 	u64 first_ticket_bytes = 0;
 
+	trace_btrfs_fail_all_tickets(fs_info, space_info);
+
 	if (btrfs_test_opt(fs_info, ENOSPC_DEBUG)) {
 		btrfs_info(fs_info, "cannot satisfy tickets, dumping space info");
 		__btrfs_dump_space_info(fs_info, space_info);
@@ -1017,6 +968,14 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 			if (commit_cycles)
 				commit_cycles--;
 		}
+
+		/*
+		 * We shrink delalloc based on pages now, so if we're under a
+		 * decent amount of pressure and have gone through the whole
+		 * flushing state once, flush all of the pages this go around.
+		 */
+		if (flush_state == FLUSH_DELALLOC_WAIT && commit_cycles)
+			to_reclaim = U64_MAX;
 
 		/*
 		 * We don't want to force a chunk allocation until we've tried
