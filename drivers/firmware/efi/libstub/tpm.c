@@ -67,8 +67,10 @@ void efi_retrieve_tpm2_eventlog(void)
 	if (status != EFI_SUCCESS)
 		return;
 
-	status = efi_call_proto(tcg2_protocol, get_event_log, version,
-				&log_location, &log_last_entry, &truncated);
+	if (!efi_tpm12)
+		status = efi_call_proto(tcg2_protocol, get_event_log, version,
+					&log_location, &log_last_entry,
+					&truncated);
 
 	if (status != EFI_SUCCESS || !log_location) {
 		version = EFI_TCG2_EVENT_LOG_FORMAT_TCG_1_2;
