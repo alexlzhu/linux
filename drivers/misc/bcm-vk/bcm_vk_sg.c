@@ -17,12 +17,6 @@
 #include "bcm_vk_msg.h"
 #include "bcm_vk_sg.h"
 
-/*
- * Valkyrie has a hardware limitation of 16M transfer size.
- * So limit the SGL chunks to 16M.
- */
-#define BCM_VK_MAX_SGL_CHUNK SZ_16M
-
 static int bcm_vk_dma_alloc(struct device *dev,
 			    struct bcm_vk_dma *dma,
 			    int dir,
@@ -47,6 +41,9 @@ static int bcm_vk_dma_alloc(struct device *dev,
 	u64 data;
 	unsigned long first, last;
 	struct _vk_data *sgdata;
+
+	if (vkdata->size > BCM_VK_MAX_SGL_CHUNK)
+		return -ERANGE;
 
 	/* Get 64-bit user address */
 	data = get_unaligned(&vkdata->address);
@@ -183,14 +180,22 @@ int bcm_vk_sg_alloc(struct device *dev,
 	/* Convert user addresses to DMA SG List */
 	for (i = 0; i < num; i++) {
 		if (vkdata[i].size && vkdata[i].address) {
-			/*
-			 * If both size and address are non-zero
-			 * then DMA alloc.
-			 */
-			rc = bcm_vk_dma_alloc(dev,
-					      &dma[i],
-					      dir,
-					      &vkdata[i]);
+			/* do a check to cap size */
+			if (vkdata[i].size > BCM_VK_MAX_SGL_CHUNK) {
+				dev_err(dev, "vkdata[%d] size 0x%x > max 0x%x",
+					i, vkdata[i].size,
+					BCM_VK_MAX_SGL_CHUNK);
+				rc = -ERANGE;
+			} else {
+				/*
+				 * If both size and address are non-zero
+				 * then DMA alloc.
+				 */
+				rc = bcm_vk_dma_alloc(dev,
+						      &dma[i],
+						      dir,
+						      &vkdata[i]);
+			}
 		} else if (vkdata[i].size ||
 			   vkdata[i].address) {
 			/*
@@ -235,6 +240,11 @@ static int bcm_vk_dma_free(struct device *dev, struct bcm_vk_dma *dma)
 
 	/* Unmap all pages in the sglist */
 	num_sg = dma->sglist[SGLIST_NUM_SG];
+	if (num_sg > BCM_VK_MAX_NUM_SG) {
+		dev_dbg(dev, "num_sg 0x%x > 0x%x\n", num_sg, BCM_VK_MAX_NUM_SG);
+		return -ERANGE;
+	}
+
 	vkdata = (struct _vk_data *)&dma->sglist[SGLIST_VKDATA_START];
 	for (i = 0; i < num_sg; i++) {
 		size = vkdata[i].size;
