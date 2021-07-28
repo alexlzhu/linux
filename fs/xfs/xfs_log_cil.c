@@ -534,10 +534,16 @@ xlog_discard_busy_extents(
 	struct bio		*bio = NULL;
 	struct blk_plug		plug;
 	int			error = 0;
+	int			discard_flags = 0;
+	bool			sync_discard = mp->m_flags & XFS_MOUNT_DISCARD_SYNC;
 
 	ASSERT(mp->m_flags & XFS_MOUNT_DISCARD);
 
-	blk_start_plug(&plug);
+	if (!sync_discard)
+		blk_start_plug(&plug);
+	else
+		discard_flags = BLKDEV_DISCARD_SYNC;
+
 	list_for_each_entry(busyp, list, list) {
 		trace_xfs_discard_extent(mp, busyp->agno, busyp->bno,
 					 busyp->length);
@@ -545,7 +551,7 @@ xlog_discard_busy_extents(
 		error = __blkdev_issue_discard(mp->m_ddev_targp->bt_bdev,
 				XFS_AGB_TO_DADDR(mp, busyp->agno, busyp->bno),
 				XFS_FSB_TO_BB(mp, busyp->length),
-				GFP_NOFS, 0, &bio);
+				GFP_NOFS, discard_flags, &bio);
 		if (error && error != -EOPNOTSUPP) {
 			xfs_info(mp,
 	 "discard failed for extent [0x%llx,%u], error %d",
@@ -556,14 +562,18 @@ xlog_discard_busy_extents(
 		}
 	}
 
-	if (bio) {
+	if (sync_discard) {
+		xfs_extent_busy_clear(mp, &ctx->busy_extents, false);
+		kmem_free(ctx);
+	} else if (bio) {
 		bio->bi_private = ctx;
 		bio->bi_end_io = xlog_discard_endio;
 		submit_bio(bio);
+		blk_finish_plug(&plug);
 	} else {
 		xlog_discard_endio_work(&ctx->discard_endio_work);
+		blk_finish_plug(&plug);
 	}
-	blk_finish_plug(&plug);
 }
 
 /*
