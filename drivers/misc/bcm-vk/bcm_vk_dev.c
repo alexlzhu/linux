@@ -526,7 +526,7 @@ void bcm_vk_blk_drv_access(struct bcm_vk *vk)
 		struct bcm_vk_ctx *ctx, *tmp;
 
 		list_for_each_entry_safe(ctx, tmp,
-					 &cctrl->pid_ht[i].head, node) {
+					 &cctrl->pid_ht[i].head, pid_node) {
 			if (ctx->pid != vk->reset_pid) {
 				if (!ctx->kill_resp_to) {
 					ctx->kill_resp_to = jiffies +
@@ -545,9 +545,9 @@ void bcm_vk_blk_drv_access(struct bcm_vk *vk)
 					 * know why the kernel would not have
 					 * closed all fds, quarantine the item.
 					 */
-					list_del(&ctx->node);
+					list_del(&ctx->pid_node);
 					ctx->active = false;
-					list_add_tail(&ctx->node,
+					list_add_tail(&ctx->pid_node,
 						      &cctrl->iso_head);
 					cctrl->act_cnt--;
 					cctrl->iso_cnt++;
@@ -1457,6 +1457,7 @@ static int bcm_vk_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		vk->bar[i] = pci_ioremap_bar(pdev, i * 2);
 		if (!vk->bar[i]) {
 			dev_err(dev, "failed to remap BAR%d\n", i);
+			err = -ENOMEM;
 			goto err_iounmap;
 		}
 	}
@@ -1495,7 +1496,7 @@ static int bcm_vk_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 				pdev->irq + vk->num_irqs, vk->num_irqs + 1);
 			goto err_irq;
 		}
-		vk->tty[i].irq_enabled = true;
+		bcm_vk_tty_set_irq_enabled(vk, i);
 	}
 
 	id = ida_simple_get(&bcm_vk_ida, 0, 0, GFP_KERNEL);
@@ -1568,7 +1569,8 @@ static int bcm_vk_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	boot_status = vkread32(vk, BAR_0, BAR_BOOT_STATUS);
 	if (auto_load) {
 		if ((boot_status & BOOT_STATE_MASK) == BROM_RUNNING) {
-			if (bcm_vk_trigger_autoload(vk))
+			err = bcm_vk_trigger_autoload(vk);
+			if (err)
 				goto err_bcm_vk_tty_exit;
 		} else {
 			dev_err(dev,
@@ -1644,12 +1646,12 @@ void bcm_vk_release_data(struct kref *kref)
 	/* clean up any stale allocation of ctxs */
 	for (i = 0; i < VK_PID_HT_SZ; i++) {
 		list_for_each_entry_safe(ctx, tmp,
-					 &cctrl->pid_ht[i].head, node)
+					 &cctrl->pid_ht[i].head, pid_node)
 			bcm_vk_free_ctx(vk, ctx);
 	}
 	/* free any ctx under quarantine */
 	list_for_each_entry_safe(ctx, tmp,
-				 &vk->ctx_ctrl.iso_head, node)
+				 &vk->ctx_ctrl.iso_head, pid_node)
 		bcm_vk_free_ctx(vk, ctx);
 
 	dev_dbg(&pdev->dev, "BCM-VK:%d release data 0x%p\n", vk->devid, vk);
@@ -1677,6 +1679,7 @@ static void bcm_vk_remove(struct pci_dev *pdev)
 	/* unregister panic notifier */
 	atomic_notifier_chain_unregister(&panic_notifier_list,
 					 &vk->panic_nb);
+
 	bcm_vk_msg_remove(vk);
 	bcm_vk_tty_exit(vk);
 
@@ -1702,8 +1705,7 @@ static void bcm_vk_remove(struct pci_dev *pdev)
 
 	cancel_work_sync(&vk->wq_work);
 	destroy_workqueue(vk->wq_thread);
-	cancel_work_sync(&vk->tty_wq_work);
-	destroy_workqueue(vk->tty_wq_thread);
+	bcm_vk_tty_wq_exit(vk);
 
 	for (i = 0; i < MAX_BAR; i++) {
 		if (vk->bar[i])
