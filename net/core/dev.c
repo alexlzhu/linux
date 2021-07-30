@@ -6026,7 +6026,7 @@ static struct list_head *gro_list_prepare(struct napi_struct *napi,
 				       skb_mac_header(skb),
 				       maclen);
 
-		/* in most common scenarions _state is 0
+		/* in most common scenarions 'slow_gro' is 0
 		 * otherwise we are already on some slower paths
 		 * either skip all the infrequent tests altogether or
 		 * avoid trying too hard to skip each of them individually
