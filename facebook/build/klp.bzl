@@ -7,6 +7,8 @@ def klp(flavor=None, label=None):
     # overrides
     patch_to = native.read_config("klp", "patch_to", None)
     patch_from = native.read_config("klp", "patch_from", None)
+    flavor=native.read_config("klp", "flavor", None)
+    label=native.read_config("klp", "label", None)
 
     notempty_cmd = " && [ -s $OUT ] || exit 1"
     to_cmd = """git show-ref --tags -d | grep "^`git log --pretty="%h" -n1`" |
