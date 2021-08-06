@@ -7552,9 +7552,14 @@ static int __bnxt_hwrm_ptp_qcfg(struct bnxt *bp)
 		rc = -ENODEV;
 		goto no_ptp;
 	}
-	return 0;
+	rc = bnxt_ptp_init(bp);
+	if (!rc)
+		return 0;
+
+	netdev_warn(bp->dev, "PTP initialization failed.\n");
 
 no_ptp:
+	bnxt_ptp_clear(bp);
 	kfree(ptp);
 	bp->ptp_cfg = NULL;
 	return rc;
@@ -7631,8 +7636,13 @@ static int __bnxt_hwrm_func_qcaps(struct bnxt *bp)
 		bp->flags &= ~BNXT_FLAG_WOL_CAP;
 		if (flags & FUNC_QCAPS_RESP_FLAGS_WOL_MAGICPKT_SUPPORTED)
 			bp->flags |= BNXT_FLAG_WOL_CAP;
-		if (flags & FUNC_QCAPS_RESP_FLAGS_PTP_SUPPORTED)
+		if (flags & FUNC_QCAPS_RESP_FLAGS_PTP_SUPPORTED) {
 			__bnxt_hwrm_ptp_qcfg(bp);
+		} else {
+			bnxt_ptp_clear(bp);
+			kfree(bp->ptp_cfg);
+			bp->ptp_cfg = NULL;
+		}
 	} else {
 #ifdef CONFIG_BNXT_SRIOV
 		struct bnxt_vf_info *vf = &bp->vf;
@@ -10196,7 +10206,6 @@ static int __bnxt_open_nic(struct bnxt *bp, bool irq_re_init, bool link_re_init)
 		}
 	}
 
-	bnxt_ptp_start(bp);
 	rc = bnxt_init_nic(bp, irq_re_init);
 	if (rc) {
 		netdev_err(bp->dev, "bnxt_init_nic err: %x\n", rc);
@@ -10329,6 +10338,7 @@ static int bnxt_open(struct net_device *dev)
 	rc = bnxt_hwrm_if_change(bp, true);
 	if (rc)
 		return rc;
+
 	rc = __bnxt_open_nic(bp, true, true);
 	if (rc) {
 		bnxt_hwrm_if_change(bp, false);
@@ -11442,13 +11452,20 @@ static bool is_bnxt_fw_ok(struct bnxt *bp)
 static void bnxt_force_fw_reset(struct bnxt *bp)
 {
 	struct bnxt_fw_health *fw_health = bp->fw_health;
+	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
 	u32 wait_dsecs;
 
 	if (!test_bit(BNXT_STATE_OPEN, &bp->state) ||
 	    test_bit(BNXT_STATE_IN_FW_RESET, &bp->state))
 		return;
 
-	set_bit(BNXT_STATE_IN_FW_RESET, &bp->state);
+	if (ptp) {
+		spin_lock_bh(&ptp->ptp_lock);
+		set_bit(BNXT_STATE_IN_FW_RESET, &bp->state);
+		spin_unlock_bh(&ptp->ptp_lock);
+	} else {
+		set_bit(BNXT_STATE_IN_FW_RESET, &bp->state);
+	}
 	bnxt_fw_reset_close(bp);
 	wait_dsecs = fw_health->master_func_wait_dsecs;
 	if (fw_health->master) {
@@ -11504,9 +11521,16 @@ void bnxt_fw_reset(struct bnxt *bp)
 	bnxt_rtnl_lock_sp(bp);
 	if (test_bit(BNXT_STATE_OPEN, &bp->state) &&
 	    !test_bit(BNXT_STATE_IN_FW_RESET, &bp->state)) {
+		struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
 		int n = 0, tmo;
 
-		set_bit(BNXT_STATE_IN_FW_RESET, &bp->state);
+		if (ptp) {
+			spin_lock_bh(&ptp->ptp_lock);
+			set_bit(BNXT_STATE_IN_FW_RESET, &bp->state);
+			spin_unlock_bh(&ptp->ptp_lock);
+		} else {
+			set_bit(BNXT_STATE_IN_FW_RESET, &bp->state);
+		}
 		if (bp->pf.active_vfs &&
 		    !test_bit(BNXT_STATE_FW_FATAL_COND, &bp->state))
 			n = bnxt_get_registered_vfs(bp);
@@ -13381,11 +13405,6 @@ static int bnxt_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 				   rc);
 	}
 
-	if (bnxt_ptp_init(bp)) {
-		netdev_warn(dev, "PTP initialization failed.\n");
-		kfree(bp->ptp_cfg);
-		bp->ptp_cfg = NULL;
-	}
 	bnxt_inv_fw_health_reg(bp);
 	bnxt_dl_register(bp);
 
@@ -13415,6 +13434,7 @@ init_err_pci_clean:
 	bnxt_free_hwrm_short_cmd_req(bp);
 	bnxt_free_hwrm_resources(bp);
 	bnxt_ethtool_free(bp);
+	bnxt_ptp_clear(bp);
 	kfree(bp->ptp_cfg);
 	bp->ptp_cfg = NULL;
 	kfree(bp->fw_health);
