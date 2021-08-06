@@ -208,6 +208,7 @@ static inline void bpf_cgroup_storage_unset(void)
 		this_cpu_write(bpf_cgroup_storage_info[i].task, NULL);
 		return;
 	}
+	WARN_ON_ONCE(1);
 }
 
 struct bpf_cgroup_storage *
