@@ -1061,7 +1061,7 @@ int nsim_dev_probe(struct nsim_bus_dev *nsim_bus_dev)
 	int err;
 
 	devlink = devlink_alloc_ns(&nsim_dev_devlink_ops, sizeof(*nsim_dev),
-				   nsim_bus_dev->initial_net);
+				 nsim_bus_dev->initial_net, &nsim_bus_dev->dev);
 	if (!devlink)
 		return -ENOMEM;
 	nsim_dev = devlink_priv(devlink);
@@ -1082,7 +1082,7 @@ int nsim_dev_probe(struct nsim_bus_dev *nsim_bus_dev)
 	if (err)
 		goto err_devlink_free;
 
-	err = devlink_register(devlink, &nsim_bus_dev->dev);
+	err = devlink_register(devlink);
 	if (err)
 		goto err_resources_unregister;
 

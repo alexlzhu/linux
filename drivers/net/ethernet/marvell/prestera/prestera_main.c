@@ -617,7 +617,7 @@ int prestera_device_register(struct prestera_device *dev)
 	struct prestera_switch *sw;
 	int err;
 
-	sw = prestera_devlink_alloc();
+	sw = prestera_devlink_alloc(dev);
 	if (!sw)
 		return -ENOMEM;
 

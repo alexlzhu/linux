@@ -2951,13 +2951,13 @@ ptp_ocp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct ptp_ocp *bp;
 	int err;
 
-	devlink = devlink_alloc(&ptp_ocp_devlink_ops, sizeof(*bp));
+	devlink = devlink_alloc(&ptp_ocp_devlink_ops, sizeof(*bp), &pdev->dev);
 	if (!devlink) {
 		dev_err(&pdev->dev, "devlink_alloc failed\n");
 		return -ENOMEM;
 	}
 
-	err = devlink_register(devlink, &pdev->dev);
+	err = devlink_register(devlink);
 	if (err)
 		goto out_free;
 
