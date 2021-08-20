@@ -2284,7 +2284,9 @@ static int virtnet_get_link_ksettings(struct net_device *dev,
 }
 
 static int virtnet_set_coalesce(struct net_device *dev,
-				struct ethtool_coalesce *ec)
+				struct ethtool_coalesce *ec,
+				struct kernel_ethtool_coalesce *kernel_coal,
+				struct netlink_ext_ack *extack)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
 	int i, napi_weight;
@@ -2305,7 +2307,9 @@ static int virtnet_set_coalesce(struct net_device *dev,
 }
 
 static int virtnet_get_coalesce(struct net_device *dev,
-				struct ethtool_coalesce *ec)
+				struct ethtool_coalesce *ec,
+				struct kernel_ethtool_coalesce *kernel_coal,
+				struct netlink_ext_ack *extack)
 {
 	struct ethtool_coalesce ec_default = {
 		.cmd = ETHTOOL_GCOALESCE,
