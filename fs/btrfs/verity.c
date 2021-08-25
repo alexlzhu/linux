@@ -553,7 +553,6 @@ static int finish_verity(struct btrfs_inode *inode, const void *desc,
 	if (ret)
 		goto end_trans;
 	clear_bit(BTRFS_INODE_VERITY_IN_PROGRESS, &inode->runtime_flags);
-	btrfs_set_fs_compat_ro(root->fs_info, VERITY);
 end_trans:
 	btrfs_end_transaction(trans);
 out:
