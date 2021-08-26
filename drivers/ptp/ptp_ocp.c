@@ -2271,6 +2271,7 @@ ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 
 	bp->flash_start = 0x1000000;
 	bp->attr_groups = art_timecard_groups;
+	bp->fw_cap = OCP_CAP_BASIC;
 	bp->fw_version = ioread32(&bp->reg->version);
 
 	err = ptp_ocp_register_mro50(bp);
@@ -3331,7 +3332,13 @@ static struct attribute *art_timecard_attrs[] = {
 	&dev_attr_ts_window_adjust.attr,
 	NULL,
 };
-ATTRIBUTE_GROUPS(art_timecard);
+static const struct attribute_group art_timecard_group = {
+	.attrs = art_timecard_attrs,
+};
+static const struct ocp_attr_group art_timecard_groups[] = {
+	{ .cap = OCP_CAP_BASIC,     .group = &art_timecard_group },
+	{ },
+};
 
 static void
 gpio_input_map(char *buf, struct ptp_ocp *bp, u16 map[][2], u16 bit,
