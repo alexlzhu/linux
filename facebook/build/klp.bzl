@@ -45,7 +45,11 @@ def klp(flavor=None, label=None):
     # form patch
     native.genrule(
         name="patches",
-        cmd="mkdir -p $OUT ; git format-patch -k `cat $(location :baseline)`..`cat $(location :top_lvl_tag)` -o $OUT/",
+        cmd="""mkdir -p $OUT
+            git format-patch -k `cat $(location :baseline)`..`cat $(location :top_lvl_tag)` -o $OUT/
+            export hotfix=`cat $(location :hotfix)`
+            cat `git rev-parse --show-toplevel`/facebook/9999-Dummy-patch-to-bump-hotfix-version.patch.template | envsubst > $OUT/9999-Dummy-patch-to-bump-hotfix-version.patch
+        """,
         out="patches",
         cacheable=False,
     )

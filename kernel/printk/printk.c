@@ -49,7 +49,7 @@
 #include <linux/sched/debug.h>
 #include <linux/sched/task_stack.h>
 #include <linux/utsname.h>
-
+#include <hotfix/hotfix.h>
 #include <linux/uaccess.h>
 #include <asm/sections.h>
 
@@ -790,7 +790,11 @@ static ssize_t msg_print_ext_body(char *buf, size_t size,
 
 static ssize_t msg_print_ext_uname(char *buf, size_t size)
 {
+#ifdef HF_VERSION
+        return scnprintf(buf, size, " UNAME=%s-%s\n", init_utsname()->release, HF_VERSION);
+#else
 	return scnprintf(buf, size, " UNAME=%s\n", init_utsname()->release);
+#endif
 }
 
 /* /dev/kmsg - userspace message inject/listen interface */
