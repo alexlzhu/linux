@@ -95,6 +95,19 @@ def klp(flavor=None, label=None):
         out="baseline-sources",
     )
 
+    #checkout target
+    native.genrule(
+        name = "target-sources",
+        cmd = """sudo rm -rf $OUT; mkdir -p $OUT
+            git clone -b `cat $(location :top_lvl_tag)` `git rev-parse --show-toplevel` $OUT
+            pushd $OUT
+            make mrproper
+            popd
+        """,
+        cacheable = False,
+        out = "target-sources",
+    )
+
     #build the rpm version
     #more details on versioning available in buildinfo()
     #i don't have better idea on how to map between git tag/branch and rpm
@@ -115,7 +128,24 @@ def klp(flavor=None, label=None):
             label="%s"
             echo "${majorver}-${rpm_n}_${fbkv}${flavor}${rc}${label}" > $OUT
         """ % (flavor_ver, label_ver),
-        out="baseline-rpm-version",
+        out = "baseline-rpm-version",
+    )
+
+    
+    native.genrule(
+      name = "target-image-url",
+      cmd = """
+          pushd $(location :target-sources)
+          NO_BUCKD=1 ./facebook/build/buck query '//facebook/build:build-image' --output-attributes urls 0 | jq '.[][][]' | tr -d '"' > $OUT
+          popd
+      """,
+      out = "target-image-url",
+    )
+
+    native.genrule(
+      name = "target-image",
+      cmd =  "curl `cat $(location :target-image-url)` -o $OUT",
+      out = "target-image",
     )
 
     #uname of original kernel
@@ -137,6 +167,7 @@ def klp(flavor=None, label=None):
         bind_ro=bind_ros,
         bind_rw=bind_rws,
         cacheable=False,
+        image_override="$(location :target-image)",
     )
     # prepare packaging
     bind_ros.append(("$(location :klp-spec)", "/tmp/klp.spec"))

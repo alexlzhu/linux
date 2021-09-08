@@ -7,7 +7,7 @@ def _src_loc(src):
         return src
     return "$(location {})".format(src)
 
-def container_genrule(name, cmd, pre_cmd = "", bind_ro = None, bind_rw = None, overlay_ro = None, overlay_rw = None, tmpfs = None, cacheable = False):
+def container_genrule(name, cmd, pre_cmd = "", bind_ro = None, bind_rw = None, overlay_ro = None, overlay_rw = None, tmpfs = None, cacheable = False, image_override=None):
     """Runs the specified shell command in the build container
 
     This rule runs commands within a systemd-nspawn container based on the
@@ -31,6 +31,7 @@ def container_genrule(name, cmd, pre_cmd = "", bind_ro = None, bind_rw = None, o
                   source must be a buck target (it will be used in a location macro)
       tmpfs: list of paths to mount as tmpfs within the container
       cacheable: True if the result of this genrule should be saved in the buck cache
+      image_override: img path
     """
     args = ()
 
@@ -83,12 +84,16 @@ def container_genrule(name, cmd, pre_cmd = "", bind_ro = None, bind_rw = None, o
     # before setting up the args with the user's command, generate an executable
     # script that allows a user to drop into a shell in the container, to aid in
     # debugging build changes
+    if image_override:
+        image = image_override
+    else:
+        image = "$(location //facebook/build:build-image)"
     template(
         name = name + "-container",
         src = "//facebook/build:nspawn.sh",
         executable = True,
         variables = struct(
-            image = "$(location //facebook/build:build-image)",
+            image = image,
             pre_cmd = pre_cmd,
             bind_ro = bind_ro,
             bind_rw = bind_rw,
