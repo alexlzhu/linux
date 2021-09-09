@@ -13,6 +13,15 @@ http_file(
     visibility = ["PUBLIC"],
 )
 
+http_file(
+    name = "clang-train-data",
+    urls = [
+        "https://interncache-all.fbcdn.net/manifold/linux_kernel/tree/clang_train_data/v512_fbk1",
+    ],
+    sha256 = "990ac9a37ab451e226268909ff9734a423b614bef3c965c191c8df8cd36c254c",
+    visibility = ["PUBLIC"],
+)
+
 export_file(
     name = "nspawn.sh",
     src = "nspawn.sh",

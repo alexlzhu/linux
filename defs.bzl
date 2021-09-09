@@ -81,9 +81,16 @@ def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = Tr
     info = buildinfo()
     uname = info.kernelversion + "-" + extra_version(info, flavor, debug)
 
+    if not extra_srcs:
+        extra_srcs = []
+
     llvm_macro = ""
-    if flavor and "clang" in flavor:
-        llvm_macro = "LLVM=1 LLVM_IAS=1"
+    if flavor:
+        if "clangtrain" in flavor:
+            llvm_macro = "LLVM=1"
+        elif "clang" in flavor:
+            extra_srcs += [("$(location //facebook/build:clang-train-data)", "/tmp/vmlinux.profdata")]
+            llvm_macro = "LLVM=1 CFLAGS_PGO_CLANG=-fprofile-use=/tmp/vmlinux.profdata"
 
     # convenience rule to inspect uname
     native.genrule(
@@ -112,8 +119,6 @@ def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = Tr
         out = ".",
     )
 
-    if not extra_srcs:
-        extra_srcs = []
     sign = native.read_config('kernel', 'sign_mod', 'false')
     sign_key = native.read_config('kernel', 'sign_mod_key', 'autograph-test')
     # run make directly before rpmbuild so that outputs may be consumed without
