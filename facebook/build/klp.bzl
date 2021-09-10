@@ -1,4 +1,3 @@
-load("//facebook/config:defs.bzl", "config")
 load("//facebook/build:container.bzl", "container_genrule")
 load("//:defs.bzl", "buildinfo")
 def klp(flavor=None, label=None):
@@ -65,11 +64,6 @@ def klp(flavor=None, label=None):
         cmd="mkdir -p $OUT && kernelctl download --kernel --out-dir $OUT `cat $(location :baseline-rpm-version)` && mv $OUT/*.rpm $OUT/kernel-bin.rpm",
         out="kernel-bin-klp",
         cacheable=False,
-    )
-    # build config for flavor
-    config(
-        name="config",
-        flavor=flavor,
     )
     bind_ros = [
         ("$(location :kernel-devel-klp)", "/tmp/kernel-devel"),
@@ -141,11 +135,26 @@ def klp(flavor=None, label=None):
       """,
       out = "target-image-url",
     )
+    
 
     native.genrule(
-      name = "target-image",
-      cmd =  "curl `cat $(location :target-image-url)` -o $OUT",
-      out = "target-image",
+        name = "target-image",
+        cmd =  "curl `cat $(location :target-image-url)` -o $OUT",
+        out = "target-image",
+    )
+
+    cfg_flavor = flavor
+    if not flavor:
+        cfg_flavor = "x86_64"
+
+    native.genrule(
+      name = "config",
+      cmd =  """
+          pushd $(location :target-sources)
+          cp `NO_BUCKD=1 ./facebook/build/buck build --show-output //facebook/config:%s | awk '{print $2}'` $OUT
+          popd
+      """ % (cfg_flavor),
+      out = "config",
     )
 
     #uname of original kernel
@@ -157,12 +166,17 @@ def klp(flavor=None, label=None):
     )
 
     #feed artifacts to kpatch-build in a container
-    bind_rws = [(":baseline-sources", "/rw/linux"), ("$OUT", "/rw/output")]
+    bind_rws = [(":baseline-sources", "/rw/linux"), ("$OUT", "/rw/output"), (":target-sources", "/rw/target")]
     container_genrule(
         name="klp-build",
         cmd="""
             rpm -ivh /tmp/kernel-bin/*.rpm /tmp/kernel-devel/*.rpm
-            kpatch-build -s /rw/linux -c /tmp/config -v /boot/vmlinux* -o /rw/output -n klp_`cat /tmp/baseline_rpm_version`_`cat /tmp/hotfix` /tmp/patches/* || (cp /root/.kpatch/build.log /rw/output/ && exit 1)
+            pushd /rw/target
+            # prepare config for the target. It could be different from the baselines config
+            cp /tmp/config .config
+            make O=/rw/target olddefconfig
+            popd 
+            kpatch-build -s /rw/linux -c /rw/target/.config -v /boot/vmlinux* -o /rw/output -n klp_`cat /tmp/baseline_rpm_version`_`cat /tmp/hotfix` /tmp/patches/* || (cp /root/.kpatch/build.log /rw/output/ && exit 1)
         """,
         bind_ro=bind_ros,
         bind_rw=bind_rws,
