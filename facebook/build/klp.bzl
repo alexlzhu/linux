@@ -147,6 +147,9 @@ def klp(flavor=None, label=None):
     if not flavor:
         cfg_flavor = "x86_64"
 
+    if not cfg_flavor.startswith("x86_64"):
+        cfg_flavor = "x86_64-%s" % cfg_flavor
+
     native.genrule(
       name = "config",
       cmd =  """
