@@ -188,7 +188,7 @@ static int __save_stack_trace_tsk_reliable(struct task_struct *tsk,
 		 * Mark stacktraces with kretprobed functions on them
 		 * as unreliable.
 		 */
-		if (ip == (unsigned long)kretprobe_trampoline)
+		if (ip == (unsigned long)__kretprobe_trampoline)
 			return -EINVAL;
 #endif
 
