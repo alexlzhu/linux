@@ -1516,7 +1516,7 @@ void btrfs_reclaim_bgs_work(struct work_struct *work)
 		down_write(&space_info->groups_sem);
 
 		spin_lock(&bg->lock);
-		if (bg->reserved || bg->pinned || bg->ro) {
+		if (bg->reserved || bg->ro) {
 			/*
 			 * We want to bail if we made new allocations or have
 			 * outstanding allocations in this block group.  We do
