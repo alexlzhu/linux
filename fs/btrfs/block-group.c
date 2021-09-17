@@ -1540,7 +1540,7 @@ void btrfs_reclaim_bgs_work(struct work_struct *work)
 		if (ret < 0)
 			goto next;
 
-		btrfs_info(fs_info, "reclaiming chunk %llu with %llu%% used",
+		btrfs_warn(fs_info, "reclaiming chunk %llu with %llu%% used",
 				bg->start, div64_u64(bg->used * 100, bg->length));
 		trace_btrfs_reclaim_block_group(bg);
 		ret = btrfs_relocate_chunk(fs_info, bg->start);
