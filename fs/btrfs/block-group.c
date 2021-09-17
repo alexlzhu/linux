@@ -1502,6 +1502,7 @@ void btrfs_reclaim_bgs_work(struct work_struct *work)
 	mutex_lock(&fs_info->reclaim_bgs_lock);
 	spin_lock(&fs_info->unused_bgs_lock);
 	while (!list_empty(&fs_info->reclaim_bgs)) {
+		u64 thresh = 0, reclaim_thresh = fs_info->bg_reclaim_threshold;
 		int ret = 0;
 
 		bg = list_first_entry(&fs_info->reclaim_bgs,
@@ -1516,7 +1517,10 @@ void btrfs_reclaim_bgs_work(struct work_struct *work)
 		down_write(&space_info->groups_sem);
 
 		spin_lock(&bg->lock);
-		if (bg->reserved || bg->ro) {
+		if (reclaim_thresh)
+			thresh = div_factor_fine(bg->length, reclaim_thresh);
+
+		if (bg->reserved || bg->ro || bg->used >= thresh) {
 			/*
 			 * We want to bail if we made new allocations or have
 			 * outstanding allocations in this block group.  We do
