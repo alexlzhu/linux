@@ -2,13 +2,19 @@
 /*
  * Copyright 2018-2020 Broadcom.
  */
+#include <linux/version.h>
 #include <linux/dma-mapping.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0))
+#include <linux/pgtable.h>
+#endif
 #include <linux/vmalloc.h>
 
 #include <asm/page.h>
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,10,0))
 #include <asm/pgtable.h>
+#endif
 #include <asm/unaligned.h>
 
 #include <uapi/linux/misc/bcm_vk.h>
@@ -71,7 +77,8 @@ static int bcm_vk_dma_alloc(struct device *dev,
 	/* Get user pages into memory */
 	err = get_user_pages_fast(data & PAGE_MASK,
 				  dma->nr_pages,
-				  direction == DMA_FROM_DEVICE,
+				  (direction == DMA_FROM_DEVICE) ?
+				  FOLL_WRITE : 0,
 				  dma->pages);
 	if (err != dma->nr_pages) {
 		dma->nr_pages = (err >= 0) ? err : 0;

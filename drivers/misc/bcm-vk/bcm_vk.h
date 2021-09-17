@@ -457,6 +457,13 @@ struct bcm_vk_entry {
 	const char *str;
 };
 
+enum soc_idx {
+	VALKYRIE_A0 = 0,
+	VALKYRIE_B0,
+	VIPER,
+	VK_IDX_INVALID
+};
+
 /* alerts that could be generated from peer */
 #define BCM_VK_PEER_ERR_NUM 13
 extern struct bcm_vk_entry const bcm_vk_peer_err[BCM_VK_PEER_ERR_NUM];
@@ -536,6 +543,10 @@ void bcm_vk_hb_deinit(struct bcm_vk *vk);
 void bcm_vk_handle_notf(struct bcm_vk *vk);
 bool bcm_vk_drv_access_ok(struct bcm_vk *vk);
 void bcm_vk_set_host_alert(struct bcm_vk *vk, u32 bit_mask);
+int bcm_vk_hwmon_init(struct bcm_vk *vk);
+void bcm_vk_hwmon_deinit(struct bcm_vk *vk);
+enum soc_idx get_soc_idx(struct bcm_vk *vk);
+
 int bcm_vk_sysfs_init(struct pci_dev *pdev, struct miscdevice *misc_device);
 void bcm_vk_sysfs_exit(struct pci_dev *pdev, struct miscdevice *misc_device);
 
