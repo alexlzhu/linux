@@ -2957,10 +2957,7 @@ ptp_ocp_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return -ENOMEM;
 	}
 
-	err = devlink_register(devlink);
-	if (err)
-		goto out_free;
-
+	devlink_register(devlink);
 	err = pci_enable_device(pdev);
 	if (err) {
 		dev_err(&pdev->dev, "pci_enable_device\n");
@@ -3012,9 +3009,7 @@ out_disable:
 	pci_disable_device(pdev);
 out_unregister:
 	devlink_unregister(devlink);
-out_free:
 	devlink_free(devlink);
-
 	return err;
 }
 
