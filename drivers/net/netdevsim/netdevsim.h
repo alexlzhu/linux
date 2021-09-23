@@ -60,9 +60,13 @@ struct nsim_ethtool_pauseparam {
 };
 
 struct nsim_ethtool {
+	u32 get_err;
+	u32 set_err;
+	u32 channels;
 	struct nsim_ethtool_pauseparam pauseparam;
 	struct ethtool_coalesce coalesce;
 	struct ethtool_ringparam ring;
+	struct ethtool_fecparam fec;
 };
 
 struct netdevsim {
@@ -287,6 +291,7 @@ struct nsim_bus_dev {
 	struct device dev;
 	struct list_head list;
 	unsigned int port_count;
+	unsigned int num_queues; /* Number of queues for each port on this bus */
 	struct net *initial_net; /* Purpose of this is to carry net pointer
 				  * during the probe time only.
 				  */
