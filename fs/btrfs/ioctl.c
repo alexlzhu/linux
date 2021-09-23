@@ -390,15 +390,55 @@ static int check_xflags(unsigned int flags)
 	return 0;
 }
 
+/*
+ * Start exclusive operation @type, return true on success
+ */
 bool btrfs_exclop_start(struct btrfs_fs_info *fs_info,
 			enum btrfs_exclusive_operation type)
 {
-	return !cmpxchg(&fs_info->exclusive_operation, BTRFS_EXCLOP_NONE, type);
+	bool ret = false;
+
+	spin_lock(&fs_info->super_lock);
+	if (fs_info->exclusive_operation == BTRFS_EXCLOP_NONE) {
+		fs_info->exclusive_operation = type;
+		ret = true;
+	}
+	spin_unlock(&fs_info->super_lock);
+
+	return ret;
+}
+
+/*
+ * Conditionally allow to enter the exclusive operation in case it's compatible
+ * with the running one.  This must be paired with btrfs_exclop_start_unlock and
+ * btrfs_exclop_finish.
+ *
+ * Compatibility:
+ * - the same type is already running
+ * - not BTRFS_EXCLOP_NONE - this is intentionally incompatible and the caller
+ *   must check the condition first that would allow none -> @type
+ */
+bool btrfs_exclop_start_try_lock(struct btrfs_fs_info *fs_info,
+				 enum btrfs_exclusive_operation type)
+{
+	spin_lock(&fs_info->super_lock);
+	if (fs_info->exclusive_operation == type)
+		return true;
+
+	spin_unlock(&fs_info->super_lock);
+	return false;
+}
+
+void btrfs_exclop_start_unlock(struct btrfs_fs_info *fs_info)
+{
+	spin_unlock(&fs_info->super_lock);
 }
 
 void btrfs_exclop_finish(struct btrfs_fs_info *fs_info)
 {
+	spin_lock(&fs_info->super_lock);
 	WRITE_ONCE(fs_info->exclusive_operation, BTRFS_EXCLOP_NONE);
+	spin_unlock(&fs_info->super_lock);
 	sysfs_notify(&fs_info->fs_devices->fsid_kobj, NULL, "exclusive_operation");
 }
 
@@ -1697,6 +1737,48 @@ out_ra:
 	return ret;
 }
 
+/*
+ * Try to start exclusive operation @type or cancel it if it's running.
+ *
+ * Return:
+ *   0        - normal mode, newly claimed op started
+ *  >0        - normal mode, something else is running,
+ *              return BTRFS_ERROR_DEV_EXCL_RUN_IN_PROGRESS to user space
+ * ECANCELED  - cancel mode, successful cancel
+ * ENOTCONN   - cancel mode, operation not running anymore
+ */
+static int exclop_start_or_cancel_reloc(struct btrfs_fs_info *fs_info,
+			enum btrfs_exclusive_operation type, bool cancel)
+{
+	if (!cancel) {
+		/* Start normal op */
+		if (!btrfs_exclop_start(fs_info, type))
+			return BTRFS_ERROR_DEV_EXCL_RUN_IN_PROGRESS;
+		/* Exclusive operation is now claimed */
+		return 0;
+	}
+
+	/* Cancel running op */
+	if (btrfs_exclop_start_try_lock(fs_info, type)) {
+		/*
+		 * This blocks any exclop finish from setting it to NONE, so we
+		 * request cancellation. Either it runs and we will wait for it,
+		 * or it has finished and no waiting will happen.
+		 */
+		atomic_inc(&fs_info->reloc_cancel_req);
+		btrfs_exclop_start_unlock(fs_info);
+
+		if (test_bit(BTRFS_FS_RELOC_RUNNING, &fs_info->flags))
+			wait_on_bit(&fs_info->flags, BTRFS_FS_RELOC_RUNNING,
+				    TASK_INTERRUPTIBLE);
+
+		return -ECANCELED;
+	}
+
+	/* Something else is running or none */
+	return -ENOTCONN;
+}
+
 static noinline int btrfs_ioctl_resize(struct file *file,
 					void __user *arg)
 {
@@ -1714,6 +1796,7 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 	char *devstr = NULL;
 	int ret = 0;
 	int mod = 0;
+	bool cancel;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
@@ -1722,20 +1805,23 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 	if (ret)
 		return ret;
 
-	if (!btrfs_exclop_start(fs_info, BTRFS_EXCLOP_RESIZE)) {
-		mnt_drop_write_file(file);
-		return BTRFS_ERROR_DEV_EXCL_RUN_IN_PROGRESS;
-	}
-
+	/*
+	 * Read the arguments before checking exclusivity to be able to
+	 * distinguish regular resize and cancel
+	 */
 	vol_args = memdup_user(arg, sizeof(*vol_args));
 	if (IS_ERR(vol_args)) {
 		ret = PTR_ERR(vol_args);
-		goto out;
+		goto out_drop;
 	}
-
 	vol_args->name[BTRFS_PATH_NAME_MAX] = '\0';
-
 	sizestr = vol_args->name;
+	cancel = (strcmp("cancel", sizestr) == 0);
+	ret = exclop_start_or_cancel_reloc(fs_info, BTRFS_EXCLOP_RESIZE, cancel);
+	if (ret)
+		goto out_free;
+	/* Exclusive operation is now claimed */
+
 	devstr = strchr(sizestr, ':');
 	if (devstr) {
 		sizestr = devstr + 1;
@@ -1743,10 +1829,10 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		devstr = vol_args->name;
 		ret = kstrtoull(devstr, 10, &devid);
 		if (ret)
-			goto out_free;
+			goto out_finish;
 		if (!devid) {
 			ret = -EINVAL;
-			goto out_free;
+			goto out_finish;
 		}
 		btrfs_info(fs_info, "resizing devid %llu", devid);
 	}
@@ -1756,7 +1842,7 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		btrfs_info(fs_info, "resizer unable to find device %llu",
 			   devid);
 		ret = -ENODEV;
-		goto out_free;
+		goto out_finish;
 	}
 
 	if (!test_bit(BTRFS_DEV_STATE_WRITEABLE, &device->dev_state)) {
@@ -1764,7 +1850,7 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 			   "resizer unable to apply on readonly device %llu",
 		       devid);
 		ret = -EPERM;
-		goto out_free;
+		goto out_finish;
 	}
 
 	if (!strcmp(sizestr, "max"))
@@ -1780,13 +1866,13 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		new_size = memparse(sizestr, &retptr);
 		if (*retptr != '\0' || new_size == 0) {
 			ret = -EINVAL;
-			goto out_free;
+			goto out_finish;
 		}
 	}
 
 	if (test_bit(BTRFS_DEV_STATE_REPLACE_TGT, &device->dev_state)) {
 		ret = -EPERM;
-		goto out_free;
+		goto out_finish;
 	}
 
 	old_size = btrfs_device_get_total_bytes(device);
@@ -1794,24 +1880,24 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 	if (mod < 0) {
 		if (new_size > old_size) {
 			ret = -EINVAL;
-			goto out_free;
+			goto out_finish;
 		}
 		new_size = old_size - new_size;
 	} else if (mod > 0) {
 		if (new_size > ULLONG_MAX - old_size) {
 			ret = -ERANGE;
-			goto out_free;
+			goto out_finish;
 		}
 		new_size = old_size + new_size;
 	}
 
 	if (new_size < SZ_256M) {
 		ret = -EINVAL;
-		goto out_free;
+		goto out_finish;
 	}
 	if (new_size > device->bdev->bd_inode->i_size) {
 		ret = -EFBIG;
-		goto out_free;
+		goto out_finish;
 	}
 
 	new_size = round_down(new_size, fs_info->sectorsize);
@@ -1820,7 +1906,7 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		trans = btrfs_start_transaction(root, 0);
 		if (IS_ERR(trans)) {
 			ret = PTR_ERR(trans);
-			goto out_free;
+			goto out_finish;
 		}
 		ret = btrfs_grow_device(trans, device, new_size);
 		btrfs_commit_transaction(trans);
@@ -1833,10 +1919,11 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 			"resize device %s (devid %llu) from %llu to %llu",
 			rcu_str_deref(device->name), device->devid,
 			old_size, new_size);
+out_finish:
+	btrfs_exclop_finish(fs_info);
 out_free:
 	kfree(vol_args);
-out:
-	btrfs_exclop_finish(fs_info);
+out_drop:
 	mnt_drop_write_file(file);
 	return ret;
 }
@@ -3256,6 +3343,7 @@ static long btrfs_ioctl_rm_dev_v2(struct file *file, void __user *arg)
 	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
 	struct btrfs_ioctl_vol_args_v2 *vol_args;
 	int ret;
+	bool cancel = false;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
@@ -3274,18 +3362,22 @@ static long btrfs_ioctl_rm_dev_v2(struct file *file, void __user *arg)
 		ret = -EOPNOTSUPP;
 		goto out;
 	}
+	vol_args->name[BTRFS_SUBVOL_NAME_MAX] = '\0';
+	if (!(vol_args->flags & BTRFS_DEVICE_SPEC_BY_ID) &&
+	    strcmp("cancel", vol_args->name) == 0)
+		cancel = true;
 
-	if (!btrfs_exclop_start(fs_info, BTRFS_EXCLOP_DEV_REMOVE)) {
-		ret = BTRFS_ERROR_DEV_EXCL_RUN_IN_PROGRESS;
+	ret = exclop_start_or_cancel_reloc(fs_info, BTRFS_EXCLOP_DEV_REMOVE,
+					   cancel);
+	if (ret)
 		goto out;
-	}
+	/* Exclusive operation is now claimed */
 
-	if (vol_args->flags & BTRFS_DEVICE_SPEC_BY_ID) {
+	if (vol_args->flags & BTRFS_DEVICE_SPEC_BY_ID)
 		ret = btrfs_rm_device(fs_info, NULL, vol_args->devid);
-	} else {
-		vol_args->name[BTRFS_SUBVOL_NAME_MAX] = '\0';
+	else
 		ret = btrfs_rm_device(fs_info, vol_args->name, 0);
-	}
+
 	btrfs_exclop_finish(fs_info);
 
 	if (!ret) {
@@ -3309,6 +3401,7 @@ static long btrfs_ioctl_rm_dev(struct file *file, void __user *arg)
 	struct btrfs_fs_info *fs_info = btrfs_sb(inode->i_sb);
 	struct btrfs_ioctl_vol_args *vol_args;
 	int ret;
+	bool cancel;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
@@ -3317,25 +3410,24 @@ static long btrfs_ioctl_rm_dev(struct file *file, void __user *arg)
 	if (ret)
 		return ret;
 
-	if (!btrfs_exclop_start(fs_info, BTRFS_EXCLOP_DEV_REMOVE)) {
-		ret = BTRFS_ERROR_DEV_EXCL_RUN_IN_PROGRESS;
-		goto out_drop_write;
-	}
-
 	vol_args = memdup_user(arg, sizeof(*vol_args));
 	if (IS_ERR(vol_args)) {
 		ret = PTR_ERR(vol_args);
-		goto out;
+		goto out_drop_write;
+	}
+	vol_args->name[BTRFS_PATH_NAME_MAX] = '\0';
+	cancel = (strcmp("cancel", vol_args->name) == 0);
+
+	ret = exclop_start_or_cancel_reloc(fs_info, BTRFS_EXCLOP_DEV_REMOVE,
+					   cancel);
+	if (ret == 0) {
+		ret = btrfs_rm_device(fs_info, vol_args->name, 0);
+		if (!ret)
+			btrfs_info(fs_info, "disk deleted %s", vol_args->name);
+		btrfs_exclop_finish(fs_info);
 	}
 
-	vol_args->name[BTRFS_PATH_NAME_MAX] = '\0';
-	ret = btrfs_rm_device(fs_info, vol_args->name, 0);
-
-	if (!ret)
-		btrfs_info(fs_info, "disk deleted %s", vol_args->name);
 	kfree(vol_args);
-out:
-	btrfs_exclop_finish(fs_info);
 out_drop_write:
 	mnt_drop_write_file(file);
 

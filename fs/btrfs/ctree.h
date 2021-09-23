@@ -541,9 +541,15 @@ enum {
 	/*
 	 * Indicate that balance has been set up from the ioctl and is in the
 	 * main phase. The fs_info::balance_ctl is initialized.
-	 * Set and cleared while holding fs_info::balance_mutex.
 	 */
 	BTRFS_FS_BALANCE_RUNNING,
+
+	/*
+	 * Indicate that relocation of a chunk has started, it's set per chunk
+	 * and is toggled between chunks.
+	 * Set, tested and cleared while holding fs_info::send_reloc_lock.
+	 */
+	BTRFS_FS_RELOC_RUNNING,
 
 	/* Indicate that the cleaner thread is awake and doing something. */
 	BTRFS_FS_CLEANER_RUNNING,
@@ -845,6 +851,9 @@ struct btrfs_fs_info {
 	struct btrfs_balance_control *balance_ctl;
 	wait_queue_head_t balance_wait_q;
 
+	/* Cancellation requests for chunk relocation */
+	atomic_t reloc_cancel_req;
+
 	u32 data_chunk_allocations;
 	u32 metadata_ratio;
 
@@ -934,10 +943,16 @@ struct btrfs_fs_info {
 	struct work_struct async_data_reclaim_work;
 	struct work_struct preempt_reclaim_work;
 
+	/* Reclaim partially filled block groups in the background */
+	struct work_struct reclaim_bgs_work;
+	struct list_head reclaim_bgs;
+	int bg_reclaim_threshold;
+
 	spinlock_t unused_bgs_lock;
 	struct list_head unused_bgs;
 	struct mutex unused_bg_unpin_mutex;
-	struct mutex delete_unused_bgs_mutex;
+	/* Protect block groups that are going to be deleted */
+	struct mutex reclaim_bgs_lock;
 
 	/* Cached block sizes */
 	u32 nodesize;
@@ -954,14 +969,15 @@ struct btrfs_fs_info {
 
 	struct crypto_shash *csum_shash;
 
+	spinlock_t send_reloc_lock;
 	/*
 	 * Number of send operations in progress.
-	 * Updated while holding fs_info::balance_mutex.
+	 * Updated while holding fs_info::send_reloc_lock.
 	 */
 	int send_in_progress;
 
-	/* Type of exclusive operation running */
-	unsigned long exclusive_operation;
+	/* Type of exclusive operation running, protected by super_lock */
+	enum btrfs_exclusive_operation exclusive_operation;
 
 	/*
 	 * Zone size > 0 when in ZONED mode, otherwise it's used for a check
@@ -3188,6 +3204,9 @@ void btrfs_update_ioctl_balance_args(struct btrfs_fs_info *fs_info,
 			       struct btrfs_ioctl_balance_args *bargs);
 bool btrfs_exclop_start(struct btrfs_fs_info *fs_info,
 			enum btrfs_exclusive_operation type);
+bool btrfs_exclop_start_try_lock(struct btrfs_fs_info *fs_info,
+				 enum btrfs_exclusive_operation type);
+void btrfs_exclop_start_unlock(struct btrfs_fs_info *fs_info);
 void btrfs_exclop_finish(struct btrfs_fs_info *fs_info);
 
 /* file.c */
