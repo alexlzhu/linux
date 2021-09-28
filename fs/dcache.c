@@ -2509,6 +2509,24 @@ void d_delete(struct dentry * dentry)
 }
 EXPORT_SYMBOL(d_delete);
 
+/**
+ * d_delete_notify - delete a dentry and do the fsnotify
+ * @dir: the inode containing the dentry
+ * @dentry: the dentry being deleted
+ *
+ * This works just like d_delete, except it handles the magic to do the fsnotify
+ * work as well.
+ */
+void d_delete_notify(struct inode *dir, struct dentry *dentry)
+{
+	struct inode *inode = dentry->d_inode;
+
+	ihold(inode);
+	d_delete(dentry);
+	fsnotify_delete(dir, dentry, inode);
+	iput(inode);
+}
+
 static void __d_rehash(struct dentry *entry)
 {
 	struct hlist_bl_head *b = d_hash(entry->d_name.hash);
