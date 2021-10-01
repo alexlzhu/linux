@@ -1724,7 +1724,7 @@ static void fec_get_mac(struct net_device *ndev)
 		return;
 	}
 
-	memcpy(ndev->dev_addr, iap, ETH_ALEN);
+	eth_hw_addr_set(ndev, iap);
 
 	/* Adjust MAC if using macaddr */
 	if (iap == macaddr)
