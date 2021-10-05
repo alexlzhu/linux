@@ -31,6 +31,7 @@
 #include <linux/tracehook.h>
 #include <linux/psi.h>
 #include "blk.h"
+#include "blk-throttle.h"
 
 /*
  * blkcg_pol_mutex protects blkcg_policy[] and policy [de]activation.
