@@ -5612,3 +5612,13 @@ static void apex_pci_fixup_class(struct pci_dev *pdev)
 }
 DECLARE_PCI_FIXUP_CLASS_HEADER(0x1ac1, 0x089a,
 			       PCI_CLASS_NOT_DEFINED, 8, apex_pci_fixup_class);
+
+static void quirk_fb_freya_class(struct pci_dev *pdev)
+{
+	u32 class = pdev->class;
+
+	pdev->class = 0x120000;
+	pci_info(pdev, "PCI class overridden (%#08x -> %#08x)\n",
+			class, pdev->class);
+}
+DECLARE_PCI_FIXUP_HEADER(0x1d9b, 0x200, quirk_fb_freya_class);
