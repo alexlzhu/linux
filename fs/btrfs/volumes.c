@@ -4835,7 +4835,7 @@ static int __btrfs_alloc_chunk(struct btrfs_trans_handle *trans,
 	} else if (type & BTRFS_BLOCK_GROUP_METADATA) {
 		/* for larger filesystems, use larger metadata chunks */
 		if (fs_devices->total_rw_bytes > 50ULL * SZ_1G)
-			max_stripe_size = SZ_1G;
+			max_stripe_size = 5ULL * SZ_1G;
 		else
 			max_stripe_size = SZ_256M;
 		max_chunk_size = max_stripe_size;
