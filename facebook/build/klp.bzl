@@ -201,7 +201,7 @@ def klp(flavor=None, label=None):
     )
 
     sign = native.read_config('kernel', 'sign_mod', 'false')
-    sign_key = native.read_config('kernel', 'sign_mod_key', 'autograph-test')
+    sign_key = native.read_config('kernel', 'sign_mod_key', 'hsm-test-key')
 
     native.genrule(
         name = "klp",
