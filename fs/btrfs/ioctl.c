@@ -1272,6 +1272,13 @@ again:
 		if (!page)
 			break;
 
+		if (PageCompound(page)) {
+			unlock_page(page);
+			put_page(page);
+			ret = -ETXTBSY;
+			break;
+		}
+
 		page_start = page_offset(page);
 		page_end = page_start + PAGE_SIZE - 1;
 		while (1) {
