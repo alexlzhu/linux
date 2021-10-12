@@ -31,7 +31,7 @@ def build(alias, do_kerneltest, notify, tags = None, priority = None, modules = 
         tags = []
     if "diff" in tags:
         args["sign_modules"] = True
-        args["sign_modules_key"] = "autograph-test"
+        args["sign_modules_key"] = "hsm-test-key"
 
     tags = ["kernel", "linux-kernel", "kernel-contbuild"] + tags
     return output.sandcastle(
