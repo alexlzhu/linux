@@ -23,7 +23,12 @@
 #define BCM_VK_MSG_Q_MASK	 0xF
 #define BCM_VK_MSG_ID_MASK	 0xFFF
 
-#define BCM_VK_DMA_DRAIN_MAX_MS	  2000
+/*
+ * App uses a timeout of 50s, and so here we add a margin of 10s.
+ * In theory, this could be make as large as desired as long as
+ * an ultimate timeout would occur that prevents "hung" sessions.
+ */
+#define BCM_VK_DMA_DRAIN_MAX_MS	  60000
 
 /* number x q_size will be the max number of msg processed per loop */
 #define BCM_VK_MSG_PROC_MAX_LOOP 2
@@ -537,6 +542,9 @@ int bcm_vk_sync_msgq(struct bcm_vk *vk, bool force_sync)
 		return -EAGAIN;
 	}
 
+	if (get_soc_idx(vk) == VIPER)
+		return 0;
+
 	msgq_off = vkread32(vk, BAR_1, VK_BAR1_MSGQ_CTRL_OFF);
 
 	/* each side is always half the total  */
@@ -816,6 +824,9 @@ int bcm_vk_send_shutdown_msg(struct bcm_vk *vk, u32 shut_type,
 			 vkread32(vk, BAR_1, VK_BAR1_MSGQ_DEF_RDY));
 		return -EINVAL;
 	}
+
+	if (get_soc_idx(vk) == VIPER)
+		return 0;
 
 	entry = kzalloc(sizeof(*entry) +
 			sizeof(struct vk_msg_blk), GFP_KERNEL);

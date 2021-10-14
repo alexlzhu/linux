@@ -12,7 +12,7 @@
 /*
  * Following two functions are needed only for backward compatibility.
  * It is further assumed that this file will not be used on kernels
- * that are "antique" in a sense that that data structure of msix
+ * that are "antique" in a sense that data structure of msix
  * or the api pci_enable_msix_range() is missing.
  */
 #if defined(BCM_VK_LEGACY_API)

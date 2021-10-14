@@ -23,13 +23,6 @@
 
 static DEFINE_IDA(bcm_vk_ida);
 
-enum soc_idx {
-	VALKYRIE_A0 = 0,
-	VALKYRIE_B0,
-	VIPER,
-	VK_IDX_INVALID
-};
-
 enum img_idx {
 	IMG_PRI = 0,
 	IMG_SEC,
@@ -384,16 +377,31 @@ static void bcm_vk_get_card_info(struct bcm_vk *vk)
 	u32 offset;
 	int i;
 	u8 *dst;
+	enum pci_barno bar;
 	struct bcm_vk_card_info *info = &vk->card_info;
 
 	/* first read the offset from spare register */
 	offset = vkread32(vk, BAR_0, BAR_CARD_STATIC_INFO);
-	offset &= (pci_resource_len(vk->pdev, BAR_2 * 2) - 1);
+
+	if (get_soc_idx(vk) == VIPER) {
+		bar = BAR_1;
+		if (offset >= CODEPUSH_BOOT1_ENTRY) {
+			offset = (offset - CODEPUSH_BOOT1_ENTRY) +
+				 BAR1_CODEPUSH_BASE_BOOT1;
+		} else {
+			dev_err(dev, "Card info address is invalid\n");
+			return;
+		}
+	} else {
+		bar = BAR_2;
+	}
+
+	offset &= (pci_resource_len(vk->pdev, bar * 2) - 1);
 
 	/* based on the offset, read info to internal card info structure */
 	dst = (u8 *)info;
 	for (i = 0; i < sizeof(*info); i++)
-		*dst++ = vkread8(vk, BAR_2, offset++);
+		*dst++ = vkread8(vk, bar, offset++);
 
 #define CARD_INFO_LOG_FMT "version   : %x\n" \
 			  "os_tag    : %s\n" \
@@ -414,7 +422,7 @@ static void bcm_vk_get_card_info(struct bcm_vk *vk)
 	 * before dump, in case the BAR2 memory has been corrupted.
 	 */
 	vk->peerlog_off = offset;
-	memcpy_fromio(&vk->peerlog_info, vk->bar[BAR_2] + vk->peerlog_off,
+	memcpy_fromio(&vk->peerlog_info, vk->bar[bar] + vk->peerlog_off,
 		      sizeof(vk->peerlog_info));
 
 	/*
@@ -501,8 +509,9 @@ static int bcm_vk_sync_card_info(struct bcm_vk *vk)
 	/* get static card info, only need to read once */
 	bcm_vk_get_card_info(vk);
 
-	/* get the proc mon info once */
-	bcm_vk_get_proc_mon_info(vk);
+	if (get_soc_idx(vk) != VIPER)
+		/* get the proc mon info once */
+		bcm_vk_get_proc_mon_info(vk);
 
 	return 0;
 }
@@ -849,7 +858,7 @@ static u32 bcm_vk_next_boot_image(struct bcm_vk *vk)
 	return load_type;
 }
 
-static enum soc_idx get_soc_idx(struct bcm_vk *vk)
+enum soc_idx get_soc_idx(struct bcm_vk *vk)
 {
 	struct pci_dev *pdev = vk->pdev;
 	enum soc_idx idx = VK_IDX_INVALID;
@@ -1542,9 +1551,13 @@ static int bcm_vk_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* sync other info */
 	bcm_vk_sync_card_info(vk);
 
-	err = bcm_vk_sysfs_init(pdev, misc_device);
+	err = bcm_vk_hwmon_init(vk);
 	if (err)
 		goto err_destroy_workqueue;
+
+	err = bcm_vk_sysfs_init(pdev, misc_device);
+	if (err)
+		goto err_hwmon_deinit;
 
 	/* register for panic notifier */
 	vk->panic_nb.notifier_call = bcm_vk_on_panic;
@@ -1552,7 +1565,7 @@ static int bcm_vk_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 					     &vk->panic_nb);
 	if (err) {
 		dev_err(dev, "Fail to register panic notifier\n");
-		goto err_destroy_workqueue;
+		goto err_hwmon_deinit;
 	}
 
 	snprintf(name, sizeof(name), KBUILD_MODNAME ".%d_ttyVK", id);
@@ -1592,6 +1605,9 @@ err_bcm_vk_tty_exit:
 err_unregister_panic_notifier:
 	atomic_notifier_chain_unregister(&panic_notifier_list,
 					 &vk->panic_nb);
+
+err_hwmon_deinit:
+	bcm_vk_hwmon_deinit(vk);
 
 err_destroy_workqueue:
 	destroy_workqueue(vk->wq_thread);
@@ -1693,6 +1709,7 @@ static void bcm_vk_remove(struct pci_dev *pdev)
 	 */
 	if (misc_device->name) {
 		bcm_vk_sysfs_exit(pdev, misc_device);
+		bcm_vk_hwmon_deinit(vk);
 		misc_deregister(misc_device);
 		kfree(misc_device->name);
 		ida_simple_remove(&bcm_vk_ida, vk->devid);
