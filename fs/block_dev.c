@@ -318,7 +318,7 @@ struct blkdev_dio {
 	bool			should_dirty : 1;
 	bool			is_sync : 1;
 	unsigned int		flags;
-	struct bio		bio;
+	struct bio		bio ____cacheline_aligned_in_smp;
 };
 
 static struct bio_set blkdev_dio_pool;
