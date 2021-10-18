@@ -1075,14 +1075,18 @@ static irqreturn_t nvme_irq(int irq, void *data)
 {
 	struct nvme_queue *nvmeq = data;
 	irqreturn_t ret = IRQ_NONE;
+	DEFINE_IO_COMP_BATCH(iob);
 
 	/*
 	 * The rmb/wmb pair ensures we see all updates from a previous run of
 	 * the irq handler, even if that was on another CPU.
 	 */
 	rmb();
-	if (nvme_poll_cq(nvmeq, NULL))
+	if (nvme_poll_cq(nvmeq, &iob)) {
+		if (!rq_list_empty(iob.req_list))
+			nvme_pci_complete_batch(&iob);
 		ret = IRQ_HANDLED;
+	}
 	wmb();
 
 	return ret;
