@@ -353,16 +353,6 @@ int __kprobes kprobe_fault_handler(struct pt_regs *regs, int trapnr)
 		kprobes_inc_nmissed_count(cur);
 
 		/*
-		 * We come here because instructions in the pre/post
-		 * handler caused the page_fault, this could happen
-		 * if handler tries to access user space by
-		 * copy_from_user(), get_user() etc. Let the
-		 * user-specified handler try to fix it first.
-		 */
-		if (cur->fault_handler && cur->fault_handler(cur, regs, trapnr))
-			return 1;
-
-		/*
 		 * In case the user-specified fault handler returned
 		 * zero, try to fix up.
 		 */
@@ -457,7 +447,7 @@ void __kprobes arch_prepare_kretprobe(struct kretprobe_instance *ri,
 
 	/* Replace the return addr with trampoline addr */
 	regs->u_regs[UREG_RETPC] =
-		((unsigned long)kretprobe_trampoline) - 8;
+		((unsigned long)__kretprobe_trampoline) - 8;
 }
 
 /*
@@ -468,7 +458,7 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 {
 	unsigned long orig_ret_address = 0;
 
-	orig_ret_address = __kretprobe_trampoline_handler(regs, &kretprobe_trampoline, NULL);
+	orig_ret_address = __kretprobe_trampoline_handler(regs, NULL);
 	regs->tpc = orig_ret_address;
 	regs->tnpc = orig_ret_address + 4;
 
@@ -482,13 +472,13 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 
 static void __used kretprobe_trampoline_holder(void)
 {
-	asm volatile(".global kretprobe_trampoline\n"
-		     "kretprobe_trampoline:\n"
+	asm volatile(".global __kretprobe_trampoline\n"
+		     "__kretprobe_trampoline:\n"
 		     "\tnop\n"
 		     "\tnop\n");
 }
 static struct kprobe trampoline_p = {
-	.addr = (kprobe_opcode_t *) &kretprobe_trampoline,
+	.addr = (kprobe_opcode_t *) &__kretprobe_trampoline,
 	.pre_handler = trampoline_probe_handler
 };
 
@@ -499,7 +489,7 @@ int __init arch_init_kprobes(void)
 
 int __kprobes arch_trampoline_kprobe(struct kprobe *p)
 {
-	if (p->addr == (kprobe_opcode_t *)&kretprobe_trampoline)
+	if (p->addr == (kprobe_opcode_t *)&__kretprobe_trampoline)
 		return 1;
 
 	return 0;
