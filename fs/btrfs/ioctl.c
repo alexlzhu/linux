@@ -1375,6 +1375,13 @@ again:
 		if (!page)
 			break;
 
+		if (PageCompound(page)) {
+			unlock_page(page);
+			put_page(page);
+			ret = -ETXTBSY;
+			break;
+		}
+
 		ret = set_page_extent_mapped(page);
 		if (ret < 0) {
 			unlock_page(page);
