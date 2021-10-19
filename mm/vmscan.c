@@ -1967,7 +1967,7 @@ shrink_inactive_list(unsigned long nr_to_scan, struct lruvec *lruvec,
 	__count_vm_events(PGSTEAL_ANON + file, nr_reclaimed);
 	spin_unlock_irq(&lruvec->lru_lock);
 
-	lru_note_cost(lruvec, file, stat.nr_pageout);
+	lru_note_cost(lruvec, file, stat.nr_pageout * 32 + nr_scanned - nr_reclaimed);
 	mem_cgroup_uncharge_list(&page_list);
 	free_unref_page_list(&page_list);
 
