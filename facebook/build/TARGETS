@@ -16,9 +16,9 @@ http_file(
 http_file(
     name = "clang-train-data",
     urls = [
-        "https://interncache-all.fbcdn.net/manifold/linux_kernel/tree/clang_train_data/v512/profdata.fbk1rc11.idyno_tao.3h",
+        "https://interncache-all.fbcdn.net/manifold/linux_kernel/tree/clang_train_data/v512/profdata.idyno.fbk1rc15.3h",
     ],
-    sha256 = "32fd8f3637fb0613df757864dfa8bfd9fe65d1fbd2f43e7b1ab63af46019ff2c",
+    sha256 = "e14be49b6bd5fcf5d62411d75d6fee6bca8b5f8c275561e08144206293e99705",
     visibility = ["PUBLIC"],
 )
 
