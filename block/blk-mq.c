@@ -2188,12 +2188,6 @@ blk_qc_t blk_mq_submit_bio(struct bio *bio)
 
 	hipri = bio->bi_opf & REQ_HIPRI;
 
-	if ((bio->bi_opf & REQ_RAHEAD) &&
-	    (fatal_signal_pending(current) || blk_cgroup_congested())) {
-		bio_wouldblock_error(bio);
-		return BLK_QC_T_NONE;
-	}
-
 	data.cmd_flags = bio->bi_opf;
 	rq = __blk_mq_alloc_request(&data);
 	if (unlikely(!rq)) {
