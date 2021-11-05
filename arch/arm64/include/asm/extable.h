@@ -31,6 +31,16 @@ static inline bool in_bpf_jit(struct pt_regs *regs)
 	       regs->pc < BPF_JIT_REGION_END;
 }
 
+#define swap_ex_entry_fixup(a, b, tmp, delta)		\
+do {							\
+	(a)->fixup = (b)->fixup + (delta);		\
+	(b)->fixup = (tmp).fixup - (delta);		\
+	(a)->type = (b)->type;				\
+	(b)->type = (tmp).type;				\
+	(a)->data = (b)->data;				\
+	(b)->data = (tmp).data;				\
+} while (0)
+
 #ifdef CONFIG_BPF_JIT
 int arm64_bpf_fixup_exception(const struct exception_table_entry *ex,
 			      struct pt_regs *regs);
