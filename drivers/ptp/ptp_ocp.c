@@ -2489,7 +2489,7 @@ ptp_ocp_summary_show(struct seq_file *s, void *data)
 {
 	struct device *dev = s->private;
 	struct ptp_system_timestamp sts;
-	u32 sma_in, sma_out, ctrl, val;
+	u32 sma_in = 0, sma_out = 0, ctrl, val;
 	struct ts_reg __iomem *ts_reg;
 	struct timespec64 ts;
 	struct ptp_ocp *bp;
@@ -2502,8 +2502,6 @@ ptp_ocp_summary_show(struct seq_file *s, void *data)
 		return -ENOMEM;
 
 	bp = dev_get_drvdata(dev);
-	sma_in = ioread32(&bp->sma->gpio1);
-	sma_out = ioread32(&bp->sma->gpio2);
 
 	seq_printf(s, "%7s: /dev/ptp%d\n", "PTP", ptp_clock_index(bp->ptp));
 	if (bp->gnss_port != -1)
@@ -2515,17 +2513,22 @@ ptp_ocp_summary_show(struct seq_file *s, void *data)
 	if (bp->nmea_port != -1)
 		seq_printf(s, "%7s: /dev/ttyS%d\n", "NMEA", bp->nmea_port);
 
-	sma1_show(dev, NULL, buf);
-	seq_printf(s, "   sma1: %s", buf);
+	if (bp->sma) {
+		sma_in = ioread32(&bp->sma->gpio1);
+		sma_out = ioread32(&bp->sma->gpio2);
 
-	sma2_show(dev, NULL, buf);
-	seq_printf(s, "   sma2: %s", buf);
+		sma1_show(dev, NULL, buf);
+		seq_printf(s, "   sma1: %s", buf);
 
-	sma3_show(dev, NULL, buf);
-	seq_printf(s, "   sma3: %s", buf);
+		sma2_show(dev, NULL, buf);
+		seq_printf(s, "   sma2: %s", buf);
 
-	sma4_show(dev, NULL, buf);
-	seq_printf(s, "   sma4: %s", buf);
+		sma3_show(dev, NULL, buf);
+		seq_printf(s, "   sma3: %s", buf);
+
+		sma4_show(dev, NULL, buf);
+		seq_printf(s, "   sma4: %s", buf);
+	}
 
 	if (bp->ts0) {
 		ts_reg = bp->ts0->mem;
