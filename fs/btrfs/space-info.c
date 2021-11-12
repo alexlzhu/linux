@@ -771,9 +771,12 @@ static void btrfs_async_reclaim_metadata_space(struct work_struct *work)
 		if (flush_state > COMMIT_TRANS) {
 			commit_cycles++;
 			if (commit_cycles > 2) {
-				btrfs_err(fs_info,
-					  "reserve metadata bytes failed, possible early enospc");
-				__btrfs_dump_space_info(fs_info, space_info);
+				static DEFINE_RATELIMIT_STATE(_rs, DEFAULT_RATELIMIT_INTERVAL * 10, 1);
+				if(__ratelimit(&_rs)) {
+					btrfs_err(fs_info,
+						  "reserve metadata bytes failed, possible early enospc");
+					__btrfs_dump_space_info(fs_info, space_info);
+				}
 				trace_btrfs_fail_tickets(fs_info, space_info,
 							 percpu_counter_sum_positive(&fs_info->delalloc_bytes),
 							 percpu_counter_sum_positive(&fs_info->ordered_bytes));
