@@ -1,20 +1,18 @@
-From a2f76c905e58d955a791173d7c7646709bc6026d Mon Sep 17 00:00:00 2001
+From 31d212ec1794fc46554aee42bfc4c499ad078d4c Mon Sep 17 00:00:00 2001
 From: Sergei Iudin <tsipa740@gmail.com>
-Date: Fri, 27 Aug 2021 14:23:14 -0700
-Subject: [PATCH] Dummy patch to bump hotfix version
+Date: Mon, 15 Nov 2021 16:45:24 -0800
+Subject: [PATCH] [PATCH] Dummy patch to bump hotfix version
 
 ---
- include/generated/hotfix.h | 1 +
+ include/hotfix/hotfix.h | 1 +
  1 file changed, 1 insertion(+)
- create mode 100644 include/generated/hotfix.h
 
 diff --git a/include/hotfix/hotfix.h b/include/hotfix/hotfix.h
-new file mode 100644
-index 000000000000..892c7f08f633
---- /dev/null
-+++ b/include/generated/hotfix.h
+index e69de29bb2d1..4dc22ddea7fd 100644
+--- a/include/hotfix/hotfix.h
++++ b/include/hotfix/hotfix.h
 @@ -0,0 +1 @@
 +#define HF_VERSION "${hotfix}"
--- 
+--
 2.30.2
 
