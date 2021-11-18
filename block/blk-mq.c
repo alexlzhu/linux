@@ -2610,8 +2610,10 @@ void blk_mq_submit_bio(struct bio *bio)
 		return;
 	}
 
-	if (op_is_flush(bio->bi_opf) && blk_insert_flush(rq))
+	if (op_is_flush(bio->bi_opf)) {
+		blk_insert_flush(rq);
 		return;
+	}
 
 	if (plug && (q->nr_hw_queues == 1 ||
 			blk_mq_is_sbitmap_shared(rq->mq_hctx->flags) ||
