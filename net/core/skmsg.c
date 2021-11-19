@@ -1107,6 +1107,8 @@ void sk_psock_start_strp(struct sock *sk, struct sk_psock *psock)
 
 void sk_psock_stop_strp(struct sock *sk, struct sk_psock *psock)
 {
+	psock_set_prog(&psock->progs.stream_parser, NULL);
+
 	if (!psock->saved_data_ready)
 		return;
 
@@ -1195,6 +1197,9 @@ void sk_psock_start_verdict(struct sock *sk, struct sk_psock *psock)
 
 void sk_psock_stop_verdict(struct sock *sk, struct sk_psock *psock)
 {
+	psock_set_prog(&psock->progs.stream_verdict, NULL);
+	psock_set_prog(&psock->progs.skb_verdict, NULL);
+
 	if (!psock->saved_data_ready)
 		return;
 
