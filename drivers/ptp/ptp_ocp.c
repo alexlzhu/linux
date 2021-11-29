@@ -570,6 +570,12 @@ static struct ocp_resource ocp_art_resource[] = {
 				},
 			},
 #endif
+			.data_size = sizeof(struct ocores_i2c_platform_data),
+			.data = &(struct ocores_i2c_platform_data) {
+				.clock_khz = 125000,
+				.bus_khz = 400,
+				.num_devices = 0,
+			},
 		},
 	},
 	/* Timestamp associated with GNSS receiver PPS */
