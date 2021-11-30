@@ -122,7 +122,7 @@ static int ixgbe_run_xdp_zc(struct ixgbe_adapter *adapter,
 		result = !err ? IXGBE_XDP_REDIR : IXGBE_XDP_CONSUMED;
 		break;
 	default:
-		bpf_warn_invalid_xdp_action(act);
+		bpf_warn_invalid_xdp_action(rx_ring->netdev, xdp_prog, act);
 		fallthrough;
 	case XDP_ABORTED:
 		trace_xdp_exception(rx_ring->netdev, xdp_prog, act);
