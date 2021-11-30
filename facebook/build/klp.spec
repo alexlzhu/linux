@@ -21,7 +21,6 @@ cp %{module_path} $RPM_BUILD_ROOT/var/lib/kpatch/%{rpm_kernel_version}/klp_%{sho
 /var/lib/kpatch/%{rpm_kernel_version}/klp_%{short_kernel_version}.ko
 
 %post
-kpatch load --all
 
 %postun
 
