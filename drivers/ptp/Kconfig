@@ -173,6 +173,7 @@ config PTP_1588_CLOCK_OCP
 
 config PTP_DFL_TOD
 	tristate "FPGA DFL ToD Driver"
+	depends on FPGA_DFL
 	help
 	  The FPGA DFL driver for the Intel ToD slave device. The Intel
 	  FPGA ToD IP is exposed as PTP Hardware Clock (PHC) device to
