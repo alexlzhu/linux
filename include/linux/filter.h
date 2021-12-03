@@ -876,18 +876,15 @@ bpf_ctx_narrow_access_offset(u32 off, u32 size, u32 size_default)
 static inline void bpf_prog_lock_ro(struct bpf_prog *fp)
 {
 #ifndef CONFIG_BPF_JIT_ALWAYS_ON
-	if (!fp->jited) {
-		set_vm_flush_reset_perms(fp);
-		set_memory_ro((unsigned long)fp, fp->pages);
-	}
+	if (!fp->jited)
+		set_memory_ro_noalias((unsigned long)fp, fp->pages);
 #endif
 }
 
 static inline void bpf_jit_binary_lock_ro(struct bpf_binary_header *hdr)
 {
-	set_vm_flush_reset_perms(hdr);
-	set_memory_ro((unsigned long)hdr, hdr->pages);
-	set_memory_x((unsigned long)hdr, hdr->pages);
+	set_memory_ro_noalias((unsigned long)hdr, hdr->pages);
+	set_memory_x_noalias((unsigned long)hdr, hdr->pages);
 }
 
 static inline struct bpf_binary_header *
