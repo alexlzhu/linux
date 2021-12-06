@@ -7,9 +7,10 @@ Name:	klp-%{rpm_kernel_version}
 Version: %{hf_name}
 Release: r1
 Summary: kernel live patch version
+Requires: kpatch
 
 Group: System Environment/Kernel
-License: GPL	
+License: GPL
 URL: http://www.kernel.org
 
 %prep
@@ -20,10 +21,8 @@ cp %{module_path} $RPM_BUILD_ROOT/var/lib/kpatch/%{rpm_kernel_version}/klp_%{sho
 /var/lib/kpatch/%{rpm_kernel_version}/klp_%{short_kernel_version}.ko
 
 %post
-/sbin/depmod -a %{rpm_kernel_version}
 
 %postun
-/sbin/depmod -a %{rpm_kernel_version}
 
 %description
 Kernel live patch module for a hotfix %{hf_name} for a version %{rpm_kernel_version}

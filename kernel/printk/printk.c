@@ -48,6 +48,7 @@
 #include <linux/sched/debug.h>
 #include <linux/sched/task_stack.h>
 #include <linux/utsname.h>
+#include <hotfix/hotfix.h>
 
 #include <linux/uaccess.h>
 #include <asm/sections.h>
@@ -2477,6 +2478,9 @@ static inline int can_use_console(void)
  *
  * console_unlock(); may be called from any context.
  */
+
+const char *uname_value;
+
 void console_unlock(void)
 {
 	static char ext_text[CONSOLE_EXT_LOG_MAX];
@@ -2568,10 +2572,26 @@ skip:
 						&r.info->dev_info);
 
 			/* FB-ONLY */
+#ifdef HF_VERSION
+			char uname[128];
+			int ret;
+
+			ret = snprintf(uname,
+						sizeof(uname),
+						"%s-%s",
+						init_utsname()->release,
+						HF_VERSION);
+			if (ret < 0)
+				uname_value = "<FMT FAILURE>";
+			else
+				uname_value = uname;
+#else
+			uname_value = init_utsname()->release;
+#endif
 			ext_len += msg_add_dict_text(ext_text + ext_len,
 						sizeof(ext_text) - ext_len,
 						"UNAME",
-						init_utsname()->release);
+						uname_value);
 		}
 		len = record_print_text(&r,
 				console_msg_format & MSG_FORMAT_SYSLOG,

@@ -1,0 +1,18 @@
+From 31d212ec1794fc46554aee42bfc4c499ad078d4c Mon Sep 17 00:00:00 2001
+From: Sergei Iudin <tsipa740@gmail.com>
+Date: Mon, 15 Nov 2021 16:45:24 -0800
+Subject: [PATCH] [PATCH] Dummy patch to bump hotfix version
+
+---
+ include/hotfix/hotfix.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/hotfix/hotfix.h b/include/hotfix/hotfix.h
+index e69de29bb2d1..4dc22ddea7fd 100644
+--- a/include/hotfix/hotfix.h
++++ b/include/hotfix/hotfix.h
+@@ -0,0 +1 @@
++#define HF_VERSION "${hotfix}"
+--
+2.30.2
+

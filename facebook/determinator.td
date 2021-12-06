@@ -39,7 +39,7 @@ def build(alias, do_kerneltest, notify, tags = None, priority = None, modules = 
             "alias": alias,
             "command": "SandcastleKernelBuildCommand",
             "args": args,
-            "oncall": "kernel",
+            "oncall": "kernel_infra",
             "retries": 1,
             "tags": tags,
             "priority": priority,

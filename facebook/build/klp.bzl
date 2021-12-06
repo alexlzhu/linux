@@ -1,4 +1,3 @@
-load("//facebook/config:defs.bzl", "config")
 load("//facebook/build:container.bzl", "container_genrule")
 load("//:defs.bzl", "buildinfo")
 def klp(flavor=None, label=None):
@@ -7,6 +6,8 @@ def klp(flavor=None, label=None):
     # overrides
     patch_to = native.read_config("klp", "patch_to", None)
     patch_from = native.read_config("klp", "patch_from", None)
+    flavor=native.read_config("klp", "flavor", None)
+    label=native.read_config("klp", "label", None)
 
     notempty_cmd = " && [ -s $OUT ] || exit 1"
     to_cmd = """git show-ref --tags -d | grep "^`git log --pretty="%h" -n1`" |
@@ -43,7 +44,11 @@ def klp(flavor=None, label=None):
     # form patch
     native.genrule(
         name="patches",
-        cmd="mkdir -p $OUT ; git format-patch -k `cat $(location :baseline)`..`cat $(location :top_lvl_tag)` -o $OUT/",
+        cmd="""mkdir -p $OUT
+            git format-patch -k `cat $(location :baseline)`..`cat $(location :top_lvl_tag)` -o $OUT/
+            export hotfix=`cat $(location :hotfix)`
+            cat `git rev-parse --show-toplevel`/facebook/9999-Dummy-patch-to-bump-hotfix-version.patch.template | envsubst > $OUT/9999-Dummy-patch-to-bump-hotfix-version.patch
+        """,
         out="patches",
         cacheable=False,
     )
@@ -59,11 +64,6 @@ def klp(flavor=None, label=None):
         cmd="mkdir -p $OUT && kernelctl download --kernel --out-dir $OUT `cat $(location :baseline-rpm-version)` && mv $OUT/*.rpm $OUT/kernel-bin.rpm",
         out="kernel-bin-klp",
         cacheable=False,
-    )
-    # build config for flavor
-    config(
-        name="config",
-        flavor=flavor,
     )
     bind_ros = [
         ("$(location :kernel-devel-klp)", "/tmp/kernel-devel"),
@@ -89,6 +89,19 @@ def klp(flavor=None, label=None):
         out="baseline-sources",
     )
 
+    #checkout target
+    native.genrule(
+        name = "target-sources",
+        cmd = """sudo rm -rf $OUT; mkdir -p $OUT
+            git clone -b `cat $(location :top_lvl_tag)` `git rev-parse --show-toplevel` $OUT
+            pushd $OUT
+            make mrproper
+            popd
+        """,
+        cacheable = False,
+        out = "target-sources",
+    )
+
     #build the rpm version
     #more details on versioning available in buildinfo()
     #i don't have better idea on how to map between git tag/branch and rpm
@@ -109,7 +122,40 @@ def klp(flavor=None, label=None):
             label="%s"
             echo "${majorver}-${rpm_n}_${fbkv}${flavor}${rc}${label}" > $OUT
         """ % (flavor_ver, label_ver),
-        out="baseline-rpm-version",
+        out = "baseline-rpm-version",
+    )
+
+    native.genrule(
+      name = "target-image-url",
+      cmd = """
+          pushd $(location :target-sources)
+          NO_BUCKD=1 ./facebook/build/buck query '//facebook/build:build-image' --output-attributes urls 0 | jq '.[][][]' | tr -d '"' > $OUT
+          popd
+      """,
+      out = "target-image-url",
+    )
+
+    native.genrule(
+        name = "target-image",
+        cmd =  "curl `cat $(location :target-image-url)` -o $OUT",
+        out = "target-image",
+    )
+
+    cfg_flavor = flavor
+    if not flavor:
+        cfg_flavor = "x86_64"
+
+    if not cfg_flavor.startswith("x86_64"):
+        cfg_flavor = "x86_64-%s" % cfg_flavor
+
+    native.genrule(
+      name = "config",
+      cmd =  """
+          pushd $(location :target-sources)
+          cp `NO_BUCKD=1 ./facebook/build/buck build --show-output //facebook/config:%s | awk '{print $2}'` $OUT
+          popd
+      """ % (cfg_flavor),
+      out = "config",
     )
 
     #uname of original kernel
@@ -121,16 +167,22 @@ def klp(flavor=None, label=None):
     )
 
     #feed artifacts to kpatch-build in a container
-    bind_rws = [(":baseline-sources", "/rw/linux"), ("$OUT", "/rw/output")]
+    bind_rws = [(":baseline-sources", "/rw/linux"), ("$OUT", "/rw/output"), (":target-sources", "/rw/target")]
     container_genrule(
         name="klp-build",
         cmd="""
             rpm -ivh /tmp/kernel-bin/*.rpm /tmp/kernel-devel/*.rpm
-            kpatch-build -s /rw/linux -c /tmp/config -v /boot/vmlinux* -o /rw/output -n klp_`cat /tmp/baseline_rpm_version`_`cat /tmp/hotfix` /tmp/patches/* || (cp /root/.kpatch/build.log /rw/output/ && exit 1)
+            pushd /rw/target
+            # prepare config for the target. It could be different from the baselines config
+            cp /tmp/config .config
+            make O=/rw/target olddefconfig
+            popd
+            kpatch-build -s /rw/linux -c /rw/target/.config -v /boot/vmlinux* -o /rw/output -n klp_`cat /tmp/baseline_rpm_version`_`cat /tmp/hotfix` /tmp/patches/* || (cp /root/.kpatch/build.log /rw/output/ && exit 1)
         """,
         bind_ro=bind_ros,
         bind_rw=bind_rws,
         cacheable=False,
+        image_override="$(location :target-image)",
     )
     # prepare packaging
     bind_ros.append(("$(location :klp-spec)", "/tmp/klp.spec"))
