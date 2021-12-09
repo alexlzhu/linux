@@ -2387,14 +2387,16 @@ static inline bool io_run_task_work(void)
 static int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin)
 {
 	struct io_wq_work_node *pos, *start, *prev;
+	unsigned int poll_flags = BLK_POLL_NOSLEEP;
+	DEFINE_IO_COMP_BATCH(iob);
 	int nr_events = 0;
-	bool spin;
 
 	/*
 	 * Only spin for completions if we don't have multiple devices hanging
 	 * off our complete list.
 	 */
-	spin = !ctx->poll_multi_queue && !force_nonspin;
+	if (ctx->poll_multi_queue || force_nonspin)
+		poll_flags |= BLK_POLL_ONESHOT;
 
 	wq_list_for_each(pos, start, &ctx->iopoll_list) {
 		struct io_kiocb *req = container_of(pos, struct io_kiocb, comp_list);
@@ -2409,18 +2411,21 @@ static int io_do_iopoll(struct io_ring_ctx *ctx, bool force_nonspin)
 		if (READ_ONCE(req->iopoll_completed))
 			break;
 
-		ret = kiocb->ki_filp->f_op->iopoll(kiocb, spin);
+		ret = kiocb->ki_filp->f_op->iopoll(kiocb, &iob, poll_flags);
 		if (unlikely(ret < 0))
 			return ret;
 		else if (ret)
-			spin = false;
+			poll_flags |= BLK_POLL_ONESHOT;
 
 		/* iopoll may have completed current req */
-		if (READ_ONCE(req->iopoll_completed))
+		if (!rq_list_empty(iob.req_list) ||
+		    READ_ONCE(req->iopoll_completed))
 			break;
 	}
 
-	if (!pos)
+	if (!rq_list_empty(iob.req_list))
+		iob.complete(&iob);
+	else if (!pos)
 		return 0;
 
 	prev = start;
@@ -2679,19 +2684,12 @@ static void io_iopoll_req_issued(struct io_kiocb *req)
 		ctx->poll_multi_queue = false;
 	} else if (!ctx->poll_multi_queue) {
 		struct io_kiocb *list_req;
-		unsigned int queue_num0, queue_num1;
 
 		list_req = container_of(ctx->iopoll_list.first, struct io_kiocb,
 					comp_list);
 
-		if (list_req->file != req->file) {
+		if (list_req->file != req->file)
 			ctx->poll_multi_queue = true;
-		} else {
-			queue_num0 = blk_qc_t_to_queue_num(list_req->rw.kiocb.ki_cookie);
-			queue_num1 = blk_qc_t_to_queue_num(req->rw.kiocb.ki_cookie);
-			if (queue_num0 != queue_num1)
-				ctx->poll_multi_queue = true;
-		}
 	}
 
 	/*
