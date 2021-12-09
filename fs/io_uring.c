@@ -6607,6 +6607,8 @@ static void io_clean_op(struct io_kiocb *req)
 		struct io_uring_task *tctx = req->task->io_uring;
 
 		atomic_dec(&tctx->inflight_tracked);
+		if (unlikely(atomic_read(&tctx->in_idle)))
+			wake_up(&tctx->wait);
 	}
 	if (req->flags & REQ_F_CREDS)
 		put_cred(req->creds);
