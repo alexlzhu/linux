@@ -300,9 +300,14 @@ struct pci_cap_saved_state {
 	struct pci_cap_saved_data	cap;
 };
 
+struct pci_vpd {
+	struct mutex	lock;
+	unsigned int	len;
+	u8		cap;
+};
+
 struct irq_affinity;
 struct pcie_link_state;
-struct pci_vpd;
 struct pci_sriov;
 struct pci_p2pdma;
 struct rcec_ea;
@@ -458,7 +463,6 @@ struct pci_dev {
 
 	u32		saved_config_space[16]; /* Config space saved at suspend time */
 	struct hlist_head saved_cap_space;
-	struct bin_attribute *rom_attr;		/* Attribute descriptor for sysfs ROM entry */
 	int		rom_attr_enabled;	/* Display of ROM attribute enabled? */
 	struct bin_attribute *res_attr[DEVICE_COUNT_RESOURCE]; /* sysfs file for resources */
 	struct bin_attribute *res_attr_wc[DEVICE_COUNT_RESOURCE]; /* sysfs file for WC mapping of resources */
@@ -474,7 +478,7 @@ struct pci_dev {
 #ifdef CONFIG_PCI_MSI
 	const struct attribute_group **msi_irq_groups;
 #endif
-	struct pci_vpd *vpd;
+	struct pci_vpd	vpd;
 #ifdef CONFIG_PCIE_DPC
 	u16		dpc_cap;
 	unsigned int	dpc_rp_extensions:1;
@@ -856,6 +860,12 @@ struct module;
  *		e.g. drivers/net/e100.c.
  * @sriov_configure: Optional driver callback to allow configuration of
  *		number of VFs to enable via sysfs "sriov_numvfs" file.
+ * @sriov_set_msix_vec_count: PF Driver callback to change number of MSI-X
+ *              vectors on a VF. Triggered via sysfs "sriov_vf_msix_count".
+ *              This will change MSI-X Table Size in the VF Message Control
+ *              registers.
+ * @sriov_get_vf_total_msix: PF driver callback to get the total number of
+ *              MSI-X vectors available for distribution to the VFs.
  * @err_handler: See Documentation/PCI/pci-error-recovery.rst
  * @groups:	Sysfs attribute groups.
  * @driver:	Driver model structure.
@@ -871,6 +881,8 @@ struct pci_driver {
 	int  (*resume)(struct pci_dev *dev);	/* Device woken up */
 	void (*shutdown)(struct pci_dev *dev);
 	int  (*sriov_configure)(struct pci_dev *dev, int num_vfs); /* On PF */
+	int  (*sriov_set_msix_vec_count)(struct pci_dev *vf, int msix_vec_count); /* On PF */
+	u32  (*sriov_get_vf_total_msix)(struct pci_dev *pf);
 	const struct pci_error_handlers *err_handler;
 	const struct attribute_group **groups;
 	struct device_driver	driver;
@@ -1302,7 +1314,6 @@ void pci_unlock_rescan_remove(void);
 /* Vital Product Data routines */
 ssize_t pci_read_vpd(struct pci_dev *dev, loff_t pos, size_t count, void *buf);
 ssize_t pci_write_vpd(struct pci_dev *dev, loff_t pos, size_t count, const void *buf);
-int pci_set_vpd_size(struct pci_dev *dev, size_t len);
 
 /* Helper functions for low-level code (drivers/pci/setup-[bus,res].c) */
 resource_size_t pcibios_retrieve_fw_addr(struct pci_dev *dev, int idx);
@@ -2309,16 +2320,24 @@ static inline u8 pci_vpd_info_field_size(const u8 *info_field)
 }
 
 /**
+ * pci_vpd_alloc - Allocate buffer and read VPD into it
+ * @dev: PCI device
+ * @size: pointer to field where VPD length is returned
+ *
+ * Returns pointer to allocated buffer or an ERR_PTR in case of failure
+ */
+void *pci_vpd_alloc(struct pci_dev *dev, unsigned int *size);
+
+/**
  * pci_vpd_find_tag - Locates the Resource Data Type tag provided
  * @buf: Pointer to buffered vpd data
- * @off: The offset into the buffer at which to begin the search
  * @len: The length of the vpd buffer
  * @rdt: The Resource Data Type to search for
  *
  * Returns the index where the Resource Data Type was found or
  * -ENOENT otherwise.
  */
-int pci_vpd_find_tag(const u8 *buf, unsigned int off, unsigned int len, u8 rdt);
+int pci_vpd_find_tag(const u8 *buf, unsigned int len, u8 rdt);
 
 /**
  * pci_vpd_find_info_keyword - Locates an information field keyword in the VPD
@@ -2332,6 +2351,28 @@ int pci_vpd_find_tag(const u8 *buf, unsigned int off, unsigned int len, u8 rdt);
  */
 int pci_vpd_find_info_keyword(const u8 *buf, unsigned int off,
 			      unsigned int len, const char *kw);
+
+/**
+ * pci_vpd_find_ro_info_keyword - Locate info field keyword in VPD RO section
+ * @buf: Pointer to buffered VPD data
+ * @len: The length of the buffer area in which to search
+ * @kw: The keyword to search for
+ * @size: Pointer to field where length of found keyword data is returned
+ *
+ * Returns the index of the information field keyword data or -ENOENT if
+ * not found.
+ */
+int pci_vpd_find_ro_info_keyword(const void *buf, unsigned int len,
+				 const char *kw, unsigned int *size);
+
+/**
+ * pci_vpd_check_csum - Check VPD checksum
+ * @buf: Pointer to buffered VPD data
+ * @len: VPD size
+ *
+ * Returns 1 if VPD has no checksum, otherwise 0 or an errno
+ */
+int pci_vpd_check_csum(const void *buf, unsigned int len);
 
 /* PCI <-> OF binding helpers */
 #ifdef CONFIG_OF

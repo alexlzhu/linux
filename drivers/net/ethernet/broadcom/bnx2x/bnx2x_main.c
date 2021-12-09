@@ -11791,7 +11791,7 @@ static void bnx2x_get_cnic_mac_hwinfo(struct bnx2x *bp)
 		 * as the SAN mac was copied from the primary MAC.
 		 */
 		if (IS_MF_FCOE_AFEX(bp))
-			memcpy(bp->dev->dev_addr, fip_mac, ETH_ALEN);
+			eth_hw_addr_set(bp->dev, fip_mac);
 	} else {
 		val2 = SHMEM_RD(bp, dev_info.port_hw_config[port].
 				iscsi_mac_upper);
@@ -12207,8 +12207,7 @@ static void bnx2x_read_fwinfo(struct bnx2x *bp)
 	/* VPD RO tag should be first tag after identifier string, hence
 	 * we should be able to find it in first BNX2X_VPD_LEN chars
 	 */
-	i = pci_vpd_find_tag(vpd_start, 0, BNX2X_VPD_LEN,
-			     PCI_VPD_LRDT_RO_DATA);
+	i = pci_vpd_find_tag(vpd_start, BNX2X_VPD_LEN, PCI_VPD_LRDT_RO_DATA);
 	if (i < 0)
 		goto out_not_found;
 

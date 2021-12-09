@@ -713,16 +713,23 @@ static int nsim_dev_reload_down(struct devlink *devlink, bool netns_change,
 				struct netlink_ext_ack *extack)
 {
 	struct nsim_dev *nsim_dev = devlink_priv(devlink);
+	struct nsim_bus_dev *nsim_bus_dev;
+
+	nsim_bus_dev = nsim_dev->nsim_bus_dev;
+	if (!mutex_trylock(&nsim_bus_dev->nsim_bus_reload_lock))
+		return -EOPNOTSUPP;
 
 	if (nsim_dev->dont_allow_reload) {
 		/* For testing purposes, user set debugfs dont_allow_reload
 		 * value to true. So forbid it.
 		 */
 		NL_SET_ERR_MSG_MOD(extack, "User forbid the reload for testing purposes");
+		mutex_unlock(&nsim_bus_dev->nsim_bus_reload_lock);
 		return -EOPNOTSUPP;
 	}
 
 	nsim_dev_reload_destroy(nsim_dev);
+	mutex_unlock(&nsim_bus_dev->nsim_bus_reload_lock);
 	return 0;
 }
 
@@ -1032,9 +1039,13 @@ static int nsim_dev_reload_create(struct nsim_dev *nsim_dev,
 	if (err)
 		goto err_fib_destroy;
 
-	err = nsim_dev_port_add_all(nsim_dev, nsim_bus_dev->port_count);
+	err = nsim_dev_psample_init(nsim_dev);
 	if (err)
 		goto err_health_exit;
+
+	err = nsim_dev_port_add_all(nsim_dev, nsim_bus_dev->port_count);
+	if (err)
+		goto err_psample_exit;
 
 	nsim_dev->take_snapshot = debugfs_create_file("take_snapshot",
 						      0200,
@@ -1043,6 +1054,8 @@ static int nsim_dev_reload_create(struct nsim_dev *nsim_dev,
 						&nsim_dev_take_snapshot_fops);
 	return 0;
 
+err_psample_exit:
+	nsim_dev_psample_exit(nsim_dev);
 err_health_exit:
 	nsim_dev_health_exit(nsim_dev);
 err_fib_destroy:
@@ -1060,10 +1073,10 @@ int nsim_dev_probe(struct nsim_bus_dev *nsim_bus_dev)
 	struct devlink *devlink;
 	int err;
 
-	devlink = devlink_alloc(&nsim_dev_devlink_ops, sizeof(*nsim_dev));
+	devlink = devlink_alloc_ns(&nsim_dev_devlink_ops, sizeof(*nsim_dev),
+				 nsim_bus_dev->initial_net, &nsim_bus_dev->dev);
 	if (!devlink)
 		return -ENOMEM;
-	devlink_net_set(devlink, nsim_bus_dev->initial_net);
 	nsim_dev = devlink_priv(devlink);
 	nsim_dev->nsim_bus_dev = nsim_bus_dev;
 	nsim_dev->switch_id.id_len = sizeof(nsim_dev->switch_id.id);
@@ -1081,10 +1094,6 @@ int nsim_dev_probe(struct nsim_bus_dev *nsim_bus_dev)
 	err = nsim_dev_resources_register(devlink);
 	if (err)
 		goto err_devlink_free;
-
-	err = devlink_register(devlink, &nsim_bus_dev->dev);
-	if (err)
-		goto err_resources_unregister;
 
 	err = devlink_params_register(devlink, nsim_devlink_params,
 				      ARRAY_SIZE(nsim_devlink_params));
@@ -1118,14 +1127,20 @@ int nsim_dev_probe(struct nsim_bus_dev *nsim_bus_dev)
 	if (err)
 		goto err_health_exit;
 
-	err = nsim_dev_port_add_all(nsim_dev, nsim_bus_dev->port_count);
+	err = nsim_dev_psample_init(nsim_dev);
 	if (err)
 		goto err_bpf_dev_exit;
 
-	devlink_params_publish(devlink);
-	devlink_reload_enable(devlink);
+	err = nsim_dev_port_add_all(nsim_dev, nsim_bus_dev->port_count);
+	if (err)
+		goto err_psample_exit;
+
+	devlink_set_features(devlink, DEVLINK_F_RELOAD);
+	devlink_register(devlink);
 	return 0;
 
+err_psample_exit:
+	nsim_dev_psample_exit(nsim_dev);
 err_bpf_dev_exit:
 	nsim_bpf_dev_exit(nsim_dev);
 err_health_exit:
@@ -1142,9 +1157,7 @@ err_params_unregister:
 	devlink_params_unregister(devlink, nsim_devlink_params,
 				  ARRAY_SIZE(nsim_devlink_params));
 err_dl_unregister:
-	devlink_unregister(devlink);
-err_resources_unregister:
-	devlink_resources_unregister(devlink, NULL);
+	devlink_resources_unregister(devlink);
 err_devlink_free:
 	devlink_free(devlink);
 	return err;
@@ -1158,6 +1171,7 @@ static void nsim_dev_reload_destroy(struct nsim_dev *nsim_dev)
 		return;
 	debugfs_remove(nsim_dev->take_snapshot);
 	nsim_dev_port_del_all(nsim_dev);
+	nsim_dev_psample_exit(nsim_dev);
 	nsim_dev_health_exit(nsim_dev);
 	nsim_fib_destroy(devlink, nsim_dev->fib_data);
 	nsim_dev_traps_exit(devlink);
@@ -1170,16 +1184,14 @@ void nsim_dev_remove(struct nsim_bus_dev *nsim_bus_dev)
 	struct nsim_dev *nsim_dev = dev_get_drvdata(&nsim_bus_dev->dev);
 	struct devlink *devlink = priv_to_devlink(nsim_dev);
 
-	devlink_reload_disable(devlink);
-
+	devlink_unregister(devlink);
 	nsim_dev_reload_destroy(nsim_dev);
 
 	nsim_bpf_dev_exit(nsim_dev);
 	nsim_dev_debugfs_exit(nsim_dev);
 	devlink_params_unregister(devlink, nsim_devlink_params,
 				  ARRAY_SIZE(nsim_devlink_params));
-	devlink_unregister(devlink);
-	devlink_resources_unregister(devlink, NULL);
+	devlink_resources_unregister(devlink);
 	devlink_free(devlink);
 }
 
