@@ -6,6 +6,7 @@
 #include <linux/sbitmap.h>
 #include <linux/srcu.h>
 #include <linux/lockdep.h>
+#include <linux/prefetch.h>
 
 struct blk_mq_tags;
 struct blk_flush_queue;
@@ -126,9 +127,6 @@ struct blk_mq_hw_ctx {
 	unsigned long		queued;
 	/** @run: Number of dispatched requests. */
 	unsigned long		run;
-#define BLK_MQ_MAX_DISPATCH_ORDER	7
-	/** @dispatched: Number of dispatch requests by queue. */
-	unsigned long		dispatched[BLK_MQ_MAX_DISPATCH_ORDER];
 
 	/** @numa_node: NUMA node the storage adapter has been connected to. */
 	unsigned int		numa_node;
@@ -147,13 +145,6 @@ struct blk_mq_hw_ctx {
 	struct hlist_node	cpuhp_dead;
 	/** @kobj: Kernel object for sysfs. */
 	struct kobject		kobj;
-
-	/** @poll_considered: Count times blk_poll() was called. */
-	unsigned long		poll_considered;
-	/** @poll_invoked: Count how many requests blk_poll() polled. */
-	unsigned long		poll_invoked;
-	/** @poll_success: Count how many polled requests were completed. */
-	unsigned long		poll_success;
 
 #ifdef CONFIG_BLK_DEBUG_FS
 	/**
@@ -321,7 +312,7 @@ struct blk_mq_ops {
 	/**
 	 * @poll: Called to poll for completion of a specific tag.
 	 */
-	int (*poll)(struct blk_mq_hw_ctx *);
+	int (*poll)(struct blk_mq_hw_ctx *, struct io_comp_batch *);
 
 	/**
 	 * @complete: Mark the request as complete.
@@ -432,8 +423,6 @@ void blk_mq_unregister_dev(struct device *, struct request_queue *);
 int blk_mq_alloc_tag_set(struct blk_mq_tag_set *set);
 void blk_mq_free_tag_set(struct blk_mq_tag_set *set);
 
-void blk_mq_flush_plug_list(struct blk_plug *plug, bool from_schedule);
-
 void blk_mq_free_request(struct request *rq);
 
 bool blk_mq_queue_inflight(struct request_queue *q);
@@ -452,7 +441,43 @@ struct request *blk_mq_alloc_request(struct request_queue *q, unsigned int op,
 struct request *blk_mq_alloc_request_hctx(struct request_queue *q,
 		unsigned int op, blk_mq_req_flags_t flags,
 		unsigned int hctx_idx);
-struct request *blk_mq_tag_to_rq(struct blk_mq_tags *tags, unsigned int tag);
+
+/*
+ * Tag address space map.
+ */
+struct blk_mq_tags {
+	unsigned int nr_tags;
+	unsigned int nr_reserved_tags;
+
+	atomic_t active_queues;
+
+	struct sbitmap_queue *bitmap_tags;
+	struct sbitmap_queue *breserved_tags;
+
+ 	struct sbitmap_queue __bitmap_tags;
+ 	struct sbitmap_queue __breserved_tags;
+
+	struct request **rqs;
+	struct request **static_rqs;
+	struct list_head page_list;
+
+	/*
+	 * used to clear request reference in rqs[] before freeing one
+	 * request pool
+	 */
+	spinlock_t lock;
+};
+
+static inline struct request *blk_mq_tag_to_rq(struct blk_mq_tags *tags,
+					unsigned int tag)
+{
+	if (tag < tags->nr_tags) {
+		prefetch(tags->rqs[tag]);
+		return tags->rqs[tag];
+	}
+
+	return NULL;
+}
 
 enum {
 	BLK_MQ_UNIQUE_TAG_BITS = 16,
@@ -505,6 +530,35 @@ static inline void blk_mq_set_request_complete(struct request *rq)
 void blk_mq_start_request(struct request *rq);
 void blk_mq_end_request(struct request *rq, blk_status_t error);
 void __blk_mq_end_request(struct request *rq, blk_status_t error);
+void blk_mq_end_request_batch(struct io_comp_batch *ib);
+
+/*
+ * Only need start/end time stamping if we have iostat or
+ * blk stats enabled, or using an IO scheduler.
+ */
+static inline bool blk_mq_need_time_stamp(struct request *rq)
+{
+	return (rq->rq_flags & (RQF_IO_STAT | RQF_STATS | RQF_ELV));
+}
+
+/*
+ * Batched completions only work when there is no I/O error and no special
+ * ->end_io handler.
+ */
+static inline bool blk_mq_add_to_batch(struct request *req,
+				       struct io_comp_batch *iob, int ioerror,
+				       void (*complete)(struct io_comp_batch *))
+{
+	if (!iob || (req->rq_flags & RQF_ELV) || req->end_io || ioerror)
+		return false;
+	if (!iob->complete)
+		iob->complete = complete;
+	else if (iob->complete != complete)
+		return false;
+	iob->need_ts |= blk_mq_need_time_stamp(req);
+	rq_list_add(&iob->req_list, req);
+	return true;
+}
 
 void blk_mq_requeue_request(struct request *rq, bool kick_requeue_list);
 void blk_mq_kick_requeue_list(struct request_queue *q);
@@ -586,16 +640,6 @@ static inline void *blk_mq_rq_to_pdu(struct request *rq)
 	for ((i) = 0; (i) < (hctx)->nr_ctx &&				\
 	     ({ ctx = (hctx)->ctxs[(i)]; 1; }); (i)++)
 
-static inline blk_qc_t request_to_qc_t(struct blk_mq_hw_ctx *hctx,
-		struct request *rq)
-{
-	if (rq->tag != -1)
-		return rq->tag | (hctx->queue_num << BLK_QC_T_SHIFT);
-
-	return rq->internal_tag | (hctx->queue_num << BLK_QC_T_SHIFT) |
-			BLK_QC_T_INTERNAL;
-}
-
 static inline void blk_mq_cleanup_rq(struct request *rq)
 {
 	if (rq->q->mq_ops->cleanup_rq)
@@ -614,7 +658,6 @@ static inline void blk_rq_bio_prep(struct request *rq, struct bio *bio,
 		rq->rq_disk = bio->bi_bdev->bd_disk;
 }
 
-blk_qc_t blk_mq_submit_bio(struct bio *bio);
 void blk_mq_hctx_set_fq_lock_class(struct blk_mq_hw_ctx *hctx,
 		struct lock_class_key *key);
 

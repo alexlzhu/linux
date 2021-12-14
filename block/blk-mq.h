@@ -25,18 +25,14 @@ struct blk_mq_ctx {
 	unsigned short		index_hw[HCTX_MAX_TYPES];
 	struct blk_mq_hw_ctx 	*hctxs[HCTX_MAX_TYPES];
 
-	/* incremented at dispatch time */
-	unsigned long		rq_dispatched[2];
-	unsigned long		rq_merged;
-
-	/* incremented at completion time */
-	unsigned long		____cacheline_aligned_in_smp rq_completed[2];
-
 	struct request_queue	*queue;
 	struct blk_mq_ctxs      *ctxs;
 	struct kobject		kobj;
 } ____cacheline_aligned_in_smp;
 
+void blk_mq_submit_bio(struct bio *bio);
+int blk_mq_poll(struct request_queue *q, blk_qc_t cookie, struct io_comp_batch *iob,
+		unsigned int flags);
 void blk_mq_exit_queue(struct request_queue *q);
 int blk_mq_update_nr_requests(struct request_queue *q, unsigned int nr);
 void blk_mq_wake_waiters(struct request_queue *q);
@@ -96,6 +92,20 @@ static inline struct blk_mq_hw_ctx *blk_mq_map_queue_type(struct request_queue *
 	return q->queue_hw_ctx[q->tag_set->map[type].mq_map[cpu]];
 }
 
+static inline enum hctx_type blk_mq_get_hctx_type(unsigned int flags)
+{
+	enum hctx_type type = HCTX_TYPE_DEFAULT;
+
+	/*
+	 * The caller ensure that if REQ_POLLED, poll must be enabled.
+	 */
+	if (flags & REQ_POLLED)
+		type = HCTX_TYPE_POLL;
+	else if ((flags & REQ_OP_MASK) == REQ_OP_READ)
+		type = HCTX_TYPE_READ;
+	return type;
+}
+
 /*
  * blk_mq_map_queue() - map (cmd_flags,type) to hardware queue
  * @q: request queue
@@ -106,17 +116,7 @@ static inline struct blk_mq_hw_ctx *blk_mq_map_queue(struct request_queue *q,
 						     unsigned int flags,
 						     struct blk_mq_ctx *ctx)
 {
-	enum hctx_type type = HCTX_TYPE_DEFAULT;
-
-	/*
-	 * The caller ensure that if REQ_HIPRI, poll must be enabled.
-	 */
-	if (flags & REQ_HIPRI)
-		type = HCTX_TYPE_POLL;
-	else if ((flags & REQ_OP_MASK) == REQ_OP_READ)
-		type = HCTX_TYPE_READ;
-	
-	return ctx->hctxs[type];
+	return ctx->hctxs[blk_mq_get_hctx_type(flags)];
 }
 
 /*
@@ -128,6 +128,8 @@ extern int __blk_mq_register_dev(struct device *dev, struct request_queue *q);
 extern int blk_mq_sysfs_register(struct request_queue *q);
 extern void blk_mq_sysfs_unregister(struct request_queue *q);
 extern void blk_mq_hctx_kobj_init(struct blk_mq_hw_ctx *hctx);
+void blk_mq_free_plug_rqs(struct blk_plug *plug);
+void blk_mq_flush_plug_list(struct blk_plug *plug, bool from_schedule);
 
 void blk_mq_release(struct request_queue *q);
 
@@ -154,6 +156,11 @@ struct blk_mq_alloc_data {
 	blk_mq_req_flags_t flags;
 	unsigned int shallow_depth;
 	unsigned int cmd_flags;
+	unsigned int rq_flags;
+
+	/* allocate multiple requests/tags in one go */
+	unsigned int nr_tags;
+	struct request **cached_rq;
 
 	/* input & output parameter */
 	struct blk_mq_ctx *ctx;
@@ -167,10 +174,9 @@ static inline bool blk_mq_is_sbitmap_shared(unsigned int flags)
 
 static inline struct blk_mq_tags *blk_mq_tags_from_data(struct blk_mq_alloc_data *data)
 {
-	if (data->q->elevator)
-		return data->hctx->sched_tags;
-
-	return data->hctx->tags;
+	if (!(data->rq_flags & RQF_ELV))
+		return data->hctx->tags;
+	return data->hctx->sched_tags;
 }
 
 static inline bool blk_mq_hctx_stopped(struct blk_mq_hw_ctx *hctx)
@@ -209,12 +215,18 @@ static inline void __blk_mq_inc_active_requests(struct blk_mq_hw_ctx *hctx)
 		atomic_inc(&hctx->nr_active);
 }
 
-static inline void __blk_mq_dec_active_requests(struct blk_mq_hw_ctx *hctx)
+static inline void __blk_mq_sub_active_requests(struct blk_mq_hw_ctx *hctx,
+						int val)
 {
 	if (blk_mq_is_sbitmap_shared(hctx->flags))
-		atomic_dec(&hctx->queue->nr_active_requests_shared_sbitmap);
+		atomic_sub(val, &hctx->queue->nr_active_requests_shared_sbitmap);
 	else
-		atomic_dec(&hctx->nr_active);
+		atomic_sub(val, &hctx->nr_active);
+}
+
+static inline void __blk_mq_dec_active_requests(struct blk_mq_hw_ctx *hctx)
+{
+	__blk_mq_sub_active_requests(hctx, 1);
 }
 
 static inline int __blk_mq_active_requests(struct blk_mq_hw_ctx *hctx)
@@ -241,6 +253,21 @@ static inline void blk_mq_put_driver_tag(struct request *rq)
 		return;
 
 	__blk_mq_put_driver_tag(rq->mq_hctx, rq);
+}
+
+bool __blk_mq_get_driver_tag(struct blk_mq_hw_ctx *hctx, struct request *rq);
+
+static inline bool blk_mq_get_driver_tag(struct request *rq)
+{
+	struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
+
+	if (rq->tag != BLK_MQ_NO_TAG &&
+		!(hctx->flags & BLK_MQ_F_TAG_QUEUE_SHARED)) {
+		hctx->tags->rqs[rq->tag] = rq;
+		return true;
+	}
+
+	return __blk_mq_get_driver_tag(hctx, rq);
 }
 
 static inline void blk_mq_clear_mq_map(struct blk_mq_queue_map *qmap)
