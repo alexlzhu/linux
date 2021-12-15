@@ -274,6 +274,7 @@ struct ptp_ocp {
 	int			gnss2_port;
 	int			mac_port;	/* miniature atomic clock */
 	int			nmea_port;
+	u32			fw_version;
 	u8			board_mfr[OCP_BOARD_MFR_LEN];
 	u8			board_id[OCP_BOARD_ID_LEN];
 	u8			serial[OCP_SERIAL_LEN];
@@ -308,7 +309,7 @@ static int ptp_ocp_ts_enable(void *priv, u32 req, bool enable);
 
 static int ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r);
 static irqreturn_t ptp_ocp_art_pps_irq(int irq, void *priv);
-static int ptp_ocp_art_pps_enable(void *priv, unsigned req, bool enable);
+static int ptp_ocp_art_pps_enable(void *priv, u32 req, bool enable);
 
 static const struct attribute_group *fb_timecard_groups[];
 static const struct attribute_group *art_timecard_groups[];
@@ -1272,23 +1273,15 @@ ptp_ocp_devlink_info_get(struct devlink *devlink, struct devlink_info_req *req,
 	if (err)
 		return err;
 
-	if (bp->image) {
-		u32 ver = ioread32(&bp->image->version);
-
-		if (ver & 0xffff) {
-			sprintf(buf, "%d", ver);
-			err = devlink_info_version_running_put(req,
-							       "fw",
-							       buf);
-		} else {
-			sprintf(buf, "%d", ver >> 16);
-			err = devlink_info_version_running_put(req,
-							       "loader",
-							       buf);
-		}
-		if (err)
-			return err;
+	if (bp->fw_version & 0xffff) {
+		sprintf(buf, "%d", bp->fw_version);
+		err = devlink_info_version_running_put(req, "fw", buf);
+	} else {
+		sprintf(buf, "%d", bp->fw_version >> 16);
+		err = devlink_info_version_running_put(req, "loader", buf);
 	}
+	if (err)
+		return err;
 
 	if (!bp->has_eeprom_data) {
 		ptp_ocp_read_eeprom(bp);
@@ -1511,7 +1504,7 @@ ptp_ocp_art_pps_irq(int irq, void *priv)
 }
 
 static int
-ptp_ocp_art_pps_enable(void *priv, unsigned req, bool enable)
+ptp_ocp_art_pps_enable(void *priv, u32 req, bool enable)
 {
 	struct ptp_ocp_ext_src *ext = priv;
 	struct ocp_art_pps_reg __iomem *reg = ext->mem;
@@ -1633,6 +1626,7 @@ ptp_ocp_fb_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 {
 	bp->flash_start = 1024 * 4096;
 	bp->attr_groups = fb_timecard_groups;
+	bp->fw_version = ioread32(&bp->image->version);
 
 	ptp_ocp_tod_init(bp);
 	ptp_ocp_nmea_out_init(bp);
@@ -1805,6 +1799,7 @@ ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 
 	bp->flash_start = 0x1000000;
 	bp->attr_groups = art_timecard_groups;
+	bp->fw_version = ioread32(&bp->reg->version);
 
 	err = ptp_ocp_register_mro50(bp);
 	if (!err)
@@ -3001,17 +2996,14 @@ ptp_ocp_info(struct ptp_ocp *bp)
 
 	ptp_ocp_phc_info(bp);
 
-	if (bp->image) {
-		u32 ver = ioread32(&bp->image->version);
+	dev_info(dev, "version %x\n", bp->fw_version);
+	if (bp->fw_version & 0xffff)
+		dev_info(dev, "regular image, version %d\n",
+			 bp->fw_version & 0xffff);
+	else
+		dev_info(dev, "golden image, version %d\n",
+			 bp->fw_version >> 16);
 
-		dev_info(dev, "version %x\n", ver);
-		if (ver & 0xffff)
-			dev_info(dev, "regular image, version %d\n",
-				 ver & 0xffff);
-		else
-			dev_info(dev, "golden image, version %d\n",
-				 ver >> 16);
-	}
 	ptp_ocp_serial_info(dev, "GNSS", bp->gnss_port, 115200);
 	ptp_ocp_serial_info(dev, "GNSS2", bp->gnss2_port, 115200);
 	ptp_ocp_serial_info(dev, "MAC", bp->mac_port, 57600);
