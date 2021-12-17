@@ -268,7 +268,12 @@ static inline sector_t get_start_sect(struct block_device *bdev)
 
 static inline sector_t bdev_nr_sectors(struct block_device *bdev)
 {
-	return i_size_read(bdev->bd_inode) >> 9;
+	return bdev->bd_nr_sectors;
+}
+
+static inline loff_t bdev_nr_bytes(struct block_device *bdev)
+{
+	return (loff_t)bdev_nr_sectors(bdev) << SECTOR_SHIFT;
 }
 
 static inline sector_t get_capacity(struct gendisk *disk)

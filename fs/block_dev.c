@@ -344,7 +344,7 @@ static void blkdev_bio_end_io(struct bio *bio)
 				ret = blk_status_to_errno(dio->bio.bi_status);
 			}
 
-			dio->iocb->ki_complete(iocb, ret, 0);
+			dio->iocb->ki_complete(iocb, ret);
 			bio_put(&dio->bio);
 		} else {
 			struct task_struct *waiter = dio->waiter;
@@ -476,14 +476,19 @@ static void blkdev_bio_end_io_async(struct bio *bio)
 		ret = blk_status_to_errno(bio->bi_status);
 	}
 
-	iocb->ki_complete(iocb, ret, 0);
-
 	if (dio->flags & DIO_SHOULD_DIRTY) {
 		bio_check_pages_dirty(bio);
 	} else {
 		bio_release_pages(bio, false);
-		bio_put(bio);
+		if (iocb->ki_flags & IOCB_BIO_PASSBACK) {
+			iocb->ki_flags |= IOCB_PRIV_IS_BIO;
+			iocb->private = bio;
+		} else {
+			bio_put(bio);
+		}
 	}
+
+	iocb->ki_complete(iocb, ret);
 }
 
 static ssize_t __blkdev_direct_IO_async(struct kiocb *iocb,
@@ -1744,7 +1749,7 @@ ssize_t blkdev_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	struct block_device *bdev = iocb->ki_filp->private_data;
 	struct inode *bd_inode = bdev->bd_inode;
-	loff_t size = i_size_read(bd_inode);
+	loff_t size = bdev_nr_bytes(bdev);
 	struct blk_plug plug;
 	size_t shorted = 0;
 	ssize_t ret;
@@ -1783,7 +1788,7 @@ EXPORT_SYMBOL_GPL(blkdev_write_iter);
 ssize_t blkdev_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
 	struct block_device *bdev = iocb->ki_filp->private_data;
-	loff_t size = i_size_read(bdev->bd_inode);
+	loff_t size = bdev_nr_bytes(bdev);
 	loff_t pos = iocb->ki_pos;
 	size_t shorted = 0;
 	ssize_t ret;
