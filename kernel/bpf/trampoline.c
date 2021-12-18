@@ -27,6 +27,14 @@ static struct hlist_head trampoline_table[TRAMPOLINE_TABLE_SIZE];
 /* serializes access to trampoline_table */
 static DEFINE_MUTEX(trampoline_mutex);
 
+bool bpf_prog_has_trampoline(const struct bpf_prog *prog)
+{
+	enum bpf_attach_type eatype = prog->expected_attach_type;
+
+	return eatype == BPF_TRACE_FENTRY || eatype == BPF_TRACE_FEXIT ||
+	       eatype == BPF_MODIFY_RETURN;
+}
+
 void *bpf_jit_alloc_exec_page(void)
 {
 	void *image;
@@ -545,7 +553,7 @@ static void notrace inc_misses_counter(struct bpf_prog *prog)
 
 	stats = this_cpu_ptr(prog->stats);
 	u64_stats_update_begin(&stats->syncp);
-	stats->misses++;
+	u64_stats_inc(&stats->misses);
 	u64_stats_update_end(&stats->syncp);
 }
 
@@ -586,11 +594,13 @@ static void notrace update_prog_stats(struct bpf_prog *prog,
 	     * Hence check that 'start' is valid.
 	     */
 	    start > NO_START_TIME) {
+		unsigned long flags;
+
 		stats = this_cpu_ptr(prog->stats);
-		u64_stats_update_begin(&stats->syncp);
-		stats->cnt++;
-		stats->nsecs += sched_clock() - start;
-		u64_stats_update_end(&stats->syncp);
+		flags = u64_stats_update_begin_irqsave(&stats->syncp);
+		u64_stats_inc(&stats->cnt);
+		u64_stats_add(&stats->nsecs, sched_clock() - start);
+		u64_stats_update_end_irqrestore(&stats->syncp, flags);
 	}
 }
 

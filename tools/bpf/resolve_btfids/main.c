@@ -83,6 +83,7 @@ struct btf_id {
 		int	 cnt;
 	};
 	int		 addr_cnt;
+	bool		 is_set;
 	Elf64_Addr	 addr[ADDR_CNT];
 };
 
@@ -167,7 +168,7 @@ static struct btf_id *btf_id__find(struct rb_root *root, const char *name)
 	return NULL;
 }
 
-static struct btf_id*
+static struct btf_id *
 btf_id__add(struct rb_root *root, char *name, bool unique)
 {
 	struct rb_node **p = &root->rb_node;
@@ -451,8 +452,10 @@ static int symbols_collect(struct object *obj)
 			 * in symbol's size, together with 'cnt' field hence
 			 * that - 1.
 			 */
-			if (id)
+			if (id) {
 				id->cnt = sym.st_size / sizeof(int) - 1;
+				id->is_set = true;
+			}
 		} else {
 			pr_err("FAILED unsupported prefix %s\n", prefix);
 			return -1;
@@ -502,12 +505,12 @@ static int symbols_resolve(struct object *obj)
 	}
 
 	err = -1;
-	nr_types = btf__get_nr_types(btf);
+	nr_types = btf__type_cnt(btf);
 
 	/*
 	 * Iterate all the BTF types and search for collected symbol IDs.
 	 */
-	for (type_id = 1; type_id <= nr_types; type_id++) {
+	for (type_id = 1; type_id < nr_types; type_id++) {
 		const struct btf_type *type;
 		struct rb_root *root;
 		struct btf_id *id;
@@ -568,9 +571,8 @@ static int id_patch(struct object *obj, struct btf_id *id)
 	int *ptr = data->d_buf;
 	int i;
 
-	if (!id->id) {
+	if (!id->id && !id->is_set)
 		pr_err("WARN: resolve_btfids: unresolved symbol %s\n", id->name);
-	}
 
 	for (i = 0; i < id->addr_cnt; i++) {
 		unsigned long addr = id->addr[i];
@@ -730,7 +732,8 @@ int main(int argc, const char **argv)
 	if (obj.efile.idlist_shndx == -1 ||
 	    obj.efile.symbols_shndx == -1) {
 		pr_debug("Cannot find .BTF_ids or symbols sections, nothing to do\n");
-		return 0;
+		err = 0;
+		goto out;
 	}
 
 	if (symbols_collect(&obj))
