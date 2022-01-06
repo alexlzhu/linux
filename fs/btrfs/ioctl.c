@@ -1695,6 +1695,13 @@ int btrfs_defrag_file(struct inode *inode, struct file *file,
 		balance_dirty_pages_ratelimited(inode->i_mapping);
 		btrfs_inode_unlock(inode, 0);
 
+		/*
+		 * Defrag can generate a lot of delayed refs when over-writing
+		 * fragmented areas, make sure we're refilling the reserve while
+		 * we're generating work to keep up.
+		 */
+		btrfs_delayed_refs_rsv_refill(fs_info, BTRFS_RESERVE_FLUSH_ALL);
+
 		if (newer_than) {
 			if (newer_off == (u64)-1)
 				break;
