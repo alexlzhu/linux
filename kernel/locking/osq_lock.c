@@ -209,6 +209,7 @@ void osq_unlock(struct optimistic_spin_queue *lock)
 	struct optimistic_spin_node *node, *next;
 	int curr = encode_cpu(smp_processor_id());
 
+    //printk("TESTAZ osq unlock");
 	/*
 	 * Fast path for the uncontended case.
 	 */

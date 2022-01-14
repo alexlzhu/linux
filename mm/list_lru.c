@@ -64,6 +64,7 @@ list_lru_from_kmem(struct list_lru_node *nlru, void *ptr,
 	struct list_lru_one *l = &nlru->lru;
 	struct mem_cgroup *memcg = NULL;
 
+
 	if (!nlru->memcg_lrus)
 		goto out;
 
@@ -136,6 +137,37 @@ bool list_lru_add(struct list_lru *lru, struct list_head *item)
 }
 EXPORT_SYMBOL_GPL(list_lru_add);
 
+bool list_lru_add_page(struct list_lru *lru, struct page *page, struct list_head *item)
+{
+	int nid = page_to_nid(page);
+	struct list_lru_node *nlru = &lru->node[nid];
+	struct list_lru_one *l;
+	struct mem_cgroup *memcg;
+
+    __dump_page(page, "TESTAZ list lru add page");
+	spin_lock(&nlru->lock);
+	if (list_empty(item)) {
+        memcg = page_memcg(page);
+        l = list_lru_from_memcg_idx(nlru, memcg_cache_id(memcg));
+
+		list_add_tail(item, &l->list);
+        
+		/* Set shrinker bit if the first element was added */
+		if (!l->nr_items++) {
+			memcg_set_shrinker_bit(memcg, nid,
+					       lru_shrinker_id(lru));
+        }
+		nlru->nr_items++;
+		spin_unlock(&nlru->lock);
+		return true;
+	}
+
+	spin_unlock(&nlru->lock);
+	return false;
+}
+EXPORT_SYMBOL_GPL(list_lru_add_page);
+
+
 bool list_lru_del(struct list_lru *lru, struct list_head *item)
 {
 	int nid = page_to_nid(virt_to_page(item));
@@ -155,6 +187,51 @@ bool list_lru_del(struct list_lru *lru, struct list_head *item)
 	return false;
 }
 EXPORT_SYMBOL_GPL(list_lru_del);
+
+
+bool list_lru_del_page(struct list_lru *lru, struct page *page, struct list_head *item)
+{
+	int nid = page_to_nid(page);
+	struct list_lru_node *nlru = &lru->node[nid];
+	struct list_lru_one *l;
+	struct mem_cgroup *memcg;
+
+    __dump_page(page, "TESTAZ list lru del page");
+	spin_lock(&nlru->lock);
+	if (!list_empty(item)) {
+        memcg = page_memcg(page);
+        l = list_lru_from_memcg_idx(nlru, memcg_cache_id(memcg));
+		list_del_init(item);
+		l->nr_items--;
+		nlru->nr_items--;
+		spin_unlock(&nlru->lock);
+		return true;
+	}
+	spin_unlock(&nlru->lock);
+	return false;
+}
+EXPORT_SYMBOL_GPL(list_lru_del_page);
+
+bool list_lru_isolate_page(struct list_lru *lru, struct page *page, struct list_head *item)
+{
+    int nid = page_to_nid(page);
+	struct list_lru_node *nlru = &lru->node[nid];
+	struct list_lru_one *l;
+	struct mem_cgroup *memcg;
+
+    __dump_page(page, "TESTAZ list lru isolate page");
+	if (!list_empty(item)) {
+        memcg = page_memcg(page);
+        l = list_lru_from_memcg_idx(nlru, memcg_cache_id(memcg));
+		list_del_init(item);
+		l->nr_items--;
+		nlru->nr_items--;
+		return true;
+	}
+	return false;
+
+}
+EXPORT_SYMBOL_GPL(list_lru_isolate_page);
 
 void list_lru_isolate(struct list_lru_one *list, struct list_head *item)
 {

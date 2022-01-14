@@ -480,6 +480,7 @@ static unsigned long do_shrink_slab(struct shrink_control *shrinkctl,
 	if (freeable == 0 || freeable == SHRINK_EMPTY)
 		return freeable;
 
+
 	/*
 	 * copy the current shrinker scan count into a local variable
 	 * and zero it so that other concurrent shrinker invocations
@@ -503,8 +504,8 @@ static unsigned long do_shrink_slab(struct shrink_control *shrinkctl,
 
 	total_scan += delta;
 	if (total_scan < 0) {
-		pr_err("shrink_slab: %pS negative objects to delete nr=%ld\n",
-		       shrinker->scan_objects, total_scan);
+		/*pr_err("shrink_slab: %pS negative objects to delete nr=%ld\n",
+		       shrinker->scan_objects, total_scan);*/
 		total_scan = freeable;
 		next_deferred = nr;
 	} else
@@ -597,6 +598,7 @@ static unsigned long shrink_slab_memcg(gfp_t gfp_mask, int nid,
 	unsigned long ret, freed = 0;
 	int i;
 
+    //printk("TESTAZ shrink slab memcg");
 	if (!mem_cgroup_online(memcg))
 		return 0;
 

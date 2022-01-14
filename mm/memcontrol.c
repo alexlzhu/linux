@@ -6545,7 +6545,7 @@ static struct cftype memory_files[] = {
 	},
 	{
 		.name = "high",
-		.flags = CFTYPE_NOT_ON_ROOT,
+        .flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = memory_high_show,
 		.write = memory_high_write,
 	},
@@ -6556,7 +6556,7 @@ static struct cftype memory_files[] = {
 	},
 	{
 		.name = "max",
-		.flags = CFTYPE_NOT_ON_ROOT,
+        .flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = memory_max_show,
 		.write = memory_max_write,
 	},
@@ -6828,6 +6828,7 @@ int mem_cgroup_charge(struct page *page, struct mm_struct *mm, gfp_t gfp_mask)
 	if (!memcg)
 		memcg = get_mem_cgroup_from_mm(mm);
 
+
 	ret = try_charge(memcg, gfp_mask, nr_pages);
 	if (ret)
 		goto out_put;
@@ -6973,6 +6974,7 @@ void mem_cgroup_uncharge(struct page *page)
 {
 	struct uncharge_gather ug;
 
+    //printk("TESTAZ mem cgroup uncharge %d", current->pid); 
 	if (mem_cgroup_disabled())
 		return;
 

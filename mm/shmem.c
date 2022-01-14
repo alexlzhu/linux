@@ -600,6 +600,7 @@ next:
 			goto leave;
 		}
 
+        printk("TESTAZ splhp shmem 1 %d", current->pid);
 		ret = split_huge_page(page);
 		unlock_page(page);
 		put_page(page);
@@ -880,6 +881,7 @@ static bool shmem_punch_compound(struct page *page, pgoff_t start, pgoff_t end)
 		return true;
 
 	/* Try to split huge page, so we can truly punch the hole or truncate */
+    printk("TESTAZ splhp shmem 2 %d", current->pid);
 	return split_huge_page(page) >= 0;
 }
 

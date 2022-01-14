@@ -116,6 +116,9 @@ extern void putback_lru_page(struct page *page);
  */
 extern pmd_t *mm_find_pmd(struct mm_struct *mm, unsigned long address);
 
+extern bool is_page_all_zeroes(struct page *page);
+extern int thp_number_utilized_pages(struct page *page);
+
 /*
  * in mm/page_alloc.c
  */

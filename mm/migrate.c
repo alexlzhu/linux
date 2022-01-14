@@ -196,6 +196,26 @@ void putback_movable_pages(struct list_head *l)
 	}
 }
 
+static bool clear_migration_pte(struct page *page, struct vm_area_struct *vma,
+				 unsigned long addr, void *old)
+{
+	struct page_vma_mapped_walk pvmw = {
+		.page = old,
+		.vma = vma,
+		.address = addr,
+		.flags = PVMW_SYNC | PVMW_MIGRATION,
+	};
+
+	VM_BUG_ON_PAGE(PageTail(page), page);
+	while (page_vma_mapped_walk(&pvmw)) {
+        dec_mm_counter(vma->vm_mm, MM_ANONPAGES);
+        pte_clear(vma->vm_mm, pvmw.address, pvmw.pte);
+	}
+
+	return true;
+}
+
+
 /*
  * Restore a potential migration pte to a working pte entry
  */
@@ -212,6 +232,7 @@ static bool remove_migration_pte(struct page *page, struct vm_area_struct *vma,
 	pte_t pte;
 	swp_entry_t entry;
 
+    //__dump_page(page, "TESTAZ remove migration pte");
 	VM_BUG_ON_PAGE(PageTail(page), page);
 	while (page_vma_mapped_walk(&pvmw)) {
 		if (PageKsm(page))
@@ -301,6 +322,19 @@ void remove_migration_ptes(struct page *old, struct page *new, bool locked)
 		rmap_walk(new, &rwc);
 }
 
+void clear_migration_ptes(struct page *old, struct page *new, bool locked)
+{
+	struct rmap_walk_control rwc = {
+		.rmap_one = clear_migration_pte,
+		.arg = old,
+	};
+
+	if (locked)
+		rmap_walk_locked(new, &rwc);
+	else
+		rmap_walk(new, &rwc);
+}
+
 /*
  * Something used the pte of a page under migration. We need to
  * get to the page and wait until migration is finished.
@@ -313,18 +347,23 @@ void __migration_entry_wait(struct mm_struct *mm, pte_t *ptep,
 	swp_entry_t entry;
 	struct page *page;
 
+    //printk("TESTAZ __migration entry wait 1");
 	spin_lock(ptl);
 	pte = *ptep;
 	if (!is_swap_pte(pte))
 		goto out;
 
+    //printk("TESTAZ __migration entry wait 2");
 	entry = pte_to_swp_entry(pte);
 	if (!is_migration_entry(entry))
 		goto out;
 
+    //printk("TESTAZ __migration entry wait 3");
 	page = migration_entry_to_page(entry);
+    //printk("TESTAZ __migration entry wait 4");
 	page = compound_head(page);
 
+    //printk("TESTAZ __migration entry wait 5");
 	/*
 	 * Once page cache replacement of page migration started, page_count
 	 * is zero; but we must not call put_and_wait_on_page_locked() without
@@ -360,9 +399,11 @@ void pmd_migration_entry_wait(struct mm_struct *mm, pmd_t *pmd)
 	spinlock_t *ptl;
 	struct page *page;
 
+
 	ptl = pmd_lock(mm, pmd);
 	if (!is_pmd_migration_entry(*pmd))
 		goto unlock;
+
 	page = migration_entry_to_page(pmd_to_swp_entry(*pmd));
 	if (!get_page_unless_zero(page))
 		goto unlock;
@@ -1473,6 +1514,7 @@ static inline int try_split_thp(struct page *page, struct page **page2,
 	int rc = 0;
 
 	lock_page(page);
+    printk("TESTAZ splhp migrate 1 %d", current->pid);
 	rc = split_huge_page_to_list(page, from);
 	unlock_page(page);
 	if (!rc)
@@ -2480,6 +2522,7 @@ again:
 			if (unlikely(!trylock_page(page)))
 				return migrate_vma_collect_skip(start, end,
 								walk);
+            printk("TESTAZ splhp migrate 2 %d", current->pid);
 			ret = split_huge_page(page);
 			unlock_page(page);
 			put_page(page);

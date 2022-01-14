@@ -759,6 +759,50 @@ out:
 	return pmd;
 }
 
+bool is_page_all_zeroes(struct page *page) {
+    unsigned long _page_index, _page_offset, value;
+    void *kaddr = kmap_local_page(page);
+    bool result = true;
+    for (_page_offset = 0; _page_offset < PAGE_SIZE; _page_offset += sizeof(unsigned long)) {
+        value = *(unsigned long *) (kaddr + _page_offset);
+        if (value != 0) {
+            result = false;
+            break;
+        }
+    }
+    kunmap_local(kaddr);
+    return result;
+    //return true;
+}
+
+int thp_number_utilized_pages(struct page *page)
+{
+    unsigned long _page_index, _page_offset, value;
+
+    if (page && PageAnon(page) && PageCompound(page) && compound_order(compound_head(page)) == 9 && PageTransHuge(page)) {
+        void *kaddr = kmap_local_page(page);
+        long number_of_utilized_pages = HPAGE_PMD_NR;
+        bool is_all_zeroes;
+        
+        for (_page_index = 0; _page_index < HPAGE_PMD_NR; _page_index++) {
+            is_all_zeroes = true;
+            for (_page_offset = 0; _page_offset < PAGE_SIZE; _page_offset += sizeof(unsigned long)) {
+                value = *(unsigned long *) (kaddr + _page_index * PAGE_SIZE + _page_offset);
+                if (value != 0) {
+                    is_all_zeroes = false;
+                    break;
+                }
+            }
+            if (is_all_zeroes) {
+                number_of_utilized_pages--;
+            }
+        }
+        kunmap_local(kaddr);
+        return number_of_utilized_pages;
+    }
+    return -1;
+}
+
 struct page_referenced_arg {
 	int mapcount;
 	int referenced;
@@ -1880,6 +1924,9 @@ static void rmap_walk_anon(struct page *page, struct rmap_walk_control *rwc,
 	if (!anon_vma)
 		return;
 
+    //__dump_page(page, "TESTAZ rmap walk anon");
+    //dump_stack();
+    
 	pgoff_start = page_to_pgoff(page);
 	pgoff_end = pgoff_start + thp_nr_pages(page) - 1;
 	anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root,

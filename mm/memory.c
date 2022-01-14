@@ -3350,26 +3350,36 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 	vm_fault_t ret = 0;
 	void *shadow = NULL;
 
+    //printk("TESTAZ do swap page 1");
+
 	if (!pte_unmap_same(vma->vm_mm, vmf->pmd, vmf->pte, vmf->orig_pte))
 		goto out;
+
+    //printk("TESTAZ do swap page 2");
 
 	entry = pte_to_swp_entry(vmf->orig_pte);
 	if (unlikely(non_swap_entry(entry))) {
 		if (is_migration_entry(entry)) {
+            //printk("TESTAZ do swap page 3");
 			migration_entry_wait(vma->vm_mm, vmf->pmd,
 					     vmf->address);
 		} else if (is_device_private_entry(entry)) {
+            //printk("TESTAZ do swap page 4");
 			vmf->page = device_private_entry_to_page(entry);
 			ret = vmf->page->pgmap->ops->migrate_to_ram(vmf);
 		} else if (is_hwpoison_entry(entry)) {
+            //printk("TESTAZ do swap page 5");
 			ret = VM_FAULT_HWPOISON;
 		} else {
+            //printk("TESTAZ do swap page 6");
 			print_bad_pte(vma, vmf->address, vmf->orig_pte, NULL);
 			ret = VM_FAULT_SIGBUS;
 		}
+        //printk("TESTAZ do swap page 7");
 		goto out;
 	}
 
+    //printk("TESTAZ do swap page 8");
 
 	delayacct_set_flag(DELAYACCT_PF_SWAPIN);
 	page = lookup_swap_cache(entry, vma, vmf->address);

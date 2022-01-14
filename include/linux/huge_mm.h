@@ -196,6 +196,8 @@ static inline int split_huge_page(struct page *page)
 }
 void deferred_split_huge_page(struct page *page);
 
+void split_underutilized_thp(struct page *page);
+
 void __split_huge_pmd(struct vm_area_struct *vma, pmd_t *pmd,
 		unsigned long address, bool freeze, struct page *page);
 
@@ -328,6 +330,11 @@ static inline struct list_head *page_deferred_list(struct page *page)
 	 * occupied by compound_head.
 	 */
 	return &page[2].deferred_list;
+}
+
+static inline struct list_head *page_underutilized_thp_list(struct page *page)
+{
+	return &page[3].underutilized_thp_list;
 }
 
 #else /* CONFIG_TRANSPARENT_HUGEPAGE */

@@ -90,6 +90,8 @@ void memcg_drain_all_list_lrus(int src_idx, struct mem_cgroup *dst_memcg);
  */
 bool list_lru_add(struct list_lru *lru, struct list_head *item);
 
+bool list_lru_add_page(struct list_lru *lru, struct page *page, struct list_head *item);
+
 /**
  * list_lru_del: delete an element to the lru list
  * @list_lru: the lru pointer
@@ -102,6 +104,10 @@ bool list_lru_add(struct list_lru *lru, struct list_head *item);
  * Return value: true if the list was updated, false otherwise
  */
 bool list_lru_del(struct list_lru *lru, struct list_head *item);
+
+bool list_lru_del_page(struct list_lru *lru, struct page* page, struct list_head *item);
+
+bool list_lru_isolate_page(struct list_lru *lru, struct page* page, struct list_head *item);
 
 /**
  * list_lru_count_one: return the number of objects currently held by @lru

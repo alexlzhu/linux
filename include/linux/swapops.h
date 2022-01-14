@@ -201,6 +201,9 @@ static inline struct page *migration_entry_to_page(swp_entry_t entry)
 	 * Any use of migration entries may only occur while the
 	 * corresponding page is locked
 	 */
+    //__dump_page(compound_head(p), "TESTAZ migration entry to page");
+    //printk("TESTAZ migration entry to page %d", PageLocked(compound_head(p)));
+
 	BUG_ON(!PageLocked(compound_head(p)));
 	return p;
 }

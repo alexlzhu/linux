@@ -353,6 +353,7 @@ static int madvise_cold_or_pageout_pte_range(pmd_t *pmd,
 			get_page(page);
 			spin_unlock(ptl);
 			lock_page(page);
+            printk("TESTAZ splhp madvise 3 %d", current->pid);
 			err = split_huge_page(page);
 			unlock_page(page);
 			put_page(page);
@@ -421,6 +422,8 @@ regular_page:
 				break;
 			}
 			pte_unmap_unlock(orig_pte, ptl);
+
+            printk("TESTAZ splhp madvise 1 %d", current->pid);
 			if (split_huge_page(page)) {
 				unlock_page(page);
 				put_page(page);
@@ -632,6 +635,7 @@ static int madvise_free_pte_range(pmd_t *pmd, unsigned long addr,
 				goto out;
 			}
 			pte_unmap_unlock(orig_pte, ptl);
+            printk("TESTAZ splhp madvise 2 %d", current->pid);
 			if (split_huge_page(page)) {
 				unlock_page(page);
 				put_page(page);

@@ -4905,7 +4905,7 @@ static struct cftype cgroup_base_files[] = {
 	},
 	{
 		.name = "cgroup.subtree_control",
-		.flags = CFTYPE_NS_DELEGATABLE,
+        .flags = CFTYPE_NS_DELEGATABLE,
 		.seq_show = cgroup_subtree_control_show,
 		.write = cgroup_subtree_control_write,
 	},

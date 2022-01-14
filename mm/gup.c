@@ -467,6 +467,7 @@ retry:
 		get_page(page);
 		pte_unmap_unlock(ptep, ptl);
 		lock_page(page);
+        printk("TESTAZ splhp gup 1 %d", current->pid);
 		ret = split_huge_page(page);
 		unlock_page(page);
 		put_page(page);
@@ -635,6 +636,7 @@ retry_locked:
 			}
 			spin_unlock(ptl);
 			lock_page(page);
+            printk("TESTAZ splhp gup 2 %d", current->pid);
 			ret = split_huge_page(page);
 			unlock_page(page);
 			put_page(page);

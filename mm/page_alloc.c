@@ -1212,6 +1212,7 @@ static const char *page_bad_reason(struct page *page, unsigned long flags)
 
 static void check_free_page_bad(struct page *page)
 {
+    printk("TESTAZ check free page bad");
 	bad_page(page,
 		 page_bad_reason(page, PAGE_FLAGS_CHECK_AT_FREE));
 }
@@ -1254,6 +1255,12 @@ static int free_tail_pages_check(struct page *head_page, struct page *page)
 		 * deferred_list.next -- ignore value.
 		 */
 		break;
+    case 3:
+        /*
+		 * the third tail page: ->mapping is
+		 * underutilized_thp_list.next -- ignore value.
+		 */
+        break;
 	default:
 		if (page->mapping != TAIL_MAPPING) {
 			bad_page(page, "corrupted mapping in tail page");
@@ -2298,6 +2305,7 @@ static void check_new_page_bad(struct page *page)
 		return;
 	}
 
+    printk("TESTAZ bad page at prep");
 	bad_page(page,
 		 page_bad_reason(page, PAGE_FLAGS_CHECK_AT_PREP));
 }
@@ -4023,6 +4031,10 @@ retry:
 try_this_zone:
 		page = rmqueue(ac->preferred_zoneref->zone, zone, order,
 				gfp_mask, alloc_flags, ac->migratetype);
+        if (order == HPAGE_PMD_ORDER) {
+            //__dump_page(page, "TESTAZ get_page_from_freelist");
+            //printk("TESTAZ compound page %d", compound_order(page));
+        }
 		if (page) {
 			prep_new_page(page, order, gfp_mask, alloc_flags);
 

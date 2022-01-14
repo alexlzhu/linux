@@ -65,7 +65,7 @@ void __dump_page(struct page *page, const char *reason)
 	 */
 	if (page_poisoned) {
 		pr_warn("page:%px is uninitialized and poisoned", page);
-		goto hex_only;
+		//goto hex_only;
 	}
 
 	if (page < head || (page >= head + MAX_ORDER_NR_PAGES)) {
@@ -95,10 +95,10 @@ void __dump_page(struct page *page, const char *reason)
 	 */
 	mapcount = PageSlab(head) ? 0 : page_mapcount(page);
 
-	pr_warn("page:%p refcount:%d mapcount:%d mapping:%p index:%#lx pfn:%#lx\n",
-			page, page_ref_count(head), mapcount, mapping,
-			page_to_pgoff(page), page_to_pfn(page));
-	if (compound) {
+	pr_warn("pid: %d reason: %s page:%p refcount:%d mapcount:%d mapping:%p index:%#lx pfn:%#lx lru:%#lx \n",
+			current->pid, reason, page, page_ref_count(head), mapcount, mapping,
+			page_to_pgoff(page), page_to_pfn(page), page->lru);
+	/*if (compound) {
 		if (hpage_pincount_available(page)) {
 			pr_warn("head:%p order:%u compound_mapcount:%d compound_pincount:%d\n",
 					head, compound_order(head),
@@ -125,13 +125,13 @@ void __dump_page(struct page *page, const char *reason)
 		struct hlist_node *dentry_first;
 		struct dentry *dentry_ptr;
 		struct dentry dentry;
-		unsigned long ino;
+		unsigned long ino;*/
 
 		/*
 		 * mapping can be invalid pointer and we don't want to crash
 		 * accessing it, so probe everything depending on it carefully
 		 */
-		if (get_kernel_nofault(host, &mapping->host) ||
+		/*if (get_kernel_nofault(host, &mapping->host) ||
 		    get_kernel_nofault(a_ops, &mapping->a_ops)) {
 			pr_warn("failed to read mapping contents, not a valid kernel address?\n");
 			goto out_mapping;
@@ -158,13 +158,13 @@ void __dump_page(struct page *page, const char *reason)
 		if (get_kernel_nofault(dentry, dentry_ptr)) {
 			pr_warn("aops:%ps ino:%lx with invalid dentry %px\n",
 					a_ops, ino, dentry_ptr);
-		} else {
+		} else {*/
 			/*
 			 * if dentry is corrupted, the %pd handler may still
 			 * crash, but it's unlikely that we reach here with a
 			 * corrupted struct page
 			 */
-			pr_warn("aops:%ps ino:%lx dentry name:\"%pd\"\n",
+			 /*pr_warn("aops:%ps ino:%lx dentry name:\"%pd\"\n",
 					a_ops, ino, &dentry);
 		}
 	}
@@ -184,7 +184,7 @@ hex_only:
 			sizeof(struct page), false);
 
 	if (reason)
-		pr_warn("page dumped because: %s\n", reason);
+		pr_warn("page dumped because: %s\n", reason);*/
 }
 
 void dump_page(struct page *page, const char *reason)

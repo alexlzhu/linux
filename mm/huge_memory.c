@@ -7,6 +7,8 @@
 
 #include <linux/mm.h>
 #include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/clock.h>
 #include <linux/sched/coredump.h>
 #include <linux/sched/numa_balancing.h>
 #include <linux/highmem.h>
@@ -29,6 +31,7 @@
 #include <linux/hashtable.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/page_idle.h>
+#include <linux/proc_fs.h>
 #include <linux/shmem_fs.h>
 #include <linux/oom.h>
 #include <linux/numa.h>
@@ -62,6 +65,90 @@ static struct shrinker deferred_split_shrinker;
 static atomic_t huge_zero_refcount;
 struct page *huge_zero_page __read_mostly;
 unsigned long huge_zero_pfn __read_mostly = ~0UL;
+
+struct list_lru huge_low_util_page_lru;
+//static DEFINE_SPINLOCK(huge_low_util_page_lock);
+
+static void thp_utilization_workfn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(thp_utilization_work, thp_utilization_workfn);
+
+LIST_HEAD(thp_info_list);
+DEFINE_MUTEX(thp_info_mutex);
+
+LIST_HEAD(under_util_thp_list);
+DEFINE_MUTEX(under_util_thp_mutex);
+
+struct thp_scan_info {
+    struct zone *thp_zone;
+	unsigned long thp_pfn;
+    
+    int bucket_one;
+    int bucket_two;
+    int bucket_three;
+    int bucket_four;
+    int bucket_five;
+    int bucket_six;
+    int bucket_sev;
+    int bucket_eight;
+
+    u64 time_since_last_scan;
+    u64 timestamp;
+
+    int thp_total_free_pages_one;
+    int thp_total_free_pages_two;
+    int thp_total_free_pages_three;
+    int thp_total_free_pages_four;
+    int thp_total_free_pages_five;
+    int thp_total_free_pages_six;
+    int thp_total_free_pages_sev;
+    int thp_total_free_pages_eight;
+};
+
+static struct thp_scan_info trans_hugepage_scan_proc;
+static struct thp_scan_info trans_hugepage_scan_info;
+
+static int show_thp(struct seq_file *seqf, void *pos)
+{
+    seq_printf(seqf, "THP_UTIL   %d %d %d %d %d %d %d %d  Timestamp: %llu Time since last run: %llu \n", trans_hugepage_scan_proc.bucket_one, trans_hugepage_scan_proc.bucket_two, trans_hugepage_scan_proc.bucket_three, trans_hugepage_scan_proc.bucket_four, trans_hugepage_scan_proc.bucket_five, trans_hugepage_scan_proc.bucket_six, trans_hugepage_scan_proc.bucket_sev, trans_hugepage_scan_proc.bucket_eight, trans_hugepage_scan_proc.timestamp, trans_hugepage_scan_proc.time_since_last_scan);
+    seq_printf(seqf, "ZERO_PAGES %d %d %d %d %d %d %d %d \n", trans_hugepage_scan_proc.thp_total_free_pages_one, trans_hugepage_scan_proc.thp_total_free_pages_two, trans_hugepage_scan_proc.thp_total_free_pages_three, trans_hugepage_scan_proc.thp_total_free_pages_four, trans_hugepage_scan_proc.thp_total_free_pages_five, trans_hugepage_scan_proc.thp_total_free_pages_six, trans_hugepage_scan_proc.thp_total_free_pages_sev, trans_hugepage_scan_proc.thp_total_free_pages_eight);
+    return 0;
+}
+
+static void *thp_start(struct seq_file *m, loff_t *pos)
+{
+	mutex_lock(&thp_info_mutex);
+	return seq_list_start(&thp_info_list, *pos);
+}
+
+static void *thp_next(struct seq_file *m, void *p, loff_t *pos)
+{
+	return seq_list_next(p, &thp_info_list, pos);
+}
+
+static void thp_stop(struct seq_file *m, void *arg)
+{
+	mutex_unlock(&thp_info_mutex);
+}
+
+static const struct seq_operations thp_util_op = {
+    .start	= thp_start,
+	.next	= thp_next,
+	.stop	= thp_stop,
+	.show	= show_thp,
+};
+
+static int thp_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &thp_util_op);
+}
+
+static const struct proc_ops thp_proc_ops = {
+	.proc_flags	= PROC_ENTRY_PERMANENT,
+	.proc_open	= thp_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= seq_release,
+};
 
 static inline bool file_thp_enabled(struct vm_area_struct *vma)
 {
@@ -169,6 +256,64 @@ static struct shrinker huge_zero_page_shrinker = {
 	.count_objects = shrink_huge_zero_page_count,
 	.scan_objects = shrink_huge_zero_page_scan,
 	.seeks = DEFAULT_SEEKS,
+};
+
+static enum lru_status low_util_free_page(struct list_head *item,
+				       struct list_lru_one *lru,
+				       spinlock_t *lock,
+				       void *cb_arg)
+{
+	struct page	*head = compound_head(list_entry(item, struct page, underutilized_thp_list));
+    if (get_page_unless_zero(head)) {
+        lock_page(head);
+        __dump_page(head, "TESTAZ splhp low util free page");
+
+        list_lru_isolate_page(&huge_low_util_page_lru, head, page_underutilized_thp_list(head));
+
+        split_huge_page(head);
+        unlock_page(head);
+
+        put_page(head);
+        __dump_page(head, "TESTAZ HEAD PAGE NONZERO");
+
+
+        /*printk("TESTAZ low util free page head lru %d", PageLRU(head));
+        if (is_page_all_zeroes(head)) {
+            mem_cgroup_uncharge(head);
+            __free_page(head);
+            __dump_page(head, "TESTAZ HEAD PAGE ZERO");
+        } else {
+            put_page(head);
+            __dump_page(head, "TESTAZ HEAD PAGE NONZERO");
+        }*/
+    }
+
+    //spin_unlock(&huge_low_util_page_lock);
+
+	return LRU_REMOVED_RETRY;
+}
+
+static unsigned long shrink_huge_low_util_page_count(struct shrinker *shrink,
+                                                       struct shrink_control *sc)
+{
+   unsigned long ret = list_lru_count(&huge_low_util_page_lru);
+   return ret;
+}
+
+static unsigned long shrink_huge_low_util_page_scan(struct shrinker *shrink,
+                                                              struct shrink_control *sc)
+{
+	unsigned long ret;
+	ret = list_lru_walk(&huge_low_util_page_lru, low_util_free_page,
+			    NULL, list_lru_count(&huge_low_util_page_lru));
+	return ret;
+}
+
+static struct shrinker huge_low_util_page_shrinker = {
+    .count_objects = shrink_huge_low_util_page_count,
+    .scan_objects = shrink_huge_low_util_page_scan,
+    .seeks = DEFAULT_SEEKS,
+	.flags = SHRINKER_MEMCG_AWARE 
 };
 
 #ifdef CONFIG_SYSFS
@@ -424,6 +569,17 @@ static int __init hugepage_init(void)
 	if (err)
 		goto err_slab;
 
+	proc_create("thp_utilization", 0777, NULL, &thp_proc_ops);
+
+    struct list_head * dummy =  kmalloc(sizeof(struct list_head), GFP_KERNEL);
+	list_add(dummy, &thp_info_list);
+
+    schedule_delayed_work(&thp_utilization_work, msecs_to_jiffies(1000));
+
+    err = register_shrinker(&huge_low_util_page_shrinker);
+	list_lru_init_memcg(&huge_low_util_page_lru, &huge_low_util_page_shrinker);
+    if (err)
+        goto err_low_util_shrinker;
 	err = register_shrinker(&huge_zero_page_shrinker);
 	if (err)
 		goto err_hzp_shrinker;
@@ -448,6 +604,9 @@ static int __init hugepage_init(void)
 	return 0;
 err_khugepaged:
 	unregister_shrinker(&deferred_split_shrinker);
+err_low_util_shrinker:
+    unregister_shrinker(&huge_low_util_page_shrinker);
+    list_lru_destroy(&huge_low_util_page_lru);
 err_split_shrinker:
 	unregister_shrinker(&huge_zero_page_shrinker);
 err_hzp_shrinker:
@@ -525,6 +684,7 @@ void prep_transhuge_page(struct page *page)
 	 */
 
 	INIT_LIST_HEAD(page_deferred_list(page));
+	INIT_LIST_HEAD(page_underutilized_thp_list(page));
 	set_compound_page_dtor(page, TRANSHUGE_PAGE_DTOR);
 }
 
@@ -601,6 +761,8 @@ static vm_fault_t __do_huge_pmd_anonymous_page(struct vm_fault *vmf,
 	vm_fault_t ret = 0;
 
 	VM_BUG_ON_PAGE(!PageCompound(page), page);
+
+    //__dump_page(page, "TESTAZ __do huge pmd anonymous page");
 
 	if (mem_cgroup_charge(page, vma->vm_mm, gfp)) {
 		put_page(page);
@@ -2371,7 +2533,6 @@ static void unmap_page(struct page *page)
 		TTU_RMAP_LOCKED | TTU_SPLIT_HUGE_PMD;
 
 	VM_BUG_ON_PAGE(!PageHead(page), page);
-
 	if (PageAnon(page))
 		ttu_flags |= TTU_SPLIT_FREEZE;
 
@@ -2413,7 +2574,7 @@ static void lru_add_page_tail(struct page *head, struct page *tail,
 }
 
 static void __split_huge_page_tail(struct page *head, int tail,
-		struct lruvec *lruvec, struct list_head *list)
+		struct lruvec *lruvec, struct list_head *list, int free_page)
 {
 	struct page *page_tail = head + tail;
 
@@ -2442,7 +2603,7 @@ static void __split_huge_page_tail(struct page *head, int tail,
 			 (1L << PG_dirty)));
 
 	/* ->mapping in first tail page is compound_mapcount */
-	VM_BUG_ON_PAGE(tail > 2 && page_tail->mapping != TAIL_MAPPING,
+	VM_BUG_ON_PAGE(tail > 3 && page_tail->mapping != TAIL_MAPPING,
 			page_tail);
 	page_tail->mapping = head->mapping;
 	page_tail->index = head->index + tail;
@@ -2469,12 +2630,19 @@ static void __split_huge_page_tail(struct page *head, int tail,
 
 	page_cpupid_xchg_last(page_tail, page_cpupid_last(head));
 
+    
 	/*
 	 * always add to the tail because some iterators expect new
 	 * pages to show after the currently processed elements - e.g.
 	 * migrate_pages
 	 */
-	lru_add_page_tail(head, page_tail, lruvec, list);
+    if (!free_page) 
+        lru_add_page_tail(head, page_tail, lruvec, list);
+    else {
+        __ClearPageLRU(page_tail);
+        __ClearPageActive(page_tail);
+        __ClearPageUnevictable(page_tail);
+    }
 }
 
 static void __split_huge_page(struct page *page, struct list_head *list,
@@ -2486,6 +2654,7 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 	unsigned long offset = 0;
 	unsigned int nr = thp_nr_pages(head);
 	int i;
+    DECLARE_BITMAP(free_remap_bitmap, HPAGE_PMD_NR) = { 0 };
 
 	/* complete memcg works before add pages to LRU */
 	split_page_memcg(head, nr);
@@ -2502,8 +2671,12 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 	lruvec = lock_page_lruvec(head);
 
 	for (i = nr - 1; i >= 1; i--) {
-		__split_huge_page_tail(head, i, lruvec, list);
-		/* Some pages can be beyond i_size: drop them from page cache */
+        if (&head[i] != page && is_page_all_zeroes(&head[i])) {
+            set_bit(i, free_remap_bitmap);
+        }
+        __split_huge_page_tail(head, i, lruvec, list, test_bit(i, free_remap_bitmap));
+
+        /* Some pages can be beyond i_size: drop them from page cache */
 		if (head[i].index >= end) {
 			ClearPageDirty(head + i);
 			__delete_from_page_cache(head + i, NULL);
@@ -2518,6 +2691,11 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 					head + i, 0);
 		}
 	}
+    /*if (is_page_all_zeroes(head)) {
+		del_page_from_lru_list(head, lruvec);
+        __clear_page_lru_flags(head);
+        set_bit(0, free_remap_bitmap);
+    }*/
 
 	ClearPageCompound(head);
 	unlock_page_lruvec(lruvec);
@@ -2541,7 +2719,13 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 	}
 	local_irq_enable();
 
-	remap_page(head, nr);
+	for (i = 0; i < nr; i++) {
+        if (test_bit(i, free_remap_bitmap)) {
+            clear_migration_ptes(head + i, head + i, true);
+        } else {
+            remove_migration_ptes(head + i, head + i, true);
+        }
+    }
 
 	if (PageSwapCache(head)) {
 		swp_entry_t entry = { .val = page_private(head) };
@@ -2562,7 +2746,13 @@ static void __split_huge_page(struct page *page, struct list_head *list,
 		 * requires taking the lru_lock so we do the put_page
 		 * of the tail pages after the split is complete.
 		 */
-		put_page(subpage);
+
+        if (test_bit(i, free_remap_bitmap)) {
+            mem_cgroup_uncharge(subpage);
+            __free_page(subpage);
+        } else {
+            put_page(subpage);
+        }
 	}
 }
 
@@ -2587,6 +2777,7 @@ int total_mapcount(struct page *page)
 		return ret - compound * nr;
 	if (PageDoubleMap(page))
 		ret -= nr;
+
 	return ret;
 }
 
@@ -2653,6 +2844,7 @@ bool can_split_huge_page(struct page *page, int *pextra_pins)
 {
 	int extra_pins;
 
+    
 	/* Additional pins from page cache */
 	if (PageAnon(page))
 		extra_pins = PageSwapCache(page) ? thp_nr_pages(page) : 0;
@@ -2660,6 +2852,7 @@ bool can_split_huge_page(struct page *page, int *pextra_pins)
 		extra_pins = thp_nr_pages(page);
 	if (pextra_pins)
 		*pextra_pins = extra_pins;
+
 	return total_mapcount(page) == page_count(page) - extra_pins - 1;
 }
 
@@ -2741,6 +2934,7 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 	 * Racy check if we can split the page, before unmap_page() will
 	 * split PMDs
 	 */
+
 	if (!can_split_huge_page(head, &extra_pins)) {
 		ret = -EBUSY;
 		goto out_unlock;
@@ -2762,6 +2956,7 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 			goto fail;
 	}
 
+    //spin_lock(&huge_low_util_page_lock);
 	/* Prevent deferred_split_scan() touching ->_refcount */
 	spin_lock(&ds_queue->split_queue_lock);
 	if (page_ref_freeze(head, 1 + extra_pins)) {
@@ -2770,6 +2965,12 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 			list_del(page_deferred_list(head));
 		}
 		spin_unlock(&ds_queue->split_queue_lock);
+        
+        if (!list_empty(page_underutilized_thp_list(head))) {
+            list_lru_del_page(&huge_low_util_page_lru, head, page_underutilized_thp_list(head));
+        }
+        //spin_unlock(&huge_low_util_page_lock);
+
 		if (mapping) {
 			int nr = thp_nr_pages(head);
 
@@ -2780,11 +2981,11 @@ int split_huge_page_to_list(struct page *page, struct list_head *list)
 				__mod_lruvec_page_state(head, NR_FILE_THPS,
 							-nr);
 		}
-
 		__split_huge_page(page, list, end);
 		ret = 0;
 	} else {
 		spin_unlock(&ds_queue->split_queue_lock);
+        //spin_unlock(&huge_low_util_page_lock);
 fail:
 		if (mapping)
 			xa_unlock(&mapping->i_pages);
@@ -2792,6 +2993,7 @@ fail:
 		remap_page(head, thp_nr_pages(head));
 		ret = -EBUSY;
 	}
+    
 
 out_unlock:
 	if (anon_vma) {
@@ -2800,8 +3002,11 @@ out_unlock:
 	}
 	if (mapping)
 		i_mmap_unlock_read(mapping);
+
+    
 out:
 	count_vm_event(!ret ? THP_SPLIT_PAGE : THP_SPLIT_PAGE_FAILED);
+
 	return ret;
 }
 
@@ -2810,12 +3015,27 @@ void free_transhuge_page(struct page *page)
 	struct deferred_split *ds_queue = get_deferred_split_queue(page);
 	unsigned long flags;
 
+    //__dump_page(page, "TESTAZ free transhuge page");
+    
+    //printk("TESTAZ free transhuge page %d", current->pid);
+
 	spin_lock_irqsave(&ds_queue->split_queue_lock, flags);
 	if (!list_empty(page_deferred_list(page))) {
 		ds_queue->split_queue_len--;
 		list_del(page_deferred_list(page));
 	}
 	spin_unlock_irqrestore(&ds_queue->split_queue_lock, flags);
+
+    //spin_lock(&huge_low_util_page_lock);
+    if (!list_empty(page_underutilized_thp_list(page))) {
+        list_lru_del_page(&huge_low_util_page_lru, page, page_underutilized_thp_list(page));
+    }
+    //spin_unlock(&huge_low_util_page_lock);
+    //del_page_from_lru_list(head, lruvec);
+    __ClearPageLRU(page);
+    __ClearPageActive(page);
+    __ClearPageUnevictable(page);
+
 	free_compound_page(page);
 }
 
@@ -2854,6 +3074,18 @@ void deferred_split_huge_page(struct page *page)
 #endif
 	}
 	spin_unlock_irqrestore(&ds_queue->split_queue_lock, flags);
+}
+
+void split_underutilized_thp(struct page *page)
+{
+	VM_BUG_ON_PAGE(!PageTransHuge(page), page);
+
+    if (PageSwapCache(page))
+		return;
+
+    //spin_lock(&huge_low_util_page_lock);
+    list_lru_add_page(&huge_low_util_page_lru, page, page_underutilized_thp_list(page));
+    //spin_unlock(&huge_low_util_page_lock);
 }
 
 static unsigned long deferred_split_count(struct shrinker *shrink,
@@ -2906,6 +3138,7 @@ static unsigned long deferred_split_scan(struct shrinker *shrink,
 		if (!trylock_page(page))
 			goto next;
 		/* split_huge_page() removes page from list on success */
+
 		if (!split_huge_page(page))
 			split++;
 		unlock_page(page);
@@ -2963,6 +3196,7 @@ static int split_huge_pages_set(void *data, u64 val)
 
 			total++;
 			lock_page(page);
+
 			if (!split_huge_page(page))
 				split++;
 			unlock_page(page);
@@ -3045,3 +3279,153 @@ void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct page *new)
 	update_mmu_cache_pmd(vma, address, pvmw->pmd);
 }
 #endif
+
+static void thp_utilization_workfn(struct work_struct *work)
+{
+    unsigned long hend;
+    int util_pct;
+    int num_utilized_pages;
+    int num_free_pages;
+    struct page *page = NULL;
+    bool update_proc;
+    u64 current_timestamp;
+
+    if (!trans_hugepage_scan_info.thp_zone) {
+        trans_hugepage_scan_info.thp_zone = (first_online_pgdat())->node_zones;
+    }
+	hend = (trans_hugepage_scan_info.thp_zone->zone_start_pfn + trans_hugepage_scan_info.thp_zone->spanned_pages + HPAGE_PMD_NR - 1) & ~(HPAGE_PMD_SIZE - 1);
+
+    if (!populated_zone(trans_hugepage_scan_info.thp_zone) || trans_hugepage_scan_info.thp_pfn >= hend) {
+        trans_hugepage_scan_info.thp_zone = next_zone(trans_hugepage_scan_info.thp_zone);
+
+        update_proc = !trans_hugepage_scan_info.thp_zone;
+        trans_hugepage_scan_info.thp_zone = update_proc ? (first_online_pgdat())->node_zones : trans_hugepage_scan_info.thp_zone;
+        trans_hugepage_scan_info.thp_pfn = (trans_hugepage_scan_info.thp_zone->zone_start_pfn + HPAGE_PMD_NR - 1) & ~(HPAGE_PMD_SIZE - 1);
+
+        if (update_proc) {
+            trans_hugepage_scan_proc.bucket_one = trans_hugepage_scan_info.bucket_one;
+            trans_hugepage_scan_proc.bucket_two = trans_hugepage_scan_info.bucket_two;
+            trans_hugepage_scan_proc.bucket_three = trans_hugepage_scan_info.bucket_three;
+            trans_hugepage_scan_proc.bucket_four = trans_hugepage_scan_info.bucket_four;
+            trans_hugepage_scan_proc.bucket_five = trans_hugepage_scan_info.bucket_five;
+            trans_hugepage_scan_proc.bucket_six = trans_hugepage_scan_info.bucket_six;
+            trans_hugepage_scan_proc.bucket_sev = trans_hugepage_scan_info.bucket_sev;
+            trans_hugepage_scan_proc.bucket_eight = trans_hugepage_scan_info.bucket_eight;
+
+            current_timestamp = local_clock();
+            trans_hugepage_scan_proc.time_since_last_scan = current_timestamp - trans_hugepage_scan_proc.timestamp;
+            trans_hugepage_scan_proc.timestamp = current_timestamp;
+
+            trans_hugepage_scan_proc.thp_total_free_pages_one = trans_hugepage_scan_info.thp_total_free_pages_one;
+            trans_hugepage_scan_proc.thp_total_free_pages_two = trans_hugepage_scan_info.thp_total_free_pages_two;
+            trans_hugepage_scan_proc.thp_total_free_pages_three = trans_hugepage_scan_info.thp_total_free_pages_three;
+            trans_hugepage_scan_proc.thp_total_free_pages_four = trans_hugepage_scan_info.thp_total_free_pages_four;
+            trans_hugepage_scan_proc.thp_total_free_pages_five = trans_hugepage_scan_info.thp_total_free_pages_five;
+            trans_hugepage_scan_proc.thp_total_free_pages_six = trans_hugepage_scan_info.thp_total_free_pages_six;
+            trans_hugepage_scan_proc.thp_total_free_pages_sev = trans_hugepage_scan_info.thp_total_free_pages_sev;
+            trans_hugepage_scan_proc.thp_total_free_pages_eight = trans_hugepage_scan_info.thp_total_free_pages_eight;
+
+            trans_hugepage_scan_info.bucket_one = 0;
+            trans_hugepage_scan_info.bucket_two = 0;
+            trans_hugepage_scan_info.bucket_three = 0;
+            trans_hugepage_scan_info.bucket_four = 0;
+            trans_hugepage_scan_info.bucket_five = 0;
+            trans_hugepage_scan_info.bucket_six = 0;
+            trans_hugepage_scan_info.bucket_sev = 0;
+            trans_hugepage_scan_info.bucket_eight = 0;
+
+            trans_hugepage_scan_info.thp_total_free_pages_one = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_two = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_three = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_four = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_five = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_six = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_sev = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_eight = 0;
+        }
+        schedule_delayed_work(&thp_utilization_work, msecs_to_jiffies(1000));
+        return;
+    }
+
+    int i;
+    unsigned long _page_index;
+    struct page* head;
+	for (i = 0; i < 256; i++) {
+        if (trans_hugepage_scan_info.thp_pfn >= hend) {
+            break;
+        }
+        if (pfn_valid(trans_hugepage_scan_info.thp_pfn)) {
+            page = pfn_to_page(trans_hugepage_scan_info.thp_pfn);
+            num_utilized_pages = thp_number_utilized_pages(page);
+
+            if (num_utilized_pages >= 0) {
+                num_free_pages = HPAGE_PMD_NR - num_utilized_pages;
+                util_pct = (num_utilized_pages * 100) / HPAGE_PMD_NR;
+
+                head = compound_head(page);
+                if (util_pct < 13) {
+                    trans_hugepage_scan_info.bucket_one++;
+                    trans_hugepage_scan_info.thp_total_free_pages_one += num_free_pages;
+
+                    if (is_huge_zero_page(head)) {
+                        printk("TESTAZ HUGE ZERO PAGE %d", PageAnon(head));
+                    }
+                    if (PageAnon(head) && !is_huge_zero_page(head)) {
+                        split_underutilized_thp(head);
+                    }
+                } else if (util_pct < 25) {
+                    trans_hugepage_scan_info.bucket_two++;
+                    trans_hugepage_scan_info.thp_total_free_pages_two += num_free_pages;
+
+                    /*if (PageAnon(head) && !is_huge_zero_page(head)) {
+                        split_underutilized_thp(head);
+                    }*/
+                } else if (util_pct < 38) {
+                    trans_hugepage_scan_info.bucket_three++;
+                    trans_hugepage_scan_info.thp_total_free_pages_three += num_free_pages;
+
+                    /*if (PageAnon(head) && !is_huge_zero_page(head)) {
+                        split_underutilized_thp(head);
+                    }*/
+
+                } else if (util_pct < 50) {
+                    trans_hugepage_scan_info.bucket_four++;
+                    trans_hugepage_scan_info.thp_total_free_pages_four += num_free_pages;
+                    /*if (PageAnon(head) && !is_huge_zero_page(head)) {
+                        split_underutilized_thp(head);
+                    }*/
+
+                } else if (util_pct < 63) {
+                    trans_hugepage_scan_info.bucket_five++;
+                    trans_hugepage_scan_info.thp_total_free_pages_five += num_free_pages;
+                    /*if (PageAnon(head) && !is_huge_zero_page(head)) {
+                        split_underutilized_thp(head);
+                    }*/
+
+                } else if (util_pct < 75) {
+                    trans_hugepage_scan_info.bucket_six++;
+                    trans_hugepage_scan_info.thp_total_free_pages_six += num_free_pages;
+
+                    /*if (PageAnon(head) && !is_huge_zero_page(head)) {
+                        split_underutilized_thp(head);
+                    }*/
+
+                } else if (util_pct < 88) {
+                    trans_hugepage_scan_info.bucket_sev++;
+                    trans_hugepage_scan_info.thp_total_free_pages_sev += num_free_pages;
+
+                    /*if (PageAnon(head) && !is_huge_zero_page(head)) {
+                        split_underutilized_thp(head);
+                    }*/
+
+                } else {
+                    trans_hugepage_scan_info.bucket_eight++;
+                    trans_hugepage_scan_info.thp_total_free_pages_eight += num_free_pages;
+                }
+            }
+        }
+        trans_hugepage_scan_info.thp_pfn += HPAGE_PMD_NR;
+    }
+
+    schedule_delayed_work(&thp_utilization_work, msecs_to_jiffies(1000));
+}
