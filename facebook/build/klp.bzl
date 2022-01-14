@@ -130,7 +130,7 @@ def klp(flavor=None, label=None):
       name = "target-image-url",
       cmd = """
           pushd $(location :target-sources)
-          NO_BUCKD=1 ./facebook/build/buck query '//facebook/build:build-image' --output-attributes urls 0 | jq '.[][][]' | tr -d '"' > $OUT
+          NO_BUCKD=1 ./facebook/build/buck query '//facebook/build:build-image' --output-attributes urls 0 | jq -r '.[][][]' > $OUT
           popd
       """,
       out = "target-image-url",
@@ -168,6 +168,30 @@ def klp(flavor=None, label=None):
         cacheable=False,
     )
 
+    train_data_args = ""
+    compiler_args = ""
+
+    if "clang" in cfg_flavor:
+        native.genrule(
+            name = "target-train-url",
+            cmd = """
+                pushd "$(location :target-sources)"
+                NO_BUCKD=1 ./facebook/build/buck query '//facebook/build:clang-train-data' --output-attributes urls 0 | jq -r '.[][][]' > $OUT
+                popd
+            """,
+            out = "target-train-url",
+        )
+
+        native.genrule(
+            name = "target-train-data",
+            cmd =  "curl `cat $(location :target-train-url)` -o $OUT",
+            out = "target-train-data",
+        )
+        bind_ros.append(("$(location :target-train-data)", "/tmp/vmlinux.profdata_original"))
+        train_data_args = "-p /tmp/vmlinux.profdata"
+        compiler_args = "LLVM=1"
+
+
     #feed artifacts to kpatch-build in a container
     bind_rws = [(":baseline-sources", "/rw/linux"), ("$OUT", "/rw/output"), (":target-sources", "/rw/target")]
     container_genrule(
@@ -177,10 +201,24 @@ def klp(flavor=None, label=None):
             pushd /rw/target
             # prepare config for the target. It could be different from the baselines config
             cp /tmp/config .config
-            make O=/rw/target olddefconfig
-            popd 
-            kpatch-build -s /rw/linux -c /rw/target/.config -v /boot/vmlinux* -o /rw/output -n klp_`cat /tmp/baseline_rpm_version`_`cat /tmp/hotfix` /tmp/patches/* || (cp /root/.kpatch/build.log /rw/output/ && exit 1)
-        """,
+            make {compiler_args} O=/rw/target olddefconfig
+            popd
+            if [ -f /tmp/vmlinux.profdata_original ]; then
+                # File path is part of the profile apparently
+                # and its challenging to reproduce the build keeping all paths
+                # completely the same.
+                # In the future when someone will try to change the name of the file
+                # for the baseline we may end up getting this broken.
+                # But worst case we will just have to fix the pattern for sed.
+                # sweet lord in heaven, fogive me for this
+                pushd /tmp
+                llvm-profdata merge vmlinux.profdata_original  --text --output=profile.txt
+                sed "s|/ro/source/||g" -i profile.txt
+                llvm-profdata merge profile.txt  --output=vmlinux.profdata
+                popd
+            fi
+            kpatch-build {train_data_args} -s /rw/linux -c /rw/target/.config -v /boot/vmlinux* -o /rw/output -n klp_`cat /tmp/baseline_rpm_version`_`cat /tmp/hotfix` /tmp/patches/* || (cp /root/.kpatch/build.log /rw/output/ && exit 1)
+        """.format(train_data_args = train_data_args, compiler_args = compiler_args),
         bind_ro=bind_ros,
         bind_rw=bind_rws,
         cacheable=False,
