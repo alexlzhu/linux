@@ -8,6 +8,7 @@
 #include <linux/mm.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
+#include <linux/sched/clock.h>
 #include <linux/sched/coredump.h>
 #include <linux/sched/numa_balancing.h>
 #include <linux/highmem.h>
@@ -30,6 +31,7 @@
 #include <linux/hashtable.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/page_idle.h>
+#include <linux/proc_fs.h>
 #include <linux/shmem_fs.h>
 #include <linux/oom.h>
 #include <linux/numa.h>
@@ -67,6 +69,93 @@ static struct shrinker deferred_split_shrinker;
 static atomic_t huge_zero_refcount;
 struct page *huge_zero_page __read_mostly;
 unsigned long huge_zero_pfn __read_mostly = ~0UL;
+
+static unsigned long huge_low_util_refcount; //This may need to be atomic
+
+static void thp_utilization_workfn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(thp_utilization_work, thp_utilization_workfn);
+
+LIST_HEAD(thp_info_list);
+DEFINE_MUTEX(thp_info_mutex);
+struct thp_scan_info {
+    struct zone *thp_zone;
+	unsigned long thp_pfn;
+    
+    int bucket_one;
+    int bucket_two;
+    int bucket_three;
+    int bucket_four;
+    int bucket_five;
+    int bucket_six;
+    int bucket_sev;
+    int bucket_eight;
+
+    u64 time_since_last_scan;
+    u64 timestamp;
+
+    int thp_total_free_pages_one;
+    int thp_total_free_pages_two;
+    int thp_total_free_pages_three;
+    int thp_total_free_pages_four;
+    int thp_total_free_pages_five;
+    int thp_total_free_pages_six;
+    int thp_total_free_pages_sev;
+    int thp_total_free_pages_eight;
+};
+
+LIST_HEAD(under_util_thp_list);
+DEFINE_MUTEX(under_util_thp_mutex);
+
+struct thp_low_util_scan_record {
+    struct page *low_util_page;
+    struct list_head list;
+};
+
+static struct thp_scan_info trans_hugepage_scan_proc;
+static struct thp_scan_info trans_hugepage_scan_info;
+
+static int show_thp(struct seq_file *seqf, void *pos)
+{
+    seq_printf(seqf, "THP_UTIL   %d %d %d %d %d %d %d %d  Timestamp: %llu Time since last run: %llu \n", trans_hugepage_scan_proc.bucket_one, trans_hugepage_scan_proc.bucket_two, trans_hugepage_scan_proc.bucket_three, trans_hugepage_scan_proc.bucket_four, trans_hugepage_scan_proc.bucket_five, trans_hugepage_scan_proc.bucket_six, trans_hugepage_scan_proc.bucket_sev, trans_hugepage_scan_proc.bucket_eight, trans_hugepage_scan_proc.timestamp, trans_hugepage_scan_proc.time_since_last_scan);
+    seq_printf(seqf, "ZERO_PAGES %d %d %d %d %d %d %d %d \n", trans_hugepage_scan_proc.thp_total_free_pages_one, trans_hugepage_scan_proc.thp_total_free_pages_two, trans_hugepage_scan_proc.thp_total_free_pages_three, trans_hugepage_scan_proc.thp_total_free_pages_four, trans_hugepage_scan_proc.thp_total_free_pages_five, trans_hugepage_scan_proc.thp_total_free_pages_six, trans_hugepage_scan_proc.thp_total_free_pages_sev, trans_hugepage_scan_proc.thp_total_free_pages_eight);
+    return 0;
+}
+
+static void *thp_start(struct seq_file *m, loff_t *pos)
+{
+	mutex_lock(&thp_info_mutex);
+	return seq_list_start(&thp_info_list, *pos);
+}
+
+static void *thp_next(struct seq_file *m, void *p, loff_t *pos)
+{
+	return seq_list_next(p, &thp_info_list, pos);
+}
+
+static void thp_stop(struct seq_file *m, void *arg)
+{
+	mutex_unlock(&thp_info_mutex);
+}
+
+static const struct seq_operations thp_util_op = {
+    .start	= thp_start,
+	.next	= thp_next,
+	.stop	= thp_stop,
+	.show	= show_thp,
+};
+
+static int thp_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &thp_util_op);
+}
+
+static const struct proc_ops thp_proc_ops = {
+	.proc_flags	= PROC_ENTRY_PERMANENT,
+	.proc_open	= thp_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= seq_release,
+};
 
 static inline bool file_thp_enabled(struct vm_area_struct *vma)
 {
@@ -152,6 +241,7 @@ void mm_put_huge_zero_page(struct mm_struct *mm)
 static unsigned long shrink_huge_zero_page_count(struct shrinker *shrink,
 					struct shrink_control *sc)
 {
+    printk("TESTAZ SHRINK HUGE ZERO COUNT");
 	/* we can free zero page only if last reference remains */
 	return atomic_read(&huge_zero_refcount) == 1 ? HPAGE_PMD_NR : 0;
 }
@@ -159,6 +249,7 @@ static unsigned long shrink_huge_zero_page_count(struct shrinker *shrink,
 static unsigned long shrink_huge_zero_page_scan(struct shrinker *shrink,
 				       struct shrink_control *sc)
 {
+    printk("TESTAZ SHRINK HUGE ZERO PAGE");
 	if (atomic_cmpxchg(&huge_zero_refcount, 1, 0) == 1) {
 		struct page *zero_page = xchg(&huge_zero_page, NULL);
 		BUG_ON(zero_page == NULL);
@@ -174,6 +265,40 @@ static struct shrinker huge_zero_page_shrinker = {
 	.count_objects = shrink_huge_zero_page_count,
 	.scan_objects = shrink_huge_zero_page_scan,
 	.seeks = DEFAULT_SEEKS,
+};
+
+static unsigned long shrink_huge_low_util_page_count(struct shrinker *shrink,
+                                               struct shrink_control *sc)
+{
+    printk("TESTAZ SHRINKER COUNT");
+    if (list_empty(&under_util_thp_list)) {
+        return SHRINK_EMPTY;
+    }
+    return huge_low_util_refcount;
+}
+        
+static unsigned long shrink_huge_low_util_page_scan(struct shrinker *shrink,
+                                                      struct shrink_control *sc)
+{
+    LIST_HEAD(list), *pos, *next;
+    struct thp_low_util_scan_record *record;
+    struct page *page;
+    //printk("TESTAZ SHRINK HUGE LOW UTIL PAGE SCAN");
+    mutex_lock(&under_util_thp_mutex);
+
+    list_for_each_safe(pos, next, &under_util_thp_list) { //TODO list_for_each_entry_safe
+        record = list_entry((void *)pos, struct thp_low_util_scan_record, list);
+        page = record->low_util_page;
+        printk("TESTAZ SHRINK PAGE");
+    }
+    mutex_unlock(&under_util_thp_mutex);
+    return 0;
+}
+
+static struct shrinker huge_low_util_page_shrinker = {
+    .count_objects = shrink_huge_low_util_page_count,
+    .scan_objects = shrink_huge_low_util_page_scan,
+    .seeks = DEFAULT_SEEKS,
 };
 
 #ifdef CONFIG_SYSFS
@@ -402,6 +527,7 @@ static int __init hugepage_init(void)
 	int err;
 	struct kobject *hugepage_kobj;
 
+    printk("TESTAZ INIT");
 	if (!has_transparent_hugepage()) {
 		/*
 		 * Hardware doesn't support hugepages, hence disable
@@ -429,6 +555,18 @@ static int __init hugepage_init(void)
 	if (err)
 		goto err_slab;
 
+	proc_create("thp_utilization", 0777, NULL, &thp_proc_ops);
+
+    struct list_head * dummy =  kmalloc(sizeof(struct list_head), GFP_KERNEL);
+	list_add(dummy, &thp_info_list);
+
+    schedule_delayed_work(&thp_utilization_work, msecs_to_jiffies(1000));
+    
+    printk("TESTAZ SHRINK");
+
+    err = register_shrinker(&huge_low_util_page_shrinker);
+    if (err)
+        goto err_low_util_shrinker;
 	err = register_shrinker(&huge_zero_page_shrinker);
 	if (err)
 		goto err_hzp_shrinker;
@@ -453,6 +591,8 @@ static int __init hugepage_init(void)
 	return 0;
 err_khugepaged:
 	unregister_shrinker(&deferred_split_shrinker);
+err_low_util_shrinker:
+    unregister_shrinker(&huge_low_util_page_shrinker);
 err_split_shrinker:
 	unregister_shrinker(&huge_zero_page_shrinker);
 err_hzp_shrinker:
@@ -3093,3 +3233,124 @@ void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct page *new)
 	trace_remove_migration_pmd(address, pmd_val(pmde));
 }
 #endif
+
+static void thp_utilization_workfn(struct work_struct *work)
+{
+    unsigned long hend;
+    int util_pct;
+    int num_utilized_pages;
+    int num_free_pages;
+    struct page *page = NULL;
+    bool update_proc;
+    u64 current_timestamp;
+
+    if (!trans_hugepage_scan_info.thp_zone) {
+        trans_hugepage_scan_info.thp_zone = (first_online_pgdat())->node_zones;
+    }
+	hend = (trans_hugepage_scan_info.thp_zone->zone_start_pfn + trans_hugepage_scan_info.thp_zone->spanned_pages + HPAGE_PMD_NR - 1) & ~(HPAGE_PMD_SIZE - 1);
+
+    if (!populated_zone(trans_hugepage_scan_info.thp_zone) || trans_hugepage_scan_info.thp_pfn >= hend) {
+        trans_hugepage_scan_info.thp_zone = next_zone(trans_hugepage_scan_info.thp_zone);
+
+        update_proc = !trans_hugepage_scan_info.thp_zone;
+        trans_hugepage_scan_info.thp_zone = update_proc ? (first_online_pgdat())->node_zones : trans_hugepage_scan_info.thp_zone;
+        trans_hugepage_scan_info.thp_pfn = (trans_hugepage_scan_info.thp_zone->zone_start_pfn + HPAGE_PMD_NR - 1) & ~(HPAGE_PMD_SIZE - 1);
+
+        if (update_proc) {
+            trans_hugepage_scan_proc.bucket_one = trans_hugepage_scan_info.bucket_one;
+            trans_hugepage_scan_proc.bucket_two = trans_hugepage_scan_info.bucket_two;
+            trans_hugepage_scan_proc.bucket_three = trans_hugepage_scan_info.bucket_three;
+            trans_hugepage_scan_proc.bucket_four = trans_hugepage_scan_info.bucket_four;
+            trans_hugepage_scan_proc.bucket_five = trans_hugepage_scan_info.bucket_five;
+            trans_hugepage_scan_proc.bucket_six = trans_hugepage_scan_info.bucket_six;
+            trans_hugepage_scan_proc.bucket_sev = trans_hugepage_scan_info.bucket_sev;
+            trans_hugepage_scan_proc.bucket_eight = trans_hugepage_scan_info.bucket_eight;
+
+            current_timestamp = local_clock();
+            trans_hugepage_scan_proc.time_since_last_scan = current_timestamp - trans_hugepage_scan_proc.timestamp;
+            trans_hugepage_scan_proc.timestamp = current_timestamp;
+
+            trans_hugepage_scan_proc.thp_total_free_pages_one = trans_hugepage_scan_info.thp_total_free_pages_one;
+            trans_hugepage_scan_proc.thp_total_free_pages_two = trans_hugepage_scan_info.thp_total_free_pages_two;
+            trans_hugepage_scan_proc.thp_total_free_pages_three = trans_hugepage_scan_info.thp_total_free_pages_three;
+            trans_hugepage_scan_proc.thp_total_free_pages_four = trans_hugepage_scan_info.thp_total_free_pages_four;
+            trans_hugepage_scan_proc.thp_total_free_pages_five = trans_hugepage_scan_info.thp_total_free_pages_five;
+            trans_hugepage_scan_proc.thp_total_free_pages_six = trans_hugepage_scan_info.thp_total_free_pages_six;
+            trans_hugepage_scan_proc.thp_total_free_pages_sev = trans_hugepage_scan_info.thp_total_free_pages_sev;
+            trans_hugepage_scan_proc.thp_total_free_pages_eight = trans_hugepage_scan_info.thp_total_free_pages_eight;
+
+            trans_hugepage_scan_info.bucket_one = 0;
+            trans_hugepage_scan_info.bucket_two = 0;
+            trans_hugepage_scan_info.bucket_three = 0;
+            trans_hugepage_scan_info.bucket_four = 0;
+            trans_hugepage_scan_info.bucket_five = 0;
+            trans_hugepage_scan_info.bucket_six = 0;
+            trans_hugepage_scan_info.bucket_sev = 0;
+            trans_hugepage_scan_info.bucket_eight = 0;
+
+            trans_hugepage_scan_info.thp_total_free_pages_one = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_two = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_three = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_four = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_five = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_six = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_sev = 0;
+            trans_hugepage_scan_info.thp_total_free_pages_eight = 0;
+        }
+        schedule_delayed_work(&thp_utilization_work, msecs_to_jiffies(1000));
+        return;
+    }
+
+    int i;
+	for (i = 0; i < 256; i++) {
+        if (trans_hugepage_scan_info.thp_pfn >= hend) {
+            break;
+        }
+        if (pfn_valid(trans_hugepage_scan_info.thp_pfn)) {
+            page = pfn_to_page(trans_hugepage_scan_info.thp_pfn);
+            num_utilized_pages = thp_number_utilized_pages(page);
+
+            if (num_utilized_pages >= 0) {
+                num_free_pages = HPAGE_PMD_NR - num_utilized_pages;
+                util_pct = (num_utilized_pages * 100) / HPAGE_PMD_NR;
+
+                if (util_pct < 13) {
+                    trans_hugepage_scan_info.bucket_one++;
+                    trans_hugepage_scan_info.thp_total_free_pages_one += num_free_pages;
+                    printk("TESTAZ ADDING PAGE");
+                    //add page to under_util_thp_list
+                    struct thp_low_util_scan_record entry = {
+                        .low_util_page = page,
+                        .list = LIST_HEAD_INIT(entry.list)
+                    };
+                    list_add(&entry.list, &under_util_thp_list);
+                    huge_low_util_refcount++;
+                } else if (util_pct < 25) {
+                    trans_hugepage_scan_info.bucket_two++;
+                    trans_hugepage_scan_info.thp_total_free_pages_two += num_free_pages;
+                } else if (util_pct < 38) {
+                    trans_hugepage_scan_info.bucket_three++;
+                    trans_hugepage_scan_info.thp_total_free_pages_three += num_free_pages;
+                } else if (util_pct < 50) {
+                    trans_hugepage_scan_info.bucket_four++;
+                    trans_hugepage_scan_info.thp_total_free_pages_four += num_free_pages;
+                } else if (util_pct < 63) {
+                    trans_hugepage_scan_info.bucket_five++;
+                    trans_hugepage_scan_info.thp_total_free_pages_five += num_free_pages;
+                } else if (util_pct < 75) {
+                    trans_hugepage_scan_info.bucket_six++;
+                    trans_hugepage_scan_info.thp_total_free_pages_six += num_free_pages;
+                } else if (util_pct < 88) {
+                    trans_hugepage_scan_info.bucket_sev++;
+                    trans_hugepage_scan_info.thp_total_free_pages_sev += num_free_pages;
+                } else {
+                    trans_hugepage_scan_info.bucket_eight++;
+                    trans_hugepage_scan_info.thp_total_free_pages_eight += num_free_pages;
+                }
+            }
+        }
+        trans_hugepage_scan_info.thp_pfn += HPAGE_PMD_NR;
+    }
+
+    schedule_delayed_work(&thp_utilization_work, msecs_to_jiffies(1000));
+}

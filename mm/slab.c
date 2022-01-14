@@ -2520,6 +2520,7 @@ static void *slab_get_obj(struct kmem_cache *cachep, struct slab *slab)
 {
 	void *objp;
 
+    printk("TESTAZ SLAB GET");
 	objp = index_to_obj(cachep, slab, get_free_obj(slab, slab->active));
 	slab->active++;
 
@@ -2542,6 +2543,7 @@ static void slab_put_obj(struct kmem_cache *cachep,
 		}
 	}
 #endif
+    printk("TESTAZ SLAB PUT");
 	slab->active--;
 	if (!slab->freelist)
 		slab->freelist = objp + obj_offset(cachep);

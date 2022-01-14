@@ -174,6 +174,8 @@ extern void reclaim_throttle(pg_data_t *pgdat, enum vmscan_throttle_state reason
  */
 extern pmd_t *mm_find_pmd(struct mm_struct *mm, unsigned long address);
 
+extern int thp_number_utilized_pages(struct page *page);
+
 /*
  * in mm/page_alloc.c
  */
