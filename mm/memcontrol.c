@@ -7638,6 +7638,7 @@ static struct cftype zswap_files[] = {
 		.seq_show = zswap_max_show,
 		.write = zswap_max_write,
 	},
+	{ },	/* terminate */
 };
 #endif /* CONFIG_ZSWAP */
 
