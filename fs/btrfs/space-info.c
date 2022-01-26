@@ -1451,6 +1451,12 @@ static inline void maybe_clamp_preempt(struct btrfs_fs_info *fs_info,
 		space_info->clamp = min(space_info->clamp + 1, 8);
 }
 
+static inline bool can_ticket(enum btrfs_reserve_flush_enum flush)
+{
+	return (flush != BTRFS_RESERVE_NO_FLUSH &&
+		flush != BTRFS_RESERVE_FLUSH_EMERGENCY);
+}
+
 /**
  * Try to reserve bytes from the block_rsv's space
  *
@@ -1513,13 +1519,27 @@ static int __reserve_bytes(struct btrfs_fs_info *fs_info,
 	}
 
 	/*
+	 * Things are dire, we need to make a reservation so we don't abort.  We
+	 * will let this reservation go through as long as we have actual space
+	 * for the block to be allocated.
+	 */
+	if (unlikely(flush == BTRFS_RESERVE_FLUSH_EMERGENCY)) {
+		used = btrfs_space_info_used(space_info, false);
+		if (used + orig_bytes <= space_info->total_bytes) {
+			btrfs_space_info_update_bytes_may_use(fs_info, space_info,
+							      orig_bytes);
+			ret = 0;
+		}
+	}
+
+	/*
 	 * If we couldn't make a reservation then setup our reservation ticket
 	 * and kick the async worker if it's not already running.
 	 *
 	 * If we are a priority flusher then we just need to add our ticket to
 	 * the list and we will do our own flushing further down.
 	 */
-	if (ret && flush != BTRFS_RESERVE_NO_FLUSH) {
+	if (ret && can_ticket(flush)) {
 		ticket.bytes = orig_bytes;
 		ticket.error = 0;
 		space_info->reclaim_size += ticket.bytes;

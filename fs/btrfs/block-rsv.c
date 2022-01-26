@@ -540,5 +540,17 @@ try_reserve:
 		if (!ret)
 			return global_rsv;
 	}
+
+	/*
+	 * All hope is lost, but we are very pessimistic about our possible
+	 * reservations, so instead of blowing up here, try one last time to
+	 * just force the reservation to happen if we have enough space on disk
+	 * for this block.
+	 */
+	ret = btrfs_reserve_metadata_bytes(root, block_rsv, blocksize,
+					   BTRFS_RESERVE_FLUSH_EMERGENCY);
+	if (!ret)
+		return block_rsv;
+
 	return ERR_PTR(ret);
 }
