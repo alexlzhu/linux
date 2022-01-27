@@ -1158,6 +1158,7 @@ int btrfs_create_free_space_tree(struct btrfs_fs_info *fs_info)
 		goto abort;
 	}
 	fs_info->free_space_root = free_space_root;
+	free_space_root->block_rsv = &fs_info->delayed_refs_rsv;
 
 	node = rb_first(&fs_info->block_group_cache_tree);
 	while (node) {

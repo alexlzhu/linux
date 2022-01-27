@@ -440,6 +440,8 @@ void btrfs_init_global_block_rsv(struct btrfs_fs_info *fs_info)
 	fs_info->tree_root->block_rsv = &fs_info->global_block_rsv;
 	if (fs_info->quota_root)
 		fs_info->quota_root->block_rsv = &fs_info->global_block_rsv;
+	if (fs_info->free_space_root)
+		fs_info->free_space_root->block_rsv = &fs_info->delayed_refs_rsv;
 	fs_info->chunk_root->block_rsv = &fs_info->chunk_block_rsv;
 
 	btrfs_update_global_block_rsv(fs_info);
@@ -538,5 +540,17 @@ try_reserve:
 		if (!ret)
 			return global_rsv;
 	}
+
+	/*
+	 * All hope is lost, but we are very pessimistic about our possible
+	 * reservations, so instead of blowing up here, try one last time to
+	 * just force the reservation to happen if we have enough space on disk
+	 * for this block.
+	 */
+	ret = btrfs_reserve_metadata_bytes(root, block_rsv, blocksize,
+					   BTRFS_RESERVE_FLUSH_EMERGENCY);
+	if (!ret)
+		return block_rsv;
+
 	return ERR_PTR(ret);
 }
