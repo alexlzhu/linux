@@ -192,7 +192,7 @@ config DRM_VRAM_HELPER
 	  Helpers for VRAM memory management
 
 config DRM_TTM_HELPER
-	tristate
+	tristate "Enable building DRM TTM helper functions"
 	depends on DRM
 	select DRM_TTM
 	help
