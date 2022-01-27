@@ -1,1 +1,5 @@
+# Main script for preparing the .config file used by main build targets.
 sh_binary(name = "prepareconfig", main = "prepareconfig", visibility = ["PUBLIC"])
+
+# Script used to create a .config file containing configs required by selftests.
+sh_binary(name = "selftestsconfig", main = "selftestsconfig", visibility = ["PUBLIC"])

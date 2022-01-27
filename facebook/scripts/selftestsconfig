@@ -1,0 +1,29 @@
+#!/bin/bash
+#
+# Script that iterates over a set of in-source selftest suites, and outputs all
+# of the config options required by each test.
+#
+# Usage: selftestconfig
+
+SRCROOT="`git rev-parse --show-toplevel`"
+SELFTESTS_DIR="$SRCROOT/tools/testing/selftests"
+
+if [ ! -d "$SELFTESTS_DIR" ]; then
+  echo "Selftests directory $SELFTESTS_DIR was not found"
+  exit 1
+fi
+
+# Iterate over all the selftests we support, and print all of their required
+# configs to stdout.
+selftests=("livepatch")
+for selftest in "${selftests[@]}"; do
+  selftest_dir="$SELFTESTS_DIR/$selftest"
+  if [ ! -d "$selftest_dir" ]; then
+      echo "Selftest directory $selftest_dir was not found"
+      exit 1
+  fi
+
+  if [ -f "$selftest_dir/config" ]; then
+      cat "$selftest_dir/config"
+  fi
+done
