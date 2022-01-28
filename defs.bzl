@@ -71,9 +71,10 @@ def extra_version(info, flavor, debug_opt):
     version += "_" + info.gittish
     return version
 
-def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = True, build_modules = True, extra_srcs = None, labels = None):
-    name = config_name(arch = arch, flavor = flavor, debug = debug)
-    config_target = "//facebook/config:" + config_name(arch, flavor = flavor, debug = debug)
+def gen_kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = True, build_modules = True, selftests = False, extra_srcs = None, labels = None):
+    name = config_name(arch = arch, flavor = flavor, debug = debug, selftests = selftests)
+
+    config_target = "//facebook/config:" + config_name(arch, flavor = flavor, debug = debug, selftests = selftests)
 
     if not labels:
         labels = []
@@ -256,3 +257,16 @@ def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = Tr
         cmd = "mkdir -p $OUT && cp $(location :{}-rpmbuild)/*.rpm {} $OUT/".format(name, module_rpms),
         labels = labels,
     )
+
+def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = True, build_modules = True, extra_srcs = None, labels = None):
+    """
+    Generate two sets of kernel targets:
+      - A regular kernel target that includes all of the aforementioned
+        specified configurations, such as flavor, debug options, etc.
+      - A kernel specifically designed to run Linux kernel selftests. That is, a
+        kernel that includes all of the configurations required for the flavor,
+        debug options, etc, and also the config options required to be compiled
+        by the selftests in order to run.
+    """
+    gen_kernel(arch=arch, flavor=flavor, debug=debug, headers_rpm=headers_rpm, devel_rpm=devel_rpm, build_modules=build_modules, selftests=False, extra_srcs=extra_srcs, labels=labels)
+    gen_kernel(arch=arch, flavor=flavor, debug=debug, headers_rpm=headers_rpm, devel_rpm=devel_rpm, build_modules=build_modules, selftests=True, extra_srcs=extra_srcs, labels=labels)
