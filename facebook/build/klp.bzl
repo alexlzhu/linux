@@ -1,50 +1,80 @@
 load("//facebook/build:container.bzl", "container_genrule")
 load("//:defs.bzl", "buildinfo")
+
 def klp():
+    """
+    Generate targets for creating kernel live patches. Callers may specify the
+    following configuration parameters:
+      - patch_to: A tag that we will be patching to. If this option is not
+        specified, the current commit (HEAD) will be assumed. The tag being
+        patched to must be suffixed with -hotfix<num>.
+      - patch_from: A tag that we will be patching from. If this option is not
+        specified, the from tag will be the tag used in patch_to, without the
+        -hotfix<num> suffix.
+      - flavor: The flavor for the kernel. This is the same flavor that may be
+        specified in any other kernel build type.
+      - label: A label to apply to the build.
+      - sign: Whether the resulting klp module should be signed. Must be set to
+        'true' for the module to be signed.
+      - sign_key: The key to use when signing the KLP module.
+    """
     # Parameters passed to BUCK.
     patch_to = native.read_config("klp", "patch_to", None)
     patch_from = native.read_config("klp", "patch_from", None)
     flavor=native.read_config("klp", "flavor", None)
     label=native.read_config("klp", "label", None)
+    sign = native.read_config('kernel', 'sign_mod', 'false')
+    sign_key = native.read_config('kernel', 'sign_mod_key', 'hsm-test-key')
 
-    to_cmd = """git show-ref --tags -d | grep "^`git log --pretty="%h" -n1`" |
-        awk -F '[ /]' '{print $NF}' | grep hotfix | head -n1 > $OUT"""
+    # Generate targets for the commit being patched to. The commit *must* have a
+    # tag that is suffixed with -hotfix<num>, regardless of whether the patch_to
+    # option is specified by the user when invoking BUCK.
+    to_cmd = """
+      git show-ref --tags -d
+      | grep hotfix
+      | grep `git rev-parse HEAD`
+      | awk -F '[ /]' '{print $NF}'
+      > $OUT"""
     if patch_to:
       to_cmd = "echo {} > $OUT".format(patch_to)
 
     notempty_cmd = " && [ -s $OUT ] || exit 1"
 
-    # tag on the current HEAD
     native.genrule(
-        name="top_lvl_tag",
+        name="to_tag",
         cmd=to_cmd + notempty_cmd,
-        out="top_lvl_tag",
+        out="to_tag",
         cacheable=False,
     )
 
+    # Extract the hotfix<num> portion of the tag. This will be stripped when
+    # generating the target for the from_tag.
     native.genrule(
         name="hotfix",
-        cmd="cat $(location :top_lvl_tag) | sed -e 's|.*\\(hotfix[0-9]*\\).*|\\1|g' > $OUT" + notempty_cmd,
+        cmd="cat $(location :to_tag) | sed -e 's|.*\\(hotfix[0-9]*\\).*|\\1|g' > $OUT" + notempty_cmd,
         out="hotfix",
         cacheable=False,
     )
 
-    from_cmd = "cat $(location :top_lvl_tag) | sed -e 's|-hotfix[0-9]*$||' > $OUT"
+    # Extract the baseline from_tag from which we're creating the patch. The
+    # from_tag (unless specified by the user as a config option) is assumed to
+    # be the exact same name as the tag we're patching to, without the "-hotfix"
+    # suffix.
+    from_cmd = "cat $(location :to_tag) | sed -e 's|-hotfix[0-9]*$||' > $OUT"
     if patch_from:
       from_cmd = "echo {} > $OUT".format(patch_from)
-
-    # baseline for diff
     native.genrule(
-        name="baseline",
+        name="from_tag",
         cmd=from_cmd + notempty_cmd,
-        out="baseline",
+        out="from_tag",
         cacheable=False,
     )
+
     # form patch
     native.genrule(
         name="patches",
         cmd="""mkdir -p $OUT
-            git format-patch -k `cat $(location :baseline)`..`cat $(location :top_lvl_tag)` -o $OUT/
+            git format-patch -k `cat $(location :from_tag)`..`cat $(location :to_tag)` -o $OUT/
             export hotfix=`cat $(location :hotfix)`
             cat `git rev-parse --show-toplevel`/facebook/9999-Dummy-patch-to-bump-hotfix-version.patch.template | envsubst > $OUT/9999-Dummy-patch-to-bump-hotfix-version.patch
         """,
@@ -68,7 +98,7 @@ def klp():
         ("$(location :kernel-devel-klp)", "/tmp/kernel-devel"),
         ("$(location :kernel-bin-klp)", "/tmp/kernel-bin"),
         ("$(location :patches)", "/tmp/patches"),
-        ("$(location :top_lvl_tag)", "/tmp/top_lvl_tag"),
+        ("$(location :to_tag)", "/tmp/to_tag"),
         ("$(location :config)", "/tmp/config"),
         ("$(location :uname-klp)", "/tmp/uname"),
         ("$(location :hotfix)", "/tmp/hotfix"),
@@ -79,7 +109,7 @@ def klp():
     native.genrule(
         name = "baseline-sources",
         cmd = """sudo rm -rf $OUT; mkdir -p $OUT
-            git clone -b `cat $(location :baseline)` `git rev-parse --show-toplevel` $OUT
+            git clone -b `cat $(location :from_tag)` `git rev-parse --show-toplevel` $OUT
             pushd $OUT
             make mrproper
             popd
@@ -92,7 +122,7 @@ def klp():
     native.genrule(
         name = "target-sources",
         cmd = """sudo rm -rf $OUT; mkdir -p $OUT
-            git clone -b `cat $(location :top_lvl_tag)` `git rev-parse --show-toplevel` $OUT
+            git clone -b `cat $(location :to_tag)` `git rev-parse --show-toplevel` $OUT
             pushd $OUT
             make mrproper
             popd
@@ -115,8 +145,8 @@ def klp():
             majorver=`make kernelversion EXTRAVERSION=`
             popd
             rpm_n=0
-            fbkv=`cat $(location :baseline) | sed -e 's|.*-\\(fbk[0-9]*\\).*|\\1|g'`
-            rc=`cat $(location :baseline) | grep -oE '\\b-rc[0-9]\\b$' | tr '-' '_'`
+            fbkv=`cat $(location :from_tag) | sed -e 's|.*-\\(fbk[0-9]*\\).*|\\1|g'`
+            rc=`cat $(location :from_tag) | grep -oE '\\b-rc[0-9]\\b$' | tr '-' '_'`
             flavor="%s"
             label="%s"
             echo "${majorver}-${rpm_n}_${fbkv}${flavor}${rc}${label}" > $OUT
@@ -237,9 +267,6 @@ def klp():
         cacheable=False,
     )
 
-    sign = native.read_config('kernel', 'sign_mod', 'false')
-    sign_key = native.read_config('kernel', 'sign_mod_key', 'hsm-test-key')
-
     native.genrule(
         name = "klp",
         cmd = """
@@ -256,7 +283,7 @@ def klp():
     container_genrule(
         name="klp-rpm",
         cmd="""
-            cat /tmp/top_lvl_tag
+            cat /tmp/to_tag
             rpmbuild -ba /tmp/klp.spec --define "short_kernel_version `cat /tmp/baseline_rpm_version`" --define "rpm_kernel_version `cat /tmp/uname`" --define "module_path /tmp/module" --define "hf_name `cat /tmp/hotfix`"
             cp -vR /root/rpmbuild/RPMS/x86_64/*.rpm /rw/output/
         """,
