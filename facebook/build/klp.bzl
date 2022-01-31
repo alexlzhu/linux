@@ -1,23 +1,18 @@
 load("//facebook/build:container.bzl", "container_genrule")
 load("//:defs.bzl", "buildinfo")
-def klp(flavor=None, label=None):
-    notempty_cmd = " && [ -s $OUT ] || exit 1"
-
-    # overrides
+def klp():
+    # Parameters passed to BUCK.
     patch_to = native.read_config("klp", "patch_to", None)
     patch_from = native.read_config("klp", "patch_from", None)
     flavor=native.read_config("klp", "flavor", None)
     label=native.read_config("klp", "label", None)
 
-    notempty_cmd = " && [ -s $OUT ] || exit 1"
     to_cmd = """git show-ref --tags -d | grep "^`git log --pretty="%h" -n1`" |
         awk -F '[ /]' '{print $NF}' | grep hotfix | head -n1 > $OUT"""
     if patch_to:
       to_cmd = "echo {} > $OUT".format(patch_to)
 
-    from_cmd = "cat $(location :top_lvl_tag) | sed -e 's|-hotfix[0-9]*$||' > $OUT"
-    if patch_from:
-      from_cmd = "echo {} > $OUT".format(patch_from)
+    notempty_cmd = " && [ -s $OUT ] || exit 1"
 
     # tag on the current HEAD
     native.genrule(
@@ -33,6 +28,10 @@ def klp(flavor=None, label=None):
         out="hotfix",
         cacheable=False,
     )
+
+    from_cmd = "cat $(location :top_lvl_tag) | sed -e 's|-hotfix[0-9]*$||' > $OUT"
+    if patch_from:
+      from_cmd = "echo {} > $OUT".format(patch_from)
 
     # baseline for diff
     native.genrule(
