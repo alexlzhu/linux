@@ -111,6 +111,7 @@ def gen_kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm 
             modules = build_modules,
             headers_rpm = headers_rpm,
             devel_rpm = devel_rpm,
+            selftests = selftests,
         ),
     )
 
@@ -212,6 +213,13 @@ def gen_kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm 
         out = "kernel-headers.rpm",
         visibility = ["PUBLIC"],
     )
+    if selftests:
+            native.genrule(
+                name = name + "-selftests.rpm",
+                cmd = "cp $(location :{}-rpmbuild)/kernel-selftests-*.rpm $OUT".format(name),
+                out = "kernel-selftests.rpm",
+                visibility = ["PUBLIC"],
+            )
 
     # allow an escape hatch to not build modules, even if they exist in the config
     kmods = [m for m in modules if info.major in m.kernels]
