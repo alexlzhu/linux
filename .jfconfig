@@ -27,7 +27,7 @@
   "sandcastle_job_specs": [
     {
       "command": "SandcastleUniversalCommand",
-      "oncall": "kernel",
+      "oncall": "kernel_infra",
       "alias": "linter",
       "capabilities": {
         "type": "lego",
@@ -44,6 +44,20 @@
           }
         ]
       }
+    },
+    {
+      "command": "SandcastleKernelDeterminatorCommand",
+      "oncall": "kernel_infra",
+      "alias": "linux-kernel-determinator",
+      "capabilities": {
+          "type": "lego",
+          "vcs": "linux-kernel-git",
+          "tenant": "kernel",
+      },
+      "args": {"disable_secondary_checkouts": True},
+      "description": "UTD for linux-kernel",
+      "scheduleType": "diff",
+      "priority": 0,
     }
   ]
 }
