@@ -7,6 +7,8 @@ load(":flavors.td.bzl", "FLAVORS_DEF")
 DEBUG_OPTIONS = DEBUG_OPTIONS_DEF
 FLAVORS = FLAVORS_DEF
 
+SELFTESTS = [ "livepatch" ]
+
 def config_name(arch, flavor = None, debug = None, selftests = False):
     name = arch
     if flavor and flavor not in FLAVORS + ["lol2"]:
@@ -32,7 +34,7 @@ def gen_config(name = None, flavor = None, debug = None, selftests = False):
     if not debug:
         selftests_cmd = ""
         if selftests:
-            selftests_cmd = "&& $(exe //facebook/scripts:selftestsconfig) >> .config"
+            selftests_cmd = "&& $(exe //facebook/scripts:selftestsconfig) {} >> .config".format(' '.join(SELFTESTS))
         native.genrule(
             name = name,
             cmd = "mkdir facebook && cp -R $(location //facebook/config:files) facebook/config && " +
@@ -49,7 +51,7 @@ def gen_config(name = None, flavor = None, debug = None, selftests = False):
         selftests_cmd = ""
         if selftests:
           without_debug = without_debug.replace("-selftests", "")
-          selftests_cmd = "&& $(exe //facebook/scripts:selftestsconfig) >> $OUT"
+          selftests_cmd = "&& $(exe //facebook/scripts:selftestsconfig) {} >> $OUT".format(' '.join(SELFTESTS))
         native.genrule(
             name = name,
             cmd = "cat $(location :{}) <(echo '{}') > $OUT {}".format(

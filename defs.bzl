@@ -1,4 +1,4 @@
-load("//facebook/config:defs.bzl", "config_name")
+load("//facebook/config:defs.bzl", "config_name", "SELFTESTS")
 load("//facebook/build:container.bzl", "container_genrule")
 load("//facebook/build:modules.bzl", "module", "modules")
 load("//facebook:template.bzl", "template")
@@ -101,6 +101,7 @@ def gen_kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm 
             headers_rpm = headers_rpm,
             devel_rpm = devel_rpm,
             selftests = selftests,
+            selftest_suites = ' '.join(SELFTESTS),
         ),
     )
 

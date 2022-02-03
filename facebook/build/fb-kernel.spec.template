@@ -94,7 +94,7 @@ rm -f $RPM_BUILD_ROOT/lib/modules/{{ .uname }}/{build,source}
 # are building modules, as kernel selftests require modules to be installed.
 {{ if .selftests }}
 mkdir -p $RPM_BUILD_ROOT/usr/src/kernels/{{ .uname }}
-make %{makeopts} %{?_smp_mflags} -C tools/testing/selftests install TARGETS="livepatch"
+make %{makeopts} %{?_smp_mflags} -C tools/testing/selftests install TARGETS="{{ .selftest_suites }}"
 cp -a --parents tools/testing/selftests/kselftest_install $RPM_BUILD_ROOT/usr/src/kernels/{{ .uname }}
 {{ end }}
 
