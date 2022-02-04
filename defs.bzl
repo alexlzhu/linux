@@ -258,6 +258,22 @@ def gen_kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm 
         labels = labels,
     )
 
+    # Provide a target that will create a tarball of the RPMs created by the
+    # top-level kernel target, that kernelctl can install.
+    native.genrule(
+        name = name + "-tar-pkg",
+        out = ".",
+        cmd = """
+           mkdir -p $OUT                 \\
+        && pushd $OUT                    \\
+        && cp $(location :{})/* $OUT     \\
+        && cp $(location :{}-uname) $OUT \\
+        && tar -czf blobby.tgz *         \\
+        && rm *.rpm uname                \\
+        && popd
+        """.format(name, name),
+    )
+
 def kernel(arch, flavor = None, debug = None, headers_rpm = True, devel_rpm = True, build_modules = True, extra_srcs = None, labels = None):
     """
     Generate two sets of kernel targets:
