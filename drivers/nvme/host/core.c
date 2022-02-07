@@ -21,6 +21,7 @@
 #include <linux/nvme_ioctl.h>
 #include <linux/t10-pi.h>
 #include <linux/pm_qos.h>
+#include <linux/sched/mm.h>
 #include <asm/unaligned.h>
 
 #include "nvme.h"
@@ -1404,6 +1405,7 @@ static int nvme_user_cmd(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 			struct nvme_passthru_cmd __user *ucmd)
 {
 	struct nvme_passthru_cmd cmd;
+	unsigned int mem_flags;
 	struct nvme_command c;
 	unsigned timeout = 0;
 	u32 effects;
@@ -1433,12 +1435,16 @@ static int nvme_user_cmd(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	if (cmd.timeout_ms)
 		timeout = msecs_to_jiffies(cmd.timeout_ms);
 
+	mem_flags = memalloc_noio_save();
+
 	effects = nvme_passthru_start(ctrl, ns, cmd.opcode);
 	status = nvme_submit_user_cmd(ns ? ns->queue : ctrl->admin_q, &c,
 			nvme_to_user_ptr(cmd.addr), cmd.data_len,
 			nvme_to_user_ptr(cmd.metadata), cmd.metadata_len,
 			0, &result, timeout);
 	nvme_passthru_end(ctrl, effects);
+
+	memalloc_noio_restore(mem_flags);
 
 	if (status >= 0) {
 		if (put_user(result, &ucmd->result))
@@ -1452,6 +1458,7 @@ static int nvme_user_cmd64(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 			struct nvme_passthru_cmd64 __user *ucmd)
 {
 	struct nvme_passthru_cmd64 cmd;
+	unsigned int mem_flags;
 	struct nvme_command c;
 	unsigned timeout = 0;
 	u32 effects;
@@ -1480,12 +1487,16 @@ static int nvme_user_cmd64(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	if (cmd.timeout_ms)
 		timeout = msecs_to_jiffies(cmd.timeout_ms);
 
+	mem_flags = memalloc_noio_save();
+
 	effects = nvme_passthru_start(ctrl, ns, cmd.opcode);
 	status = nvme_submit_user_cmd(ns ? ns->queue : ctrl->admin_q, &c,
 			nvme_to_user_ptr(cmd.addr), cmd.data_len,
 			nvme_to_user_ptr(cmd.metadata), cmd.metadata_len,
 			0, &cmd.result, timeout);
 	nvme_passthru_end(ctrl, effects);
+
+	memalloc_noio_restore(mem_flags);
 
 	if (status >= 0) {
 		if (put_user(cmd.result, &ucmd->result))
