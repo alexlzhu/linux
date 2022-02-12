@@ -294,8 +294,8 @@ const char *test__bpf_subtest_get_desc(int i)
 
 static int check_env(void)
 {
+	LIBBPF_OPTS(bpf_prog_load_opts, opts);
 	int err;
-	unsigned int kver_int;
 	char license[] = "GPL";
 
 	struct bpf_insn insns[] = {
@@ -303,15 +303,13 @@ static int check_env(void)
 		BPF_EXIT_INSN(),
 	};
 
-	err = fetch_kernel_version(&kver_int, NULL, 0);
+	err = fetch_kernel_version(&opts.kern_version, NULL, 0);
 	if (err) {
 		pr_debug("Unable to get kernel version\n");
 		return err;
 	}
-
-	err = bpf_load_program(BPF_PROG_TYPE_KPROBE, insns,
-			       sizeof(insns) / sizeof(insns[0]),
-			       license, kver_int, NULL, 0);
+	err = bpf_prog_load(BPF_PROG_TYPE_KPROBE, NULL, license, insns,
+			    ARRAY_SIZE(insns), &opts);
 	if (err < 0) {
 		pr_err("Missing basic BPF support, skip this test: %s\n",
 		       strerror(errno));
