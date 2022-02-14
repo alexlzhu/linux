@@ -168,8 +168,15 @@ void put_ipc_ns(struct ipc_namespace *ns)
 		mq_clear_sbinfo(ns);
 		spin_unlock(&mq_lock);
 
-		if (llist_add(&ns->mnt_llist, &free_ipc_list))
-			schedule_work(&free_ipc_work);
+		/*
+		 * don't use the free_ipc_work queue. It is doing the
+		 * synchronize_rcu() call asynchronously, one for every
+		 * ipc_namespace that we need to free.  This is
+		 * slow enough that we build up a huge backlog of pending
+		 * frees, and eventually new namespace creation hits
+		 * ENOSPC.
+		 */
+		free_ipc_ns(ns);
 	}
 }
 
