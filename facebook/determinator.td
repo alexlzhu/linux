@@ -16,7 +16,8 @@ td_rule(
     ),
 )
 
-def build(alias, do_kerneltest, notify, tags = None, priority = None, modules = True, **kwargs):
+def build(alias, do_kerneltest, notify, tags = None, priority = None,
+          modules = True, selftests = False, **kwargs):
     args = {
         "build_only": not do_kerneltest,
         # we don't need fbcode to build the kernel, only to build tests, which
@@ -25,6 +26,7 @@ def build(alias, do_kerneltest, notify, tags = None, priority = None, modules = 
         # don't notify builder on diffs
         "notify": notify,
         "build_modules": modules,
+        "build_mode": "selftests" if selftests else "kernel",
     }
     args.update(kwargs)
     if not tags:
@@ -59,6 +61,19 @@ td_rule(
 )
 
 td_rule(
+    name = "linux-kernel-x86_64-selfests-diff",
+    predicate = schedule_type_is("diff"),
+    # don't notify on diff builds
+    output = build(
+        alias = "linux-kernel-x86_64-selftests",
+        do_kerneltest = True,
+        notify = False,
+        tags = ["diff"],
+        selftests = True,
+    ),
+)
+
+td_rule(
     name = "linux-kernel-x86_64-adhoc",
     predicate = schedule_type_is("adhoc"),
     # adhoc builds are manually requested, so default to notifying when done
@@ -77,6 +92,17 @@ td_rule(
         alias = "linux-kernel-x86_64",
         do_kerneltest = True,
         notify = False,
+    ),
+)
+
+td_rule(
+    name = "linux-kernel-x86_64-selftests-contbuild",
+    predicate = schedule_type_is("continuous"),
+    output = build(
+        alias = "linux-kernel-x86_64-selftests",
+        do_kerneltest = True,
+        notify = False,
+        selftests = True,
     ),
 )
 
@@ -112,6 +138,17 @@ td_rule(
                 do_kerneltest = False,
                 notify = False,
                 flavor = flavor,
+            ),
+        ),
+        td_rule(
+            name = "linux-kernel-x86_64-selftests-{}-contbuild".format(flavor),
+            predicate = schedule_type_is("continuous"),
+            output = build(
+                alias = "linux-kernel-x86_64-selftests-{}".format(flavor),
+                do_kerneltest = False,
+                notify = False,
+                flavor = flavor,
+                selftests = True,
             ),
         ),
     )
