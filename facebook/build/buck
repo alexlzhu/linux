@@ -11,7 +11,7 @@ cd "$root" || { echo "must run from somewhere in the linux tree"; exit 1; }
 # caching can miss commit hash changes when source files don't change, which
 # makes our release name prone to caching issues (eg commit message changes ->
 # hash changes ->kernel built uname changes)
-kernelversion="$(make kernelversion EXTRAVERSION=)"
+kernelversion="$(make -s kernelversion EXTRAVERSION=)"
 gittish="$(git describe | cut -f2,3 -d- | tr - _)"
 # git tag --match is very slow, so see if we can get lucky without --match,
 # otherwise we need to fallback on the slow method
