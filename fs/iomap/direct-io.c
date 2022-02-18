@@ -225,7 +225,7 @@ iomap_dio_bio_actor(struct inode *inode, loff_t pos, loff_t length,
 {
 	unsigned int blkbits = blksize_bits(bdev_logical_block_size(iomap->bdev));
 	unsigned int fs_block_size = i_blocksize(inode), pad;
-	unsigned int align = iov_iter_alignment(dio->submit.iter);
+	struct request_queue *q = bdev_get_queue(iomap->bdev);
 	unsigned int bio_opf;
 	struct bio *bio;
 	bool need_zeroout = false;
@@ -234,7 +234,9 @@ iomap_dio_bio_actor(struct inode *inode, loff_t pos, loff_t length,
 	size_t copied = 0;
 	size_t orig_count;
 
-	if ((pos | length | align) & ((1 << blkbits) - 1))
+	if ((pos | length) & ((1 << blkbits) - 1))
+		return -EINVAL;
+	if (iov_iter_alignment(dio->submit.iter) & (unsigned long) q->dma_alignment)
 		return -EINVAL;
 
 	if (iomap->type == IOMAP_UNWRITTEN) {
@@ -256,8 +258,7 @@ iomap_dio_bio_actor(struct inode *inode, loff_t pos, loff_t length,
 		 * cache flushes on IO completion.
 		 */
 		if (!(iomap->flags & (IOMAP_F_SHARED|IOMAP_F_DIRTY)) &&
-		    (dio->flags & IOMAP_DIO_WRITE_FUA) &&
-		    blk_queue_fua(bdev_get_queue(iomap->bdev)))
+		    (dio->flags & IOMAP_DIO_WRITE_FUA) && blk_queue_fua(q))
 			use_fua = true;
 	}
 
