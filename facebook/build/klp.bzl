@@ -142,7 +142,7 @@ def klp():
         name = "baseline-rpm-version",
         cmd = """
             pushd $(location :baseline-sources)
-            majorver=`make kernelversion EXTRAVERSION=`
+            majorver=`make -s kernelversion EXTRAVERSION=`
             popd
             rpm_n=0
             fbkv=`cat $(location :from_tag) | sed -e 's|.*-\\(fbk[0-9]*\\).*|\\1|g'`
