@@ -246,6 +246,7 @@ struct ptp_ocp_sma_connector {
 	enum	ptp_ocp_sma_mode mode;
 	bool	fixed_fcn;
 	bool	fixed_dir;
+	bool	disabled;
 };
 
 struct ptp_ocp {
@@ -682,6 +683,7 @@ static struct ocp_selector ptp_ocp_clock[] = {
 
 #define SMA_ENABLE		BIT(15)
 #define SMA_SELECT_MASK		((1U << 15) - 1)
+#define SMA_DISABLE		0x10000
 
 static struct ocp_selector ptp_ocp_sma_in[] = {
 	{ .name = "10Mhz",	.value = 0x00 },
@@ -691,6 +693,7 @@ static struct ocp_selector ptp_ocp_sma_in[] = {
 	{ .name = "TS2",	.value = 0x08 },
 	{ .name = "IRIG",	.value = 0x10 },
 	{ .name = "DCF",	.value = 0x20 },
+	{ .name = "None",	.value = SMA_DISABLE },
 	{ }
 };
 
@@ -1995,7 +1998,7 @@ __handle_signal_inputs(struct ptp_ocp *bp, u32 val)
  */
 
 static ssize_t
-ptp_ocp_show_output(u32 val, char *buf, int default_idx)
+ptp_ocp_show_output(u32 val, char *buf, int def_val)
 {
 	const char *name;
 	ssize_t count;
@@ -2003,13 +2006,13 @@ ptp_ocp_show_output(u32 val, char *buf, int default_idx)
 	count = sysfs_emit(buf, "OUT: ");
 	name = ptp_ocp_select_name_from_val(ptp_ocp_sma_out, val);
 	if (!name)
-		name = ptp_ocp_sma_out[default_idx].name;
+		name = ptp_ocp_select_name_from_val(ptp_ocp_sma_out, def_val);
 	count += sysfs_emit_at(buf, count, "%s\n", name);
 	return count;
 }
 
 static ssize_t
-ptp_ocp_show_inputs(u32 val, char *buf, int default_idx)
+ptp_ocp_show_inputs(u32 val, char *buf, int def_val)
 {
 	const char *name;
 	ssize_t count;
@@ -2022,9 +2025,10 @@ ptp_ocp_show_inputs(u32 val, char *buf, int default_idx)
 			count += sysfs_emit_at(buf, count, "%s ", name);
 		}
 	}
-	if (!val && default_idx >= 0)
-		count += sysfs_emit_at(buf, count, "%s ",
-				       ptp_ocp_sma_in[default_idx].name);
+	if (!val && def_val >= 0) {
+		name = ptp_ocp_select_name_from_val(ptp_ocp_sma_in, def_val);
+		count += sysfs_emit_at(buf, count, "%s ", name);
+	}
 	if (count)
 		count--;
 	count += sysfs_emit_at(buf, count, "\n");
@@ -2090,17 +2094,20 @@ ptp_ocp_sma_get(struct ptp_ocp *bp, int sma_nr, enum ptp_ocp_sma_mode mode)
 
 static ssize_t
 ptp_ocp_sma_show(struct ptp_ocp *bp, int sma_nr, char *buf,
-		 int default_in_idx, int default_out_idx)
+		 int default_in_val, int default_out_val)
 {
 	struct ptp_ocp_sma_connector *sma = &bp->sma[sma_nr - 1];
 	u32 val;
 
 	val = ptp_ocp_sma_get(bp, sma_nr, sma->mode) & SMA_SELECT_MASK;
 
-	if (sma->mode == SMA_MODE_IN)
-		return ptp_ocp_show_inputs(val, buf, default_in_idx);
+	if (sma->mode == SMA_MODE_IN) {
+		if (sma->disabled)
+			val = SMA_DISABLE;
+		return ptp_ocp_show_inputs(val, buf, default_in_val);
+	}
 
-	return ptp_ocp_show_output(val, buf, default_out_idx);
+	return ptp_ocp_show_output(val, buf, default_out_val);
 }
 
 static ssize_t
@@ -2195,7 +2202,7 @@ ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
 	if (val < 0)
 		return val;
 
-	if (mode != sma->mode && sma->fixed_dir)
+	if (sma->fixed_dir && (mode != sma->mode || val & SMA_DISABLE))
 		return -EOPNOTSUPP;
 
 	if (sma->fixed_fcn) {
@@ -2203,6 +2210,8 @@ ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
 			return -EOPNOTSUPP;
 		return 0;
 	}
+
+	sma->disabled = !!(val & SMA_DISABLE);
 
 	if (mode != sma->mode) {
 		if (mode == SMA_MODE_IN)
@@ -2214,6 +2223,9 @@ ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
 
 	if (!sma->fixed_dir)
 		val |= SMA_ENABLE;		/* add enable bit */
+
+	if (sma->disabled)
+		val = 0;
 
 	if (mode == SMA_MODE_IN)
 		ptp_ocp_sma_store_inputs(bp, sma_nr, val);
