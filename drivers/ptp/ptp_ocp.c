@@ -233,10 +233,6 @@ struct ptp_ocp_ext_src {
 	int			irq_vec;
 };
 
-#define OCP_BOARD_MFR_LEN		8
-#define OCP_BOARD_ID_LEN		13
-#define OCP_SERIAL_LEN			6
-
 enum ptp_ocp_sma_mode {
 	SMA_MODE_IN,
 	SMA_MODE_OUT,
@@ -248,6 +244,16 @@ struct ptp_ocp_sma_connector {
 	bool	fixed_dir;
 	bool	disabled;
 };
+
+struct ocp_attr_group {
+	u64 cap;
+	const struct attribute_group *group;
+};
+#define OCP_CAP_BASIC	BIT(0)
+
+#define OCP_BOARD_MFR_LEN		8
+#define OCP_BOARD_ID_LEN		13
+#define OCP_SERIAL_LEN			6
 
 struct ptp_ocp {
 	struct pci_dev		*pdev;
@@ -278,6 +284,7 @@ struct ptp_ocp {
 	struct platform_device	*spi_flash;
 	struct clk_hw		*i2c_clk;
 	struct timer_list	watchdog;
+	const struct ocp_attr_group *attr_tbl;
 	const struct ptp_ocp_eeprom_map *eeprom_map;
 	struct dentry		*debug_root;
 	struct miscdevice	mro50;
@@ -297,6 +304,7 @@ struct ptp_ocp {
 	int			flash_start;
 	u32			utc_tai_offset;
 	u32			ts_window_adjust;
+	u64			fw_cap;
 	struct ptp_ocp_sma_connector sma[4];
 };
 
@@ -328,6 +336,8 @@ static int ptp_ocp_art_pps_enable(void *priv, u32 req, bool enable);
 
 static const struct attribute_group *fb_timecard_groups[];
 static const struct attribute_group *art_timecard_groups[];
+
+static const struct ocp_attr_group fb_timecard_groups[];
 
 struct ptp_ocp_eeprom_map {
 	u16	off;
@@ -1720,6 +1730,8 @@ ptp_ocp_fb_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 	bp->eeprom_map = fb_eeprom_map;
 	bp->attr_groups = fb_timecard_groups;
 	bp->fw_version = ioread32(&bp->image->version);
+	bp->attr_tbl = fb_timecard_groups;
+	bp->fw_cap = OCP_CAP_BASIC;
 
 	ptp_ocp_tod_init(bp);
 	ptp_ocp_nmea_out_init(bp);
@@ -2628,7 +2640,13 @@ static struct attribute *fb_timecard_attrs[] = {
 	&dev_attr_tod_correction.attr,
 	NULL,
 };
-ATTRIBUTE_GROUPS(fb_timecard);
+static const struct attribute_group fb_timecard_group = {
+	.attrs = fb_timecard_attrs,
+};
+static const struct ocp_attr_group fb_timecard_groups[] = {
+	{ .cap = OCP_CAP_BASIC,     .group = &fb_timecard_group },
+	{ },
+};
 
 static struct attribute *art_timecard_attrs[] = {
 	&dev_attr_serialnum.attr,
@@ -3057,6 +3075,7 @@ ptp_ocp_complete(struct ptp_ocp *bp)
 {
 	struct pps_device *pps;
 	char buf[32];
+	int i, err;
 
 	if (bp->gnss_port != -1) {
 		sprintf(buf, "ttyS%d", bp->gnss_port);
@@ -3080,6 +3099,14 @@ ptp_ocp_complete(struct ptp_ocp *bp)
 	pps = pps_lookup_dev(bp->ptp);
 	if (pps)
 		ptp_ocp_symlink(bp, pps->dev, "pps");
+
+	for (i = 0; bp->attr_tbl[i].cap; i++) {
+		if (!(bp->attr_tbl[i].cap & bp->fw_cap))
+			continue;
+		err = sysfs_create_group(&bp->dev.kobj, bp->attr_tbl[i].group);
+		if (err)
+			return err;
+	}
 
 	if (device_add_groups(&bp->dev, bp->attr_groups))
 		pr_err("device add groups failed\n");
@@ -3155,11 +3182,16 @@ static void
 ptp_ocp_detach_sysfs(struct ptp_ocp *bp)
 {
 	struct device *dev = &bp->dev;
+	int i;
 
 	sysfs_remove_link(&dev->kobj, "ttyGNSS");
 	sysfs_remove_link(&dev->kobj, "ttyMAC");
 	sysfs_remove_link(&dev->kobj, "ptp");
 	sysfs_remove_link(&dev->kobj, "pps");
+	if (bp->attr_tbl)
+		for (i = 0; bp->attr_tbl[i].cap; i++)
+			sysfs_remove_group(&dev->kobj, bp->attr_tbl[i].group);
+
 	device_remove_groups(dev, bp->attr_groups);
 }
 
