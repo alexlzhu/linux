@@ -412,6 +412,12 @@ static struct ptp_ocp_eeprom_map fb_eeprom_map[] = {
 	{ }
 };
 
+static struct ptp_ocp_eeprom_map art_eeprom_map[] = {
+	{ EEPROM_ENTRY(0x200 + 0x43, board_id) },
+	{ EEPROM_ENTRY(0x200 + 0x66, serial) },
+	{ }
+};
+
 #define bp_assign_entry(bp, res, val) ({				\
 	uintptr_t addr = (uintptr_t)(bp) + (res)->bp_offset;		\
 	*(typeof(val) *)addr = val;					\
@@ -748,7 +754,6 @@ static struct ocp_resource ocp_art_resource[] = {
 		.extra = &(struct ptp_ocp_i2c_info) {
 			.name = "ocores-i2c",
 			.fixed_rate = 400000,
-#if 0
 			.data_size = sizeof(struct ocores_i2c_platform_data),
 			.data = &(struct ocores_i2c_platform_data) {
 				.clock_khz = 125000,
@@ -757,13 +762,6 @@ static struct ocp_resource ocp_art_resource[] = {
 				.devices = &(struct i2c_board_info) {
 					I2C_BOARD_INFO("24c08", 0x50),
 				},
-			},
-#endif
-			.data_size = sizeof(struct ocores_i2c_platform_data),
-			.data = &(struct ocores_i2c_platform_data) {
-				.clock_khz = 125000,
-				.bus_khz = 400,
-				.num_devices = 0,
 			},
 		},
 	},
@@ -2270,6 +2268,7 @@ ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 	int err;
 
 	bp->flash_start = 0x1000000;
+	bp->eeprom_map = art_eeprom_map;
 	bp->attr_groups = art_timecard_groups;
 	bp->fw_cap = OCP_CAP_BASIC;
 	bp->fw_version = ioread32(&bp->reg->version);
