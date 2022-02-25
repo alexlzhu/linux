@@ -50,7 +50,8 @@ static size_t sdev_format_header(char *logbuf, size_t logbuf_len,
 	return off;
 }
 
-void sdev_prefix_printk(const char *level, const struct scsi_device *sdev,
+
+void _sdev_prefix_printk(const char *level, const struct scsi_device *sdev,
 			const char *name, const char *fmt, ...)
 {
 	va_list args;
@@ -72,10 +73,10 @@ void sdev_prefix_printk(const char *level, const struct scsi_device *sdev,
 		off += vscnprintf(logbuf + off, logbuf_len - off, fmt, args);
 		va_end(args);
 	}
-	dev_printk(level, &sdev->sdev_gendev, "%s", logbuf);
+	_dev_printk(level, &sdev->sdev_gendev, "%s", logbuf);
 	scsi_log_release_buffer(logbuf);
 }
-EXPORT_SYMBOL(sdev_prefix_printk);
+EXPORT_SYMBOL(_sdev_prefix_printk);
 
 void scmd_printk(const char *level, const struct scsi_cmnd *scmd,
 		const char *fmt, ...)

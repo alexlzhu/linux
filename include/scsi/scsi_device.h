@@ -249,8 +249,14 @@ struct scsi_device {
  * as a string pointer
  */
 __printf(4, 5) void
-sdev_prefix_printk(const char *, const struct scsi_device *, const char *,
+_sdev_prefix_printk(const char *, const struct scsi_device *, const char *,
 		const char *, ...);
+
+#define sdev_prefix_printk(level, sdev, name, fmt, ...)             \
+({                                                                  \
+		printk_index_subsys_emit("%s %s: [%s] ", level, fmt);       \
+		_sdev_prefix_printk(level, sdev, name, fmt, ##__VA_ARGS__); \
+})
 
 #define sdev_printk(l, sdev, fmt, a...)				\
 	sdev_prefix_printk(l, sdev, NULL, fmt, ##a)
