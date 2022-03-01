@@ -1113,7 +1113,7 @@ int bpf_jit_binary_pack_finalize(struct bpf_prog *prog,
 void bpf_jit_binary_pack_free(struct bpf_binary_header *ro_header,
 			      struct bpf_binary_header *rw_header)
 {
-	u32 size = rw_header ? rw_header->size : ro_header->size;
+	u32 size = ro_header->size;
 
 	bpf_prog_pack_free(ro_header);
 	kvfree(rw_header);

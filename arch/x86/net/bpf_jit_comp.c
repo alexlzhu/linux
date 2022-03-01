@@ -2379,8 +2379,11 @@ skip_init_addrs:
 		if (proglen <= 0) {
 out_image:
 			image = NULL;
-			if (header)
+			if (header) {
+				bpf_arch_text_copy(&header->size, &rw_header->size,
+						   sizeof(header->size));
 				bpf_jit_binary_pack_free(header, rw_header);
+			}
 			prog = orig_prog;
 			goto out_addrs;
 		}
