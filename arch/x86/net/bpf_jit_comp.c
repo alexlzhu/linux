@@ -1316,7 +1316,7 @@ st:			if (is_imm8(insn->off))
 			}
 			emit_ldx(&prog, BPF_SIZE(insn->code), dst_reg, src_reg, insn->off);
 			if (BPF_MODE(insn->code) == BPF_PROBE_MEM) {
-				struct exception_table_entry *ex;
+				struct exception_table_entry *ex, *ex_w;
 				u8 *_insn = image + proglen + (start_of_ldx - temp);
 				s64 delta;
 
@@ -1331,23 +1331,22 @@ st:			if (is_imm8(insn->off))
 					return -EFAULT;
 				}
 				ex = &bpf_prog->aux->extable[excnt++];
+				ex_w = (void *)rw_image + ((void *)ex - (void *)image);
 
 				delta = _insn - (u8 *)&ex->insn;
 				if (!is_simm32(delta)) {
 					pr_err("extable->insn doesn't fit into 32-bit\n");
 					return -EFAULT;
 				}
-				/* switch ex to rw buffer for writes */
-				ex = (void *)rw_image + ((void *)ex - (void *)image);
 
-				ex->insn = delta;
+				ex_w->insn = delta;
 
 				delta = (u8 *)ex_handler_bpf - (u8 *)&ex->handler;
 				if (!is_simm32(delta)) {
 					pr_err("extable->handler doesn't fit into 32-bit\n");
 					return -EFAULT;
 				}
-				ex->handler = delta;
+				ex_w->handler = delta;
 
 				if (dst_reg > BPF_REG_9) {
 					pr_err("verifier error\n");
@@ -1361,7 +1360,7 @@ st:			if (is_imm8(insn->off))
 				 * End result: x86 insn "mov rbx, qword ptr [rax+0x14]"
 				 * of 4 bytes will be ignored and rbx will be zero inited.
 				 */
-				ex->fixup = (prog - start_of_ldx) | (reg2pt_regs[dst_reg] << 8);
+				ex_w->fixup = (prog - start_of_ldx) | (reg2pt_regs[dst_reg] << 8);
 			}
 			break;
 
