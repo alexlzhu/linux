@@ -6116,8 +6116,10 @@ int read_extent_buffer_pages(struct extent_buffer *eb, int wait, int mirror_num)
 	for (i = 0; i < num_pages; i++) {
 		page = eb->pages[i];
 		wait_on_page_locked(page);
-		if (!PageUptodate(page))
+		if (!PageUptodate(page)) {
+			btrfs_warn_rl(eb->fs_info, "WAIT_COMPLETE: page not uptodate, set ret to EIO");
 			ret = -EIO;
+		}
 	}
 
 	return ret;
