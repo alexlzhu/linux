@@ -407,8 +407,10 @@ static int btree_read_extent_buffer_pages(struct extent_buffer *eb,
 		ret = read_extent_buffer_pages(eb, WAIT_COMPLETE, mirror_num);
 		if (!ret) {
 			if (verify_parent_transid(io_tree, eb,
-						   parent_transid, 0))
+						   parent_transid, 0)) {
+				btrfs_warn_rl(fs_info, "verify_parent_transid failed; set ret to EIO");
 				ret = -EIO;
+			}
 			else if (btrfs_verify_level_key(eb, level,
 						first_key, parent_transid))
 				ret = -EUCLEAN;
