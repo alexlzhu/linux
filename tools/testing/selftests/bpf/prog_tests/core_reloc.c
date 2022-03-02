@@ -870,6 +870,7 @@ static void run_core_reloc_tests(bool use_btfgen)
 
 	for (i = 0; i < ARRAY_SIZE(test_cases); i++) {
 		char btf_file[] = "/tmp/core_reloc.btf.XXXXXX";
+		const char *saved_btf_src_file;
 		test_case = &test_cases[i];
 		if (!test__start_subtest(test_case->case_name))
 			continue;
@@ -878,6 +879,12 @@ static void run_core_reloc_tests(bool use_btfgen)
 			test__skip();
 			continue;
 		}
+
+		/* With use_btfgen, it changes the value of
+		 * btf_src_file.  It should restore the value after
+		 * the test in case running without use_btfgen later.
+		 */
+		saved_btf_src_file = test_case->btf_src_file;
 
 		/* generate a "minimal" BTF file and use it as source */
 		if (use_btfgen) {
@@ -901,13 +908,13 @@ static void run_core_reloc_tests(bool use_btfgen)
 		if (test_case->setup) {
 			err = test_case->setup(test_case);
 			if (CHECK(err, "test_setup", "test #%d setup failed: %d\n", i, err))
-				continue;
+				goto cleanup;
 		}
 
 		if (test_case->btf_src_file) {
 			err = access(test_case->btf_src_file, R_OK);
 			if (!ASSERT_OK(err, "btf_src_file"))
-				continue;
+				goto cleanup;
 		}
 
 		open_opts.btf_custom_path = test_case->btf_src_file;
@@ -993,6 +1000,7 @@ cleanup:
 		bpf_link__destroy(link);
 		link = NULL;
 		bpf_object__close(obj);
+		test_case->btf_src_file = saved_btf_src_file;
 	}
 }
 
