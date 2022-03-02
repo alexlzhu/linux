@@ -2380,7 +2380,7 @@ out_image:
 			image = NULL;
 			if (header) {
 				bpf_arch_text_copy(&header->size, &rw_header->size,
-						   sizeof(header->size));
+						   sizeof(rw_header->size));
 				bpf_jit_binary_pack_free(header, rw_header);
 			}
 			prog = orig_prog;
