@@ -21,18 +21,18 @@ __xfs_printk(
 	struct va_format	*vaf)
 {
 	if (mp && mp->m_super) {
-		printk("%sXFS (%s): %pV\n", level, mp->m_super->s_id, vaf);
+		_printk("%sXFS (%s): %pV\n", level, mp->m_super->s_id, vaf);
 		return;
 	}
-	printk("%sXFS: %pV\n", level, vaf);
+	_printk("%sXFS: %pV\n", level, vaf);
 }
 
-#define define_xfs_printk_level(func, kern_level)		\
+#define define_xfs_printk_level(func, kern_level)\
 void func(const struct xfs_mount *mp, const char *fmt, ...)	\
 {								\
-	struct va_format	vaf;				\
-	va_list			args;				\
-	int			level;				\
+	struct va_format 	vaf;				\
+	va_list 		args;				\
+	int 			level;				\
 								\
 	va_start(args, fmt);					\
 								\
@@ -48,19 +48,19 @@ void func(const struct xfs_mount *mp, const char *fmt, ...)	\
 		xfs_stack_trace();				\
 }								\
 
-define_xfs_printk_level(xfs_emerg, KERN_EMERG);
-define_xfs_printk_level(xfs_alert, KERN_ALERT);
-define_xfs_printk_level(xfs_crit, KERN_CRIT);
-define_xfs_printk_level(xfs_err, KERN_ERR);
-define_xfs_printk_level(xfs_warn, KERN_WARNING);
-define_xfs_printk_level(xfs_notice, KERN_NOTICE);
-define_xfs_printk_level(xfs_info, KERN_INFO);
+define_xfs_printk_level(_xfs_emerg, KERN_EMERG);
+define_xfs_printk_level(_xfs_alert, KERN_ALERT);
+define_xfs_printk_level(_xfs_crit, KERN_CRIT);
+define_xfs_printk_level(_xfs_err, KERN_ERR);
+define_xfs_printk_level(_xfs_warn, KERN_WARNING);
+define_xfs_printk_level(_xfs_notice, KERN_NOTICE);
+define_xfs_printk_level(_xfs_info, KERN_INFO);
 #ifdef DEBUG
-define_xfs_printk_level(xfs_debug, KERN_DEBUG);
+define_xfs_printk_level(_xfs_debug, KERN_DEBUG);
 #endif
 
 void
-xfs_alert_tag(
+_xfs_alert_tag(
 	const struct xfs_mount	*mp,
 	int			panic_tag,
 	const char		*fmt, ...)
