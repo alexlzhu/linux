@@ -2631,7 +2631,7 @@ ptp_ocp_summary_show(struct seq_file *s, void *data)
 
 	seq_printf(s, "%7s: /dev/ptp%d\n", "PTP", ptp_clock_index(bp->ptp));
 	if (bp->gnss_port != -1)
-		seq_printf(s, "%7s: /dev/ttyS%d\n", "GNSS", bp->gnss_port);
+		seq_printf(s, "%7s: /dev/ttyS%d\n", "GNSS1", bp->gnss_port);
 	if (bp->gnss2_port != -1)
 		seq_printf(s, "%7s: /dev/ttyS%d\n", "GNSS2", bp->gnss2_port);
 	if (bp->mac_port != -1)
