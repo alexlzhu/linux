@@ -2734,3 +2734,14 @@ static inline bool is_per_cpu_kthread(struct task_struct *p)
 
 void swake_up_all_locked(struct swait_queue_head *q);
 void __prepare_to_swait(struct swait_queue_head *q, struct swait_queue *wait);
+
+extern struct rq *__migrate_task(struct rq *rq, struct rq_flags *rf,
+				 struct task_struct *p, int dest_cpu);
+extern int swqueue_pick_next_task(struct rq *rq, struct rq_flags *rf);
+extern void swqueue_push_task(struct task_struct *p);
+
+DECLARE_STATIC_KEY_FALSE(swqueue_enabled_key);
+static inline bool swqueue_enabled(void)
+{
+	return static_branch_likely(&swqueue_enabled_key);
+}
