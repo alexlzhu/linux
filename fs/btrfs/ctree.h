@@ -142,6 +142,8 @@ enum {
 	BTRFS_FS_STATE_DEV_REPLACING,
 	/* The btrfs_fs_info created for self-tests */
 	BTRFS_FS_STATE_DUMMY_FS_INFO,
+
+	BTRFS_FS_STATE_COUNT
 };
 
 #define BTRFS_BACKREF_REV_MAX		256
