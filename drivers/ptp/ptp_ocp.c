@@ -2305,6 +2305,8 @@ ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 	bp->fw_cap = OCP_CAP_BASIC;
 	bp->fw_version = ioread32(&bp->reg->version);
 
+	ptp_ocp_sma_init(bp);
+
 	err = ptp_ocp_register_mro50(bp);
 	if (!err)
 		err = ptp_ocp_init_clock(bp);
