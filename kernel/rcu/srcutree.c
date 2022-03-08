@@ -351,9 +351,10 @@ static bool srcu_readers_active(struct srcu_struct *ssp)
 	return sum;
 }
 
-#define SRCU_INTERVAL		1
-#define SRCU_MAX_INTERVAL	10
-#define SRCU_MAX_NODELAY	10
+#define SRCU_INTERVAL		1	// Base delay if no expedited GPs pending.
+#define SRCU_MAX_INTERVAL	10	// Maximum incremental delay from slow readers.
+#define SRCU_MAX_NODELAY_PHASE	1	// Maximum per-GP-phase consecutive no-delay instances.
+#define SRCU_MAX_NODELAY	100	// Maximum consecutive no-delay instances.
 
 /*
  * Return grace-period delay, zero if there are expedited grace
@@ -369,7 +370,7 @@ static unsigned long srcu_get_delay(struct srcu_struct *ssp)
 		jbase += jiffies - READ_ONCE(ssp->srcu_gp_start);
 	if (!jbase) {
 		WRITE_ONCE(ssp->srcu_n_exp_nodelay, READ_ONCE(ssp->srcu_n_exp_nodelay) + 1);
-		if (READ_ONCE(ssp->srcu_n_exp_nodelay) > SRCU_MAX_NODELAY)
+		if (READ_ONCE(ssp->srcu_n_exp_nodelay) > SRCU_MAX_NODELAY_PHASE)
 			jbase = 1;
 	}
 	return jbase > SRCU_MAX_INTERVAL ? SRCU_MAX_INTERVAL : jbase;
@@ -1231,6 +1232,7 @@ static void srcu_advance_state(struct srcu_struct *ssp)
 		srcu_flip(ssp);
 		spin_lock_irq_rcu_node(ssp);
 		rcu_seq_set_state(&ssp->srcu_gp_seq, SRCU_STATE_SCAN2);
+		ssp->srcu_n_exp_nodelay = 0;
 		spin_unlock_irq_rcu_node(ssp);
 	}
 
@@ -1245,6 +1247,7 @@ static void srcu_advance_state(struct srcu_struct *ssp)
 			mutex_unlock(&ssp->srcu_gp_mutex);
 			return; /* readers present, retry later. */
 		}
+		ssp->srcu_n_exp_nodelay = 0;
 		srcu_gp_end(ssp);  /* Releases ->srcu_gp_mutex. */
 	}
 }
@@ -1343,11 +1346,14 @@ static void process_srcu(struct work_struct *work)
 
 	srcu_advance_state(ssp);
 	curdelay = srcu_get_delay(ssp);
-	if (!curdelay) {
+	if (curdelay) {
+		WRITE_ONCE(ssp->reschedule_count, 0);
+	} else {
 		j = jiffies;
 		if (READ_ONCE(ssp->reschedule_jiffies) == j) {
 			WRITE_ONCE(ssp->reschedule_count, READ_ONCE(ssp->reschedule_count) + 1);
-			WARN_ON_ONCE(READ_ONCE(ssp->reschedule_count) > 20);
+			if (READ_ONCE(ssp->reschedule_count) > SRCU_MAX_NODELAY)
+				curdelay = 1;
 		} else {
 			WRITE_ONCE(ssp->reschedule_count, 1);
 			WRITE_ONCE(ssp->reschedule_jiffies, j);
