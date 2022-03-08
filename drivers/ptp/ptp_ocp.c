@@ -387,10 +387,8 @@ static int ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r);
 static irqreturn_t ptp_ocp_art_pps_irq(int irq, void *priv);
 static int ptp_ocp_art_pps_enable(void *priv, u32 req, bool enable);
 
-static const struct attribute_group *fb_timecard_groups[];
-static const struct attribute_group *art_timecard_groups[];
-
 static const struct ocp_attr_group fb_timecard_groups[];
+static const struct ocp_attr_group art_timecard_groups[];
 
 struct ptp_ocp_eeprom_map {
 	u16	off;
@@ -767,7 +765,7 @@ static struct ocp_resource ocp_art_resource[] = {
 			},
 		},
 	},
-	/* Timestamp associated with GNSS receiver PPS */
+	/* Timestamp associated with GNSS1 receiver PPS */
 	{
 		OCP_EXT_RESOURCE(ts1),
 		.offset = 0x360000, .size = 0x20, .irq_vec = 12,
@@ -2083,7 +2081,6 @@ ptp_ocp_fb_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 
 	bp->flash_start = 1024 * 4096;
 	bp->eeprom_map = fb_eeprom_map;
-	bp->attr_groups = fb_timecard_groups;
 	bp->fw_version = ioread32(&bp->image->version);
 	bp->attr_tbl = fb_timecard_groups;
 	bp->fw_cap = OCP_CAP_BASIC;
@@ -2301,7 +2298,7 @@ ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 
 	bp->flash_start = 0x1000000;
 	bp->eeprom_map = art_eeprom_map;
-	bp->attr_groups = art_timecard_groups;
+	bp->attr_tbl = art_timecard_groups;
 	bp->fw_cap = OCP_CAP_BASIC;
 	bp->fw_version = ioread32(&bp->reg->version);
 
@@ -3238,9 +3235,6 @@ tod_correction_show(struct device *dev,
 	u32 val;
 	int res;
 
-	if (!bp->tod)
-		return sysfs_emit(buf, "UNSUPPORTED");
-
 	val = ioread32(&bp->tod->adj_sec);
 	res = (val & ~INT_MAX) ? -1 : 1;
 	res *= (val & INT_MAX);
@@ -3255,9 +3249,6 @@ tod_correction_store(struct device *dev, struct device_attribute *attr,
 	unsigned long flags;
 	int err, res;
 	u32 val = 0;
-
-	if (!bp->tod)
-		return -EOPNOTSUPP;
 
 	err = kstrtos32(buf, 0, &res);
 	if (err)
@@ -3463,57 +3454,6 @@ _frequency_summary_show(struct seq_file *s, int nr,
 		seq_printf(s, ", freq %lu Hz", val & FREQ_STATUS_MASK);
 	seq_printf(s, "  reg:%x\n", val);
 }
-
-static int
-ptp_ocp_tod_status_show(struct seq_file *s, void *data)
-{
-	struct device *dev = s->private;
-	struct ptp_ocp *bp;
-	u32 val;
-	int idx;
-
-	bp = dev_get_drvdata(dev);
-
-	val = ioread32(&bp->tod->ctrl);
-	if (!(val & TOD_CTRL_ENABLE)) {
-		seq_printf(s, "TOD Slave disabled\n");
-		return 0;
-	}
-	seq_printf(s, "TOD Slave enabled, Control Register 0x%08X\n", val);
-
-	idx = val & TOD_CTRL_PROTOCOL ? 4 : 0;
-	idx += (val >> 16) & 3;
-	seq_printf(s, "Protocol %s\n", ptp_ocp_tod_proto_name(idx));
-
-	idx = (val >> TOD_CTRL_GNSS_SHIFT) & TOD_CTRL_GNSS_MASK;
-	seq_printf(s, "GNSS %s\n", ptp_ocp_tod_gnss_name(idx));
-
-	val = ioread32(&bp->tod->version);
-	seq_printf(s, "TOD Version %d.%d.%d\n",
-		val >> 24, (val >> 16) & 0xff, val & 0xffff);
-
-	val = ioread32(&bp->tod->status);
-	seq_printf(s, "Status register: 0x%08X\n", val);
-
-	val = ioread32(&bp->tod->adj_sec);
-	idx = (val & ~INT_MAX) ? -1 : 1;
-	idx *= (val & INT_MAX);
-	seq_printf(s, "Correction seconds: %d\n", idx);
-
-	val = ioread32(&bp->tod->utc_status);
-	seq_printf(s, "UTC status register: 0x%08X\n", val);
-	seq_printf(s, "UTC offset: %d  valid:%d\n",
-		val & TOD_STATUS_UTC_MASK, val & TOD_STATUS_UTC_VALID ? 1 : 0);
-	seq_printf(s, "Leap second info valid:%d, Leap second announce %d\n",
-		val & TOD_STATUS_LEAP_VALID ? 1 : 0,
-		val & TOD_STATUS_LEAP_ANNOUNCE ? 1 : 0);
-
-	val = ioread32(&bp->tod->leap);
-	seq_printf(s, "Time to next leap second (in sec): %d\n", (s32) val);
-
-	return 0;
-}
-DEFINE_SHOW_ATTRIBUTE(ptp_ocp_tod_status);
 
 static int
 ptp_ocp_summary_show(struct seq_file *s, void *data)
@@ -3752,6 +3692,57 @@ ptp_ocp_summary_show(struct seq_file *s, void *data)
 }
 DEFINE_SHOW_ATTRIBUTE(ptp_ocp_summary);
 
+static int
+ptp_ocp_tod_status_show(struct seq_file *s, void *data)
+{
+	struct device *dev = s->private;
+	struct ptp_ocp *bp;
+	u32 val;
+	int idx;
+
+	bp = dev_get_drvdata(dev);
+
+	val = ioread32(&bp->tod->ctrl);
+	if (!(val & TOD_CTRL_ENABLE)) {
+		seq_printf(s, "TOD Slave disabled\n");
+		return 0;
+	}
+	seq_printf(s, "TOD Slave enabled, Control Register 0x%08X\n", val);
+
+	idx = val & TOD_CTRL_PROTOCOL ? 4 : 0;
+	idx += (val >> 16) & 3;
+	seq_printf(s, "Protocol %s\n", ptp_ocp_tod_proto_name(idx));
+
+	idx = (val >> TOD_CTRL_GNSS_SHIFT) & TOD_CTRL_GNSS_MASK;
+	seq_printf(s, "GNSS %s\n", ptp_ocp_tod_gnss_name(idx));
+
+	val = ioread32(&bp->tod->version);
+	seq_printf(s, "TOD Version %d.%d.%d\n",
+		val >> 24, (val >> 16) & 0xff, val & 0xffff);
+
+	val = ioread32(&bp->tod->status);
+	seq_printf(s, "Status register: 0x%08X\n", val);
+
+	val = ioread32(&bp->tod->adj_sec);
+	idx = (val & ~INT_MAX) ? -1 : 1;
+	idx *= (val & INT_MAX);
+	seq_printf(s, "Correction seconds: %d\n", idx);
+
+	val = ioread32(&bp->tod->utc_status);
+	seq_printf(s, "UTC status register: 0x%08X\n", val);
+	seq_printf(s, "UTC offset: %d  valid:%d\n",
+		val & TOD_STATUS_UTC_MASK, val & TOD_STATUS_UTC_VALID ? 1 : 0);
+	seq_printf(s, "Leap second info valid:%d, Leap second announce %d\n",
+		val & TOD_STATUS_LEAP_VALID ? 1 : 0,
+		val & TOD_STATUS_LEAP_ANNOUNCE ? 1 : 0);
+
+	val = ioread32(&bp->tod->leap);
+	seq_printf(s, "Time to next leap second (in sec): %d\n", (s32) val);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(ptp_ocp_tod_status);
+
 static struct dentry *ptp_ocp_debugfs_root;
 
 static void
@@ -3906,9 +3897,6 @@ ptp_ocp_complete(struct ptp_ocp *bp)
 			return err;
 	}
 
-	if (device_add_groups(&bp->dev, bp->attr_groups))
-		pr_err("device add groups failed\n");
-
 	ptp_ocp_debugfs_add_device(bp);
 
 	return 0;
@@ -3989,8 +3977,6 @@ ptp_ocp_detach_sysfs(struct ptp_ocp *bp)
 	if (bp->attr_tbl)
 		for (i = 0; bp->attr_tbl[i].cap; i++)
 			sysfs_remove_group(&dev->kobj, bp->attr_tbl[i].group);
-
-	device_remove_groups(dev, bp->attr_groups);
 }
 
 static void
