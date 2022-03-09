@@ -166,6 +166,7 @@ struct netns_ipv4 {
 	int sysctl_tcp_challenge_ack_limit;
 	int sysctl_tcp_min_rtt_wlen;
 	u8 sysctl_tcp_min_tso_segs;
+	u8 sysctl_tcp_tso_rtt_log;
 	u8 sysctl_tcp_autocorking;
 	u8 sysctl_tcp_reflect_tos;
 	int sysctl_tcp_invalid_ratelimit;
