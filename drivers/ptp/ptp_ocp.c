@@ -49,6 +49,14 @@
 #define PCI_DEVICE_ID_FACEBOOK_TIMECARD 0x0400
 #endif
 
+#ifndef PCI_VENDOR_ID_CELESTICA
+#define PCI_VENDOR_ID_CELESTICA 0x18d4
+#endif
+
+#ifndef PCI_DEVICE_ID_CELESTICA_TIMECARD
+#define PCI_DEVICE_ID_CELESTICA_TIMECARD 0x1008
+#endif
+
 #ifndef PCI_VENDOR_ID_OROLIA
 #define PCI_VENDOR_ID_OROLIA 0x1ad7
 #endif
@@ -791,8 +799,9 @@ static struct ocp_resource ocp_art_resource[] = {
 
 static const struct pci_device_id ptp_ocp_pcidev_id[] = {
 	{ PCI_DEVICE_DATA(FACEBOOK, TIMECARD, &ocp_fb_resource) },
+	{ PCI_DEVICE_DATA(CELESTICA, TIMECARD, &ocp_fb_resource) },
 	{ PCI_DEVICE_DATA(OROLIA, ARTCARD, &ocp_art_resource) },
-	{ 0 }
+	{ }
 };
 MODULE_DEVICE_TABLE(pci, ptp_ocp_pcidev_id);
 
