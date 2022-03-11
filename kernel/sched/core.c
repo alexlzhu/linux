@@ -1883,7 +1883,7 @@ struct set_affinity_pending {
  * So we race with normal scheduler movements, but that's OK, as long
  * as the task is no longer on this CPU.
  */
-static struct rq *__migrate_task(struct rq *rq, struct rq_flags *rf,
+struct rq *__migrate_task(struct rq *rq, struct rq_flags *rf,
 				 struct task_struct *p, int dest_cpu)
 {
 	/* Affinity changed (again). */
@@ -2940,7 +2940,12 @@ ttwu_stat(struct task_struct *p, int cpu, int wake_flags)
 static void ttwu_do_wakeup(struct rq *rq, struct task_struct *p, int wake_flags,
 			   struct rq_flags *rf)
 {
-	check_preempt_curr(rq, p, wake_flags);
+	if (swqueue_enabled() && p->sched_class == &fair_sched_class &&
+	    rq->cfs.h_nr_running > 1 && p->nr_cpus_allowed > 1)
+		swqueue_push_task(p);
+	else
+		check_preempt_curr(rq, p, wake_flags);
+
 	p->state = TASK_RUNNING;
 	trace_sched_wakeup(p);
 
@@ -3580,6 +3585,8 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->rt.time_slice	= sched_rr_timeslice;
 	p->rt.on_rq		= 0;
 	p->rt.on_list		= 0;
+
+	INIT_LIST_HEAD(&p->swqueue_node);
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	INIT_HLIST_HEAD(&p->preempt_notifiers);

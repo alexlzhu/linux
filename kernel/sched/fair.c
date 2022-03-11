@@ -97,6 +97,106 @@ static int __init setup_sched_thermal_decay_shift(char *str)
 }
 __setup("sched_thermal_decay_shift=", setup_sched_thermal_decay_shift);
 
+static LIST_HEAD(swqueue);
+static DEFINE_SPINLOCK(swqueue_lock);
+DEFINE_STATIC_KEY_FALSE(swqueue_enabled_key);
+
+int sysctl_swqueue_enable(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos)
+{
+	struct ctl_table t;
+	int err;
+	int state = static_branch_likely(&swqueue_enabled_key);
+
+	if (write && !capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	t = *table;
+	t.data = &state;
+	err = proc_dointvec_minmax(&t, write, buffer, lenp, ppos);
+	if (err < 0)
+		return err;
+	if (write) {
+		if (state)
+			static_branch_enable(&swqueue_enabled_key);
+		else
+			static_branch_disable(&swqueue_enabled_key);
+	}
+
+	return err;
+}
+
+void swqueue_push_task(struct task_struct *p)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&swqueue_lock, flags);
+	if (list_empty(&p->swqueue_node))
+		list_add_tail(&p->swqueue_node, &swqueue);
+	spin_unlock_irqrestore(&swqueue_lock, flags);
+}
+
+static void swqueue_remove_task(struct task_struct *p)
+{
+	unsigned long flags;
+
+	if (!list_empty(&p->swqueue_node)) {
+		spin_lock_irqsave(&swqueue_lock, flags);
+		list_del_init(&p->swqueue_node);
+		spin_unlock_irqrestore(&swqueue_lock, flags);
+	}
+}
+
+static struct task_struct *__swqueue_pop_task(void)
+{
+	unsigned long flags;
+	struct task_struct *p;
+
+	spin_lock_irqsave(&swqueue_lock, flags);
+	p = list_first_entry_or_null(&swqueue, struct task_struct,
+				     swqueue_node);
+	if (p)
+		list_del_init(&p->swqueue_node);
+	spin_unlock_irqrestore(&swqueue_lock, flags);
+
+	return p;
+}
+
+int swqueue_pick_next_task(struct rq *rq, struct rq_flags *rf)
+{
+	struct task_struct *p;
+	struct rq *src_rq;
+	struct rq_flags src_rf;
+	int ret = 0;
+
+	if (list_empty(&swqueue))
+		goto out;
+
+	p = __swqueue_pop_task();
+	if (!p)
+		goto out;
+
+	rq_unpin_lock(rq, rf);
+	raw_spin_unlock(&rq->lock);
+
+	src_rq = task_rq_lock(p, &src_rf);
+
+	if (task_on_rq_queued(p) && !task_running(rq, p))
+		src_rq = __migrate_task(src_rq, &src_rf, p, rq->cpu);
+
+	if (src_rq->cpu != rq->cpu)
+		ret = 1;
+	else
+		ret = -1;
+
+	task_rq_unlock(src_rq, p, &src_rf);
+
+	raw_spin_lock(&rq->lock);
+	rq_repin_lock(rq, rf);
+out:
+	return ret;
+}
+
 #ifdef CONFIG_SMP
 /*
  * For asym packing, by default the lower numbered CPU has higher priority.
@@ -5681,6 +5781,9 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 dequeue_throttle:
 	util_est_update(&rq->cfs, p, task_sleep);
 	hrtick_update(rq);
+
+	if (swqueue_enabled())
+		swqueue_remove_task(p);
 }
 
 #ifdef CONFIG_SMP
@@ -6906,6 +7009,7 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 
 static void task_dead_fair(struct task_struct *p)
 {
+	swqueue_remove_task(p);
 	remove_entity_load_avg(&p->se);
 }
 
@@ -7200,11 +7304,17 @@ done: __maybe_unused;
 
 	update_misfit_status(p, rq);
 
+	if (swqueue_enabled())
+		swqueue_remove_task(p);
+
 	return p;
 
 idle:
 	if (!rf)
 		return NULL;
+
+	if (swqueue_enabled() && swqueue_pick_next_task(rq, rf))
+		return RETRY_TASK;
 
 	new_tasks = newidle_balance(rq, rf);
 
@@ -11008,6 +11118,7 @@ static void attach_task_cfs_rq(struct task_struct *p)
 
 static void switched_from_fair(struct rq *rq, struct task_struct *p)
 {
+	swqueue_remove_task(p);
 	detach_task_cfs_rq(p);
 }
 
