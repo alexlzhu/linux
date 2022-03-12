@@ -97,6 +97,7 @@ static int __init setup_sched_thermal_decay_shift(char *str)
 }
 __setup("sched_thermal_decay_shift=", setup_sched_thermal_decay_shift);
 
+#ifdef CONFIG_SMP
 static LIST_HEAD(swqueue);
 static DEFINE_SPINLOCK(swqueue_lock);
 DEFINE_STATIC_KEY_FALSE(swqueue_enabled_key);
@@ -196,6 +197,15 @@ int swqueue_pick_next_task(struct rq *rq, struct rq_flags *rf)
 out:
 	return ret;
 }
+#else
+static void swqueue_remove_task(struct task_struct *p) {
+}
+
+int swqueue_pick_next_task(struct rq *rq, struct rq_flags *rf) {
+	return 0;
+}
+
+#endif
 
 #ifdef CONFIG_SMP
 /*
