@@ -2740,8 +2740,15 @@ extern struct rq *__migrate_task(struct rq *rq, struct rq_flags *rf,
 extern int swqueue_pick_next_task(struct rq *rq, struct rq_flags *rf);
 extern void swqueue_push_task(struct task_struct *p);
 
+#ifdef CONFIG_SMP
 DECLARE_STATIC_KEY_FALSE(swqueue_enabled_key);
 static inline bool swqueue_enabled(void)
 {
 	return static_branch_likely(&swqueue_enabled_key);
 }
+#else
+static inline bool swqueue_enabled(void)
+{
+	return false;
+}
+#endif
