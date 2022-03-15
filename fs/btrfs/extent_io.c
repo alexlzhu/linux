@@ -2731,7 +2731,8 @@ void end_extent_writepage(struct page *page, int err, u64 start, u64 end)
 	int uptodate = (err == 0);
 	int ret = 0;
 
-	btrfs_writepage_endio_finish_ordered(page, start, end, uptodate);
+	btrfs_writepage_endio_finish_ordered(BTRFS_I(page->mapping->host), page,
+					     start, end, uptodate);
 
 	if (!uptodate) {
 		ClearPageUptodate(page);
@@ -3765,7 +3766,8 @@ static noinline_for_stack int __extent_writepage_io(struct btrfs_inode *inode,
 		u32 iosize;
 
 		if (cur >= i_size) {
-			btrfs_writepage_endio_finish_ordered(page, cur, end, 1);
+			btrfs_writepage_endio_finish_ordered(inode, page, cur,
+							     end, 1);
 			break;
 		}
 		em = btrfs_get_extent(inode, NULL, 0, cur, end - cur + 1);
@@ -3803,7 +3805,8 @@ static noinline_for_stack int __extent_writepage_io(struct btrfs_inode *inode,
 			if (compressed)
 				nr++;
 			else
-				btrfs_writepage_endio_finish_ordered(page, cur,
+				btrfs_writepage_endio_finish_ordered(inode,
+							page, cur,
 							cur + iosize - 1, 1);
 			cur += iosize;
 			continue;
@@ -4642,7 +4645,8 @@ int extent_write_locked_range(struct inode *inode, u64 start, u64 end,
 		if (clear_page_dirty_for_io(page))
 			ret = __extent_writepage(page, &wbc_writepages, &epd);
 		else {
-			btrfs_writepage_endio_finish_ordered(page, start,
+			btrfs_writepage_endio_finish_ordered(BTRFS_I(inode),
+						    page, start,
 						    start + PAGE_SIZE - 1, 1);
 			unlock_page(page);
 		}
