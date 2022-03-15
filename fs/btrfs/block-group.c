@@ -1549,8 +1549,8 @@ void btrfs_reclaim_bgs_work(struct work_struct *work)
 		trace_btrfs_reclaim_block_group(bg);
 		ret = btrfs_relocate_chunk(fs_info, bg->start);
 		if (ret && ret != -EAGAIN)
-			btrfs_err(fs_info, "error relocating chunk %llu",
-				  bg->start);
+			btrfs_info(fs_info, "error relocating chunk %llu %d",
+				   bg->start, ret);
 
 next:
 		spin_lock(&fs_info->unused_bgs_lock);
