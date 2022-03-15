@@ -305,7 +305,7 @@ found:
 out:
 	if (ret == -ENOENT)
 		ret = 0;
-	if (ret)
+	if (ret < 0)
 		btrfs_warn_rl(fs_info, "csum lookup failed %d\n", ret);
 	return ret;
 }
