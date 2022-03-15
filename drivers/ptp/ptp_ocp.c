@@ -294,7 +294,6 @@ struct ptp_ocp_signal {
 	bool		running;
 };
 
-#define OCP_BOARD_MFR_LEN		8
 #define OCP_BOARD_ID_LEN		13
 #define OCP_SERIAL_LEN			6
 
@@ -343,7 +342,6 @@ struct ptp_ocp {
 	int			mac_port;	/* miniature atomic clock */
 	int			nmea_port;
 	u32			fw_version;
-	u8			board_mfr[OCP_BOARD_MFR_LEN];
 	u8			board_id[OCP_BOARD_ID_LEN];
 	u8			serial[OCP_SERIAL_LEN];
 	bool			has_eeprom_data;
@@ -1533,12 +1531,6 @@ ptp_ocp_devlink_info_get(struct devlink *devlink, struct devlink_info_req *req,
 		return err;
 
 	err = devlink_info_version_fixed_put(req,
-			DEVLINK_INFO_VERSION_GENERIC_BOARD_MANUFACTURE,
-			bp->board_mfr);
-	if (err)
-		return err;
-
-	err = devlink_info_version_fixed_put(req,
 			DEVLINK_INFO_VERSION_GENERIC_BOARD_ID,
 			bp->board_id);
 	if (err)
@@ -1660,9 +1652,7 @@ ptp_ocp_register_i2c(struct ptp_ocp *bp, struct ocp_resource *r)
 	return 0;
 }
 
-/*
- * the expectation is that this is triggered on error only.
- */
+/* The expectation is that this is triggered only on error. */
 static irqreturn_t
 ptp_ocp_signal_irq(int irq, void *priv)
 {
@@ -1709,7 +1699,8 @@ ptp_ocp_signal_set(struct ptp_ocp *bp, int gen, struct ptp_ocp_signal *s)
 
 	start_ns = ktime_set(ts.tv_sec, ts.tv_nsec) + NSEC_PER_MSEC;
 	if (!s->start) {
-		s->start = roundup(start_ns, s->period);
+		/* roundup() does not work on 32-bit systems */
+		s->start = DIV_ROUND_UP_ULL(start_ns, s->period);
 		s->start = ktime_add(s->start, s->phase);
 	}
 
@@ -2785,21 +2776,18 @@ signal_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct dev_ext_attribute *ea = to_ext_attr(attr);
 	struct ptp_ocp *bp = dev_get_drvdata(dev);
-	int i = (uintptr_t)ea->var;
+	struct ptp_ocp_signal *signal;
 	struct timespec64 ts;
 	ssize_t count;
+	int i;
 
-	ts = ktime_to_timespec64(bp->signal[i].period);
-	count = sysfs_emit(buf, "%llu.%lu", ts.tv_sec, ts.tv_nsec);
+	i = (uintptr_t)ea->var;
+	signal = &bp->signal[i];
 
-	count += sysfs_emit_at(buf, count, " %d", bp->signal[i].duty);
+	count = sysfs_emit(buf, "%llu %d %llu %d", signal->period,
+			   signal->duty, signal->phase, signal->polarity);
 
-	ts = ktime_to_timespec64(bp->signal[i].phase);
-	count += sysfs_emit_at(buf, count, " %llu.%lu", ts.tv_sec, ts.tv_nsec);
-
-	count += sysfs_emit_at(buf, count, " %d", bp->signal[i].polarity);
-
-	ts = ktime_to_timespec64(bp->signal[i].start);
+	ts = ktime_to_timespec64(signal->start);
 	count += sysfs_emit_at(buf, count, " %ptT TAI\n", &ts);
 
 	return count;
@@ -2828,11 +2816,9 @@ period_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct dev_ext_attribute *ea = to_ext_attr(attr);
 	struct ptp_ocp *bp = dev_get_drvdata(dev);
-	struct timespec64 ts;
 	int i = (uintptr_t)ea->var;
 
-	ts = ktime_to_timespec64(bp->signal[i].period);
-	return sysfs_emit(buf, "%llu.%lu\n", ts.tv_sec, ts.tv_nsec);
+	return sysfs_emit(buf, "%llu\n", bp->signal[i].period);
 }
 static EXT_ATTR_RO(signal, period, 0);
 static EXT_ATTR_RO(signal, period, 1);
@@ -2844,11 +2830,9 @@ phase_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct dev_ext_attribute *ea = to_ext_attr(attr);
 	struct ptp_ocp *bp = dev_get_drvdata(dev);
-	struct timespec64 ts;
 	int i = (uintptr_t)ea->var;
 
-	ts = ktime_to_timespec64(bp->signal[i].phase);
-	return sysfs_emit(buf, "%llu.%lu\n", ts.tv_sec, ts.tv_nsec);
+	return sysfs_emit(buf, "%llu\n", bp->signal[i].phase);
 }
 static EXT_ATTR_RO(signal, phase, 0);
 static EXT_ATTR_RO(signal, phase, 1);
