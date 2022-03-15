@@ -334,6 +334,10 @@ void __btrfs_abort_transaction(struct btrfs_trans_handle *trans,
 		return;
 	}
 	WRITE_ONCE(trans->transaction->aborted, errno);
+
+	if (errno == -ENOSPC)
+		btrfs_dump_space_info(fs_info,
+				      fs_info->global_block_rsv.space_info, 0, 0);
 	/* Wake up anybody who may be waiting on this transaction */
 	wake_up(&fs_info->transaction_wait);
 	wake_up(&fs_info->transaction_blocked_wait);

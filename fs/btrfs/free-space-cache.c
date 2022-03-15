@@ -987,7 +987,7 @@ int load_free_space_cache(struct btrfs_block_group *block_group)
 			ret = 1;
 	} else {
 		__btrfs_remove_free_space_cache(&tmp_ctl);
-		btrfs_warn(fs_info,
+		btrfs_info(fs_info,
 			   "block group %llu has wrong amount of free space",
 			   block_group->start);
 		ret = -1;
@@ -1000,7 +1000,7 @@ out:
 		spin_unlock(&block_group->lock);
 		ret = 0;
 
-		btrfs_warn(fs_info,
+		btrfs_info(fs_info,
 			   "failed to load free space cache for block group %llu, rebuilding it now",
 			   block_group->start);
 	}

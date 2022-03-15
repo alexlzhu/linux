@@ -305,6 +305,8 @@ found:
 out:
 	if (ret == -ENOENT)
 		ret = 0;
+	if (ret)
+		btrfs_warn_rl(fs_info, "csum lookup failed %d\n", ret);
 	return ret;
 }
 
@@ -455,6 +457,8 @@ blk_status_t btrfs_lookup_bio_sums(struct inode *inode, struct bio *bio, u8 *dst
 		count = search_csum_tree(fs_info, path, cur_disk_bytenr,
 					 search_len, csum_dst);
 		if (count <= 0) {
+			int ret = count;
+
 			/*
 			 * Either we hit a critical error or we didn't find
 			 * the csum.
@@ -472,7 +476,6 @@ blk_status_t btrfs_lookup_bio_sums(struct inode *inode, struct bio *bio, u8 *dst
 			if (BTRFS_I(inode)->root->root_key.objectid ==
 			    BTRFS_DATA_RELOC_TREE_OBJECTID) {
 				u64 file_offset;
-				int ret;
 
 				ret = search_file_offset_in_bio(bio, inode,
 						cur_disk_bytenr, &file_offset);
@@ -480,7 +483,7 @@ blk_status_t btrfs_lookup_bio_sums(struct inode *inode, struct bio *bio, u8 *dst
 					set_extent_bits(io_tree, file_offset,
 						file_offset + sectorsize - 1,
 						EXTENT_NODATASUM);
-			} else {
+			} else if (!ret) {
 				btrfs_warn_rl(fs_info,
 			"csum hole found for disk bytenr range [%llu, %llu)",
 				cur_disk_bytenr, cur_disk_bytenr + sectorsize);
