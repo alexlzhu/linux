@@ -30,9 +30,9 @@ def klp():
     # tag that is suffixed with -hotfix<num>, regardless of whether the patch_to
     # option is specified by the user when invoking BUCK.
     to_cmd = """
-      git show-ref --tags -d
+      HOME=/dev/null git show-ref --tags -d
       | grep hotfix
-      | grep `git rev-parse HEAD`
+      | grep `HOME=/dev/null git rev-parse HEAD`
       | awk -F '[ /]' '{print $NF}'
       > $OUT"""
     if patch_to:
@@ -74,9 +74,9 @@ def klp():
     native.genrule(
         name="patches",
         cmd="""mkdir -p $OUT
-            git format-patch -k `cat $(location :from_tag)`..`cat $(location :to_tag)` -o $OUT/
+            HOME=/dev/null git format-patch -k `cat $(location :from_tag)`..`cat $(location :to_tag)` -o $OUT/
             export hotfix=`cat $(location :hotfix)`
-            cat `git rev-parse --show-toplevel`/facebook/9999-Dummy-patch-to-bump-hotfix-version.patch.template | envsubst > $OUT/9999-Dummy-patch-to-bump-hotfix-version.patch
+            cat `HOME=/dev/null git rev-parse --show-toplevel`/facebook/9999-Dummy-patch-to-bump-hotfix-version.patch.template | envsubst > $OUT/9999-Dummy-patch-to-bump-hotfix-version.patch
         """,
         out="patches",
         cacheable=False,
@@ -109,7 +109,7 @@ def klp():
     native.genrule(
         name = "baseline-sources",
         cmd = """sudo rm -rf $OUT; mkdir -p $OUT
-            git clone -b `cat $(location :from_tag)` `git rev-parse --show-toplevel` $OUT
+            HOME=/dev/null git clone -b `cat $(location :from_tag)` `HOME=/dev/null git rev-parse --show-toplevel` $OUT
             pushd $OUT
             make mrproper
             popd
@@ -122,7 +122,7 @@ def klp():
     native.genrule(
         name = "target-sources",
         cmd = """sudo rm -rf $OUT; mkdir -p $OUT
-            git clone -b `cat $(location :to_tag)` `git rev-parse --show-toplevel` $OUT
+            HOME=/dev/null git clone -b `cat $(location :to_tag)` `HOME=/dev/null git rev-parse --show-toplevel` $OUT
             pushd $OUT
             make mrproper
             popd
@@ -257,7 +257,7 @@ def klp():
     native.genrule(
         name = "klp-spec",
         cmd = """
-            pushd `git rev-parse --show-toplevel`
+            pushd `HOME=/dev/null git rev-parse --show-toplevel`
             cp -a facebook/build/klp.spec $OUT
             popd
         """,
