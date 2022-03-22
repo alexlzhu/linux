@@ -282,6 +282,7 @@ struct ptp_ocp_sma_connector {
 	bool	fixed_fcn;
 	bool	fixed_dir;
 	bool	disabled;
+	u8	default_fcn;
 };
 
 struct ocp_attr_group {
@@ -870,10 +871,17 @@ static const struct ocp_selector ptp_ocp_sma_out[] = {
 
 struct ocp_sma_op {
 	const struct ocp_selector *tbl[2];
+	void (*init)(struct ptp_ocp *bp);
 	u32 (*get)(struct ptp_ocp *bp, int sma_nr);
 	int (*set_inputs)(struct ptp_ocp *bp, int sma_nr, u32 val);
 	int (*set_output)(struct ptp_ocp *bp, int sma_nr, u32 val);
 };
+
+static inline void
+ptp_ocp_sma_init(struct ptp_ocp *bp)
+{
+	return bp->sma_op->init(bp);
+}
 
 static inline u32
 ptp_ocp_sma_get(struct ptp_ocp *bp, int sma_nr)
@@ -2053,45 +2061,6 @@ ptp_ocp_signal_init(struct ptp_ocp *bp)
 					     bp->signal_out[i]->mem);
 }
 
-static void
-ptp_ocp_sma_init(struct ptp_ocp *bp)
-{
-	u32 reg;
-	int i;
-
-	/* defaults */
-	bp->sma[0].mode = SMA_MODE_IN;
-	bp->sma[1].mode = SMA_MODE_IN;
-	bp->sma[2].mode = SMA_MODE_OUT;
-	bp->sma[3].mode = SMA_MODE_OUT;
-
-	/* If no SMA1 map, the pin functions and directions are fixed. */
-	if (!bp->sma_map1) {
-		for (i = 0; i < 4; i++) {
-			bp->sma[i].fixed_fcn = true;
-			bp->sma[i].fixed_dir = true;
-		}
-		return;
-	}
-
-	/* If SMA2 GPIO output map is all 1, it is not present.
-	 * This indicates the firmware has fixed direction SMA pins.
-	 */
-	reg = ioread32(&bp->sma_map2->gpio2);
-	if (reg == 0xffffffff) {
-		for (i = 0; i < 4; i++)
-			bp->sma[i].fixed_dir = true;
-	} else {
-		reg = ioread32(&bp->sma_map1->gpio1);
-		bp->sma[0].mode = reg & BIT(15) ? SMA_MODE_IN : SMA_MODE_OUT;
-		bp->sma[1].mode = reg & BIT(31) ? SMA_MODE_IN : SMA_MODE_OUT;
-
-		reg = ioread32(&bp->sma_map1->gpio2);
-		bp->sma[2].mode = reg & BIT(15) ? SMA_MODE_OUT : SMA_MODE_IN;
-		bp->sma[3].mode = reg & BIT(31) ? SMA_MODE_OUT : SMA_MODE_IN;
-	}
-}
-
 static int
 ptp_ocp_fb_set_pins(struct ptp_ocp *bp)
 {
@@ -2469,6 +2438,47 @@ __handle_signal_inputs(struct ptp_ocp *bp, u32 val)
 	ptp_ocp_dcf_in(bp, val & 0x00200020);
 }
 
+static void
+ptp_ocp_sma_fb_init(struct ptp_ocp *bp)
+{
+	u32 reg;
+	int i;
+
+	/* defaults */
+	bp->sma[0].mode = SMA_MODE_IN;
+	bp->sma[1].mode = SMA_MODE_IN;
+	bp->sma[2].mode = SMA_MODE_OUT;
+	bp->sma[3].mode = SMA_MODE_OUT;
+	for (i = 0; i < 4; i++)
+		bp->sma[i].default_fcn = i & 1;
+
+	/* If no SMA1 map, the pin functions and directions are fixed. */
+	if (!bp->sma_map1) {
+		for (i = 0; i < 4; i++) {
+			bp->sma[i].fixed_fcn = true;
+			bp->sma[i].fixed_dir = true;
+		}
+		return;
+	}
+
+	/* If SMA2 GPIO output map is all 1, it is not present.
+	 * This indicates the firmware has fixed direction SMA pins.
+	 */
+	reg = ioread32(&bp->sma_map2->gpio2);
+	if (reg == 0xffffffff) {
+		for (i = 0; i < 4; i++)
+			bp->sma[i].fixed_dir = true;
+	} else {
+		reg = ioread32(&bp->sma_map1->gpio1);
+		bp->sma[0].mode = reg & BIT(15) ? SMA_MODE_IN : SMA_MODE_OUT;
+		bp->sma[1].mode = reg & BIT(31) ? SMA_MODE_IN : SMA_MODE_OUT;
+
+		reg = ioread32(&bp->sma_map1->gpio2);
+		bp->sma[2].mode = reg & BIT(15) ? SMA_MODE_OUT : SMA_MODE_IN;
+		bp->sma[3].mode = reg & BIT(31) ? SMA_MODE_OUT : SMA_MODE_IN;
+	}
+}
+
 static u32
 ptp_ocp_sma_fb_get(struct ptp_ocp *bp, int sma_nr)
 {
@@ -2476,7 +2486,7 @@ ptp_ocp_sma_fb_get(struct ptp_ocp *bp, int sma_nr)
 	u32 shift;
 
 	if (bp->sma[sma_nr - 1].fixed_fcn)
-		return (sma_nr - 1) & 1;
+		return bp->sma[sma_nr - 1].default_fcn;
 
 	if (bp->sma[sma_nr - 1].mode == SMA_MODE_IN)
 		gpio = sma_nr > 2 ? &bp->sma_map2->gpio1 : &bp->sma_map1->gpio1;
@@ -2541,6 +2551,7 @@ ptp_ocp_sma_fb_set_inputs(struct ptp_ocp *bp, int sma_nr, u32 val)
 
 static const struct ocp_sma_op ocp_fb_sma_op = {
 	.tbl		= { ptp_ocp_sma_in, ptp_ocp_sma_out },
+	.init		= ptp_ocp_sma_fb_init,
 	.get		= ptp_ocp_sma_fb_get,
 	.set_inputs	= ptp_ocp_sma_fb_set_inputs,
 	.set_output	= ptp_ocp_sma_fb_set_output,
@@ -2693,7 +2704,7 @@ ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
 		return -EOPNOTSUPP;
 
 	if (sma->fixed_fcn) {
-		if (val != ((sma_nr - 1) & 1))
+		if (val != sma->default_fcn)
 			return -EOPNOTSUPP;
 		return 0;
 	}
