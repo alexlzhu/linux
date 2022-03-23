@@ -994,6 +994,9 @@ static int __btrfs_end_transaction(struct btrfs_trans_handle *trans,
 		return 0;
 	}
 
+	if (throttle && should_end_transaction(trans))
+		return btrfs_commit_transaction(trans);
+
 	btrfs_trans_release_metadata(trans);
 	trans->block_rsv = NULL;
 
