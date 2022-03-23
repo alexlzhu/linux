@@ -49,6 +49,14 @@
 #define PCI_DEVICE_ID_FACEBOOK_TIMECARD 0x0400
 #endif
 
+#ifndef PCI_VENDOR_ID_CELESTICA
+#define PCI_VENDOR_ID_CELESTICA 0x18d4
+#endif
+
+#ifndef PCI_DEVICE_ID_CELESTICA_TIMECARD
+#define PCI_DEVICE_ID_CELESTICA_TIMECARD 0x1008
+#endif
+
 #ifndef PCI_VENDOR_ID_OROLIA
 #define PCI_VENDOR_ID_OROLIA 0x1ad7
 #endif
@@ -274,6 +282,7 @@ struct ptp_ocp_sma_connector {
 	bool	fixed_fcn;
 	bool	fixed_dir;
 	bool	disabled;
+	u8	default_fcn;
 };
 
 struct ocp_attr_group {
@@ -323,6 +332,7 @@ struct ptp_ocp {
 	struct ptp_ocp_ext_src	*ts3;
 	struct ptp_ocp_ext_src	*ts4;
 	struct ocp_art_osc_reg	__iomem *osc;
+	struct ocp_art_gpio_reg __iomem *art_sma;
 	struct img_reg __iomem	*image;
 	struct ptp_clock	*ptp;
 	struct ptp_clock_info	ptp_info;
@@ -354,6 +364,7 @@ struct ptp_ocp {
 	u64			fw_cap;
 	struct ptp_ocp_signal	signal[4];
 	struct ptp_ocp_sma_connector sma[4];
+	const struct ocp_sma_op *sma_op;
 };
 
 #define OCP_REQ_TIMESTAMP	BIT(0)
@@ -384,11 +395,12 @@ static int ptp_ocp_signal_enable(void *priv, u32 req, bool enable);
 static int ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr);
 
 static int ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r);
-static irqreturn_t ptp_ocp_art_pps_irq(int irq, void *priv);
-static int ptp_ocp_art_pps_enable(void *priv, u32 req, bool enable);
 
 static const struct ocp_attr_group fb_timecard_groups[];
+static const struct ocp_sma_op ocp_fb_sma_op;
+
 static const struct ocp_attr_group art_timecard_groups[];
+static const struct ocp_sma_op ocp_art_sma_op;
 
 struct ptp_ocp_eeprom_map {
 	u16	off;
@@ -460,9 +472,12 @@ static struct ptp_ocp_eeprom_map art_eeprom_map[] = {
  * 15: TS3
  * 16: TS4
  --
- * 11: Orolia TS0
- * 12: Orolia TS1
- * 13: Orolia PPS
+ * 8: Orolia TS1
+ * 10: Orolia TS2
+ * 11: Orolia TS0 (GNSS)
+ * 12: Orolia PPS
+ * 14: Orolia TS3
+ * 15: Orolia TS4
  */
 
 static struct ocp_resource ocp_fb_resource[] = {
@@ -704,10 +719,11 @@ struct ocp_art_osc_reg {
 #define MRO50_OP_ADJUST_COARSE	(MRO50_CMD_ADJUST | MRO50_CTRL_ADJUST_COARSE)
 #define MRO50_OP_SAVE_COARSE	(MRO50_CTRL_ENABLE | MRO50_CTRL_SAVE_COARSE)
 
-struct ocp_art_pps_reg {
-	u32	enable;
-	u32	__pad0[11];
-	u32	intr;
+struct ocp_art_gpio_reg {
+	struct {
+		u32	gpio;
+		u32	__pad[3];
+	} map[4];
 };
 
 static struct ocp_resource ocp_art_resource[] = {
@@ -719,12 +735,62 @@ static struct ocp_resource ocp_art_resource[] = {
 		OCP_SERIAL_RESOURCE(gnss_port),
 		.offset = 0x00160000 + 0x1000, .irq_vec = 3,
 	},
-	/* Timestamp associated with Internal PPS of the card */
+	{
+		OCP_MEM_RESOURCE(art_sma),
+		.offset = 0x003C0000, .size = 0x1000,
+	},
+	/* Timestamp associated with GNSS1 receiver PPS */
 	{
 		OCP_EXT_RESOURCE(ts0),
-		.offset = 0x00330000, .size = 0x20, .irq_vec = 11,
+		.offset = 0x360000, .size = 0x20, .irq_vec = 12,
 		.extra = &(struct ptp_ocp_ext_info) {
 			.index = 0,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(ts1),
+		.offset = 0x380000, .size = 0x20, .irq_vec = 8,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 1,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(ts2),
+		.offset = 0x390000, .size = 0x20, .irq_vec = 10,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 2,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(ts3),
+		.offset = 0x3A0000, .size = 0x20, .irq_vec = 14,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 3,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	{
+		OCP_EXT_RESOURCE(ts4),
+		.offset = 0x3B0000, .size = 0x20, .irq_vec = 15,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 4,
+			.irq_fcn = ptp_ocp_ts_irq,
+			.enable = ptp_ocp_ts_enable,
+		},
+	},
+	/* Timestamp associated with Internal PPS of the card */
+	{
+		OCP_EXT_RESOURCE(pps),
+		.offset = 0x00330000, .size = 0x20, .irq_vec = 11,
+		.extra = &(struct ptp_ocp_ext_info) {
+			.index = 5,
 			.irq_fcn = ptp_ocp_ts_irq,
 			.enable = ptp_ocp_ts_enable,
 		},
@@ -765,24 +831,6 @@ static struct ocp_resource ocp_art_resource[] = {
 			},
 		},
 	},
-	/* Timestamp associated with GNSS1 receiver PPS */
-	{
-		OCP_EXT_RESOURCE(ts1),
-		.offset = 0x360000, .size = 0x20, .irq_vec = 12,
-		.extra = &(struct ptp_ocp_ext_info) {
-			.index = 1,
-			.irq_fcn = ptp_ocp_ts_irq,
-			.enable = ptp_ocp_ts_enable,
-		},
-	},
-	{
-		OCP_EXT_RESOURCE(pps),
-		.offset = 0x00370000, .size = 0x20, .irq_vec = 13,
-		.extra = &(struct ptp_ocp_ext_info) {
-			.irq_fcn = ptp_ocp_art_pps_irq,
-			.enable = ptp_ocp_art_pps_enable,
-		},
-	},
 	{
 		.setup = ptp_ocp_art_board_init,
 	},
@@ -791,8 +839,9 @@ static struct ocp_resource ocp_art_resource[] = {
 
 static const struct pci_device_id ptp_ocp_pcidev_id[] = {
 	{ PCI_DEVICE_DATA(FACEBOOK, TIMECARD, &ocp_fb_resource) },
+	{ PCI_DEVICE_DATA(CELESTICA, TIMECARD, &ocp_fb_resource) },
 	{ PCI_DEVICE_DATA(OROLIA, ARTCARD, &ocp_art_resource) },
-	{ 0 }
+	{ }
 };
 MODULE_DEVICE_TABLE(pci, ptp_ocp_pcidev_id);
 
@@ -804,7 +853,7 @@ struct ocp_selector {
 	int value;
 };
 
-static struct ocp_selector ptp_ocp_clock[] = {
+static const struct ocp_selector ptp_ocp_clock[] = {
 	{ .name = "NONE",	.value = 0 },
 	{ .name = "TOD",	.value = 1 },
 	{ .name = "IRIG",	.value = 2 },
@@ -821,7 +870,7 @@ static struct ocp_selector ptp_ocp_clock[] = {
 #define SMA_SELECT_MASK		((1U << 15) - 1)
 #define SMA_DISABLE		0x10000
 
-static struct ocp_selector ptp_ocp_sma_in[] = {
+static const struct ocp_selector ptp_ocp_sma_in[] = {
 	{ .name = "10Mhz",	.value = 0x0000 },
 	{ .name = "PPS1",	.value = 0x0001 },
 	{ .name = "PPS2",	.value = 0x0002 },
@@ -839,7 +888,7 @@ static struct ocp_selector ptp_ocp_sma_in[] = {
 	{ }
 };
 
-static struct ocp_selector ptp_ocp_sma_out[] = {
+static const struct ocp_selector ptp_ocp_sma_out[] = {
 	{ .name = "10Mhz",	.value = 0x0000 },
 	{ .name = "PHC",	.value = 0x0001 },
 	{ .name = "MAC",	.value = 0x0002 },
@@ -856,8 +905,53 @@ static struct ocp_selector ptp_ocp_sma_out[] = {
 	{ }
 };
 
+static const struct ocp_selector ptp_ocp_art_sma_in[] = {
+	{ .name = "PPS1",	.value = 0x0001 },
+	{ .name = "10Mhz",	.value = 0x0008 },
+	{ }
+};
+
+static const struct ocp_selector ptp_ocp_art_sma_out[] = {
+	{ .name = "PHC",	.value = 0x0002 },
+	{ .name = "GNSS",	.value = 0x0004 },
+	{ .name = "10Mhz",	.value = 0x0010 },
+	{ }
+};
+
+struct ocp_sma_op {
+	const struct ocp_selector *tbl[2];
+	void (*init)(struct ptp_ocp *bp);
+	u32 (*get)(struct ptp_ocp *bp, int sma_nr);
+	int (*set_inputs)(struct ptp_ocp *bp, int sma_nr, u32 val);
+	int (*set_output)(struct ptp_ocp *bp, int sma_nr, u32 val);
+};
+
+static inline void
+ptp_ocp_sma_init(struct ptp_ocp *bp)
+{
+	return bp->sma_op->init(bp);
+}
+
+static inline u32
+ptp_ocp_sma_get(struct ptp_ocp *bp, int sma_nr)
+{
+	return bp->sma_op->get(bp, sma_nr);
+}
+
+static inline int
+ptp_ocp_sma_set_inputs(struct ptp_ocp *bp, int sma_nr, u32 val)
+{
+	return bp->sma_op->set_inputs(bp, sma_nr, val);
+}
+
+static inline int
+ptp_ocp_sma_set_output(struct ptp_ocp *bp, int sma_nr, u32 val)
+{
+	return bp->sma_op->set_output(bp, sma_nr, val);
+}
+
 static const char *
-ptp_ocp_select_name_from_val(struct ocp_selector *tbl, int val)
+ptp_ocp_select_name_from_val(const struct ocp_selector *tbl, int val)
 {
 	int i;
 
@@ -868,7 +962,7 @@ ptp_ocp_select_name_from_val(struct ocp_selector *tbl, int val)
 }
 
 static int
-ptp_ocp_select_val_from_name(struct ocp_selector *tbl, const char *name)
+ptp_ocp_select_val_from_name(const struct ocp_selector *tbl, const char *name)
 {
 	const char *select;
 	int i;
@@ -882,7 +976,7 @@ ptp_ocp_select_val_from_name(struct ocp_selector *tbl, const char *name)
 }
 
 static ssize_t
-ptp_ocp_select_table_show(struct ocp_selector *tbl, char *buf)
+ptp_ocp_select_table_show(const struct ocp_selector *tbl, char *buf)
 {
 	ssize_t count;
 	int i;
@@ -1130,7 +1224,7 @@ ptp_ocp_verify(struct ptp_clock_info *ptp_info, unsigned pin,
 
 	switch (func) {
 	case PTP_PF_NONE:
-		sprintf(buf, "IN: None");
+		snprintf(buf, sizeof(buf), "IN: None");
 		break;
 	case PTP_PF_EXTTS:
 		/* Allow timestamps, but require sysfs configuration. */
@@ -1140,9 +1234,9 @@ ptp_ocp_verify(struct ptp_clock_info *ptp_info, unsigned pin,
 		 * channels 1..4 are the frequency generators.
 		 */
 		if (chan)
-			sprintf(buf, "OUT: GEN%d", chan);
+			snprintf(buf, sizeof(buf), "OUT: GEN%d", chan);
 		else
-			sprintf(buf, "OUT: PHC");
+			snprintf(buf, sizeof(buf), "OUT: PHC");
 		break;
 	default:
 		return -EOPNOTSUPP;
@@ -1372,10 +1466,9 @@ ptp_ocp_nvmem_device_get(struct ptp_ocp *bp, const void * const tag)
 static inline void
 ptp_ocp_nvmem_device_put(struct nvmem_device **nvmemp)
 {
-	if (*nvmemp != NULL) {
+	if (!IS_ERR_OR_NULL(*nvmemp))
 		nvmem_device_put(*nvmemp);
-		*nvmemp = NULL;
-	}
+	*nvmemp = NULL;
 }
 
 static void
@@ -1399,13 +1492,15 @@ ptp_ocp_read_eeprom(struct ptp_ocp *bp)
 		}
 		if (!nvmem) {
 			nvmem = ptp_ocp_nvmem_device_get(bp, tag);
-			if (!nvmem)
-				goto out;
+			if (IS_ERR(nvmem)) {
+				ret = PTR_ERR(nvmem);
+				goto fail;
+			}
 		}
 		ret = nvmem_device_read(nvmem, map->off, map->len,
 					BP_MAP_ENTRY_ADDR(bp, map));
 		if (ret != map->len)
-			goto read_fail;
+			goto fail;
 	}
 
 	bp->has_eeprom_data = true;
@@ -1414,7 +1509,7 @@ out:
 	ptp_ocp_nvmem_device_put(&nvmem);
 	return;
 
-read_fail:
+fail:
 	dev_err(&bp->pdev->dev, "could not read eeprom: %d\n", ret);
 	goto out;
 }
@@ -1860,32 +1955,6 @@ ptp_ocp_ts_enable(void *priv, u32 req, bool enable)
 	return 0;
 }
 
-static irqreturn_t
-ptp_ocp_art_pps_irq(int irq, void *priv)
-{
-	struct ptp_ocp_ext_src *ext = priv;
-	struct ocp_art_pps_reg __iomem *reg = ext->mem;
-	struct ptp_clock_event ev;
-
-	ev.type = PTP_CLOCK_PPS;
-	ptp_clock_event(ext->bp->ptp, &ev);
-
-	iowrite32(0, &reg->intr);
-
-	return IRQ_HANDLED;
-}
-
-static int
-ptp_ocp_art_pps_enable(void *priv, u32 req, bool enable)
-{
-	struct ptp_ocp_ext_src *ext = priv;
-	struct ocp_art_pps_reg __iomem *reg = ext->mem;
-
-	iowrite32(enable, &reg->enable);
-
-	return 0;
-}
-
 static void
 ptp_ocp_unregister_ext(struct ptp_ocp_ext_src *ext)
 {
@@ -2015,45 +2084,6 @@ ptp_ocp_signal_init(struct ptp_ocp *bp)
 					     bp->signal_out[i]->mem);
 }
 
-static void
-ptp_ocp_sma_init(struct ptp_ocp *bp)
-{
-	u32 reg;
-	int i;
-
-	/* defaults */
-	bp->sma[0].mode = SMA_MODE_IN;
-	bp->sma[1].mode = SMA_MODE_IN;
-	bp->sma[2].mode = SMA_MODE_OUT;
-	bp->sma[3].mode = SMA_MODE_OUT;
-
-	/* If no SMA1 map, the pin functions and directions are fixed. */
-	if (!bp->sma_map1) {
-		for (i = 0; i < 4; i++) {
-			bp->sma[i].fixed_fcn = true;
-			bp->sma[i].fixed_dir = true;
-		}
-		return;
-	}
-
-	/* If SMA2 GPIO output map is all 1, it is not present.
-	 * This indicates the firmware has fixed direction SMA pins.
-	 */
-	reg = ioread32(&bp->sma_map2->gpio2);
-	if (reg == 0xffffffff) {
-		for (i = 0; i < 4; i++)
-			bp->sma[i].fixed_dir = true;
-	} else {
-		reg = ioread32(&bp->sma_map1->gpio1);
-		bp->sma[0].mode = reg & BIT(15) ? SMA_MODE_IN : SMA_MODE_OUT;
-		bp->sma[1].mode = reg & BIT(31) ? SMA_MODE_IN : SMA_MODE_OUT;
-
-		reg = ioread32(&bp->sma_map1->gpio2);
-		bp->sma[2].mode = reg & BIT(15) ? SMA_MODE_OUT : SMA_MODE_IN;
-		bp->sma[3].mode = reg & BIT(31) ? SMA_MODE_OUT : SMA_MODE_IN;
-	}
-}
-
 static int
 ptp_ocp_fb_set_pins(struct ptp_ocp *bp)
 {
@@ -2117,6 +2147,7 @@ ptp_ocp_fb_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 	bp->eeprom_map = fb_eeprom_map;
 	bp->fw_version = ioread32(&bp->image->version);
 	bp->attr_tbl = fb_timecard_groups;
+	bp->sma_op = &ocp_fb_sma_op;
 
 	ptp_ocp_fb_set_version(bp);
 
@@ -2238,8 +2269,8 @@ ptp_ocp_mro50_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 		return 0;
 	case MRO50_READ_EEPROM_BLOB:
 		nvmem = ptp_ocp_nvmem_device_get(bp, NULL);
-		if (!nvmem)
-			return -EFAULT;
+		if (IS_ERR(nvmem))
+			return PTR_ERR(nvmem);
 		err = nvmem_device_read(nvmem, 0x0, 256, buf);
 		ptp_ocp_nvmem_device_put(&nvmem);
 		if (err != 256)
@@ -2252,10 +2283,9 @@ ptp_ocp_mro50_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 		err = copy_from_user(buf, (void __user *)arg, 256);
 		if (err)
 			return -EFAULT;
-
 		nvmem = ptp_ocp_nvmem_device_get(bp, NULL);
-		if (!nvmem)
-			return -EFAULT;
+		if (IS_ERR(nvmem))
+			return PTR_ERR(nvmem);
 		err = nvmem_device_write(nvmem, 0x0, 256, buf);
 		ptp_ocp_nvmem_device_put(&nvmem);
 		if (err != 256)
@@ -2331,6 +2361,7 @@ ptp_ocp_art_board_init(struct ptp_ocp *bp, struct ocp_resource *r)
 	bp->fw_version = ioread32(&bp->reg->version);
 	bp->fw_cap = OCP_CAP_BASIC;
 	bp->fw_tag = 2;
+	bp->sma_op = &ocp_art_sma_op;
 
 	ptp_ocp_sma_init(bp);
 
@@ -2430,44 +2461,242 @@ __handle_signal_inputs(struct ptp_ocp *bp, u32 val)
 	ptp_ocp_dcf_in(bp, val & 0x00200020);
 }
 
-/*
- * ANT0 == gps	(in)
- * ANT1 == sma1 (in)
- * ANT2 == sma2 (in)
- * ANT3 == sma3 (out)
- * ANT4 == sma4 (out)
- */
+static void
+ptp_ocp_sma_fb_init(struct ptp_ocp *bp)
+{
+	u32 reg;
+	int i;
+
+	/* defaults */
+	bp->sma[0].mode = SMA_MODE_IN;
+	bp->sma[1].mode = SMA_MODE_IN;
+	bp->sma[2].mode = SMA_MODE_OUT;
+	bp->sma[3].mode = SMA_MODE_OUT;
+	for (i = 0; i < 4; i++)
+		bp->sma[i].default_fcn = i & 1;
+
+	/* If no SMA1 map, the pin functions and directions are fixed. */
+	if (!bp->sma_map1) {
+		for (i = 0; i < 4; i++) {
+			bp->sma[i].fixed_fcn = true;
+			bp->sma[i].fixed_dir = true;
+		}
+		return;
+	}
+
+	/* If SMA2 GPIO output map is all 1, it is not present.
+	 * This indicates the firmware has fixed direction SMA pins.
+	 */
+	reg = ioread32(&bp->sma_map2->gpio2);
+	if (reg == 0xffffffff) {
+		for (i = 0; i < 4; i++)
+			bp->sma[i].fixed_dir = true;
+	} else {
+		reg = ioread32(&bp->sma_map1->gpio1);
+		bp->sma[0].mode = reg & BIT(15) ? SMA_MODE_IN : SMA_MODE_OUT;
+		bp->sma[1].mode = reg & BIT(31) ? SMA_MODE_IN : SMA_MODE_OUT;
+
+		reg = ioread32(&bp->sma_map1->gpio2);
+		bp->sma[2].mode = reg & BIT(15) ? SMA_MODE_OUT : SMA_MODE_IN;
+		bp->sma[3].mode = reg & BIT(31) ? SMA_MODE_OUT : SMA_MODE_IN;
+	}
+}
+
+static u32
+ptp_ocp_sma_fb_get(struct ptp_ocp *bp, int sma_nr)
+{
+	u32 __iomem *gpio;
+	u32 shift;
+
+	if (bp->sma[sma_nr - 1].fixed_fcn)
+		return bp->sma[sma_nr - 1].default_fcn;
+
+	if (bp->sma[sma_nr - 1].mode == SMA_MODE_IN)
+		gpio = sma_nr > 2 ? &bp->sma_map2->gpio1 : &bp->sma_map1->gpio1;
+	else
+		gpio = sma_nr > 2 ? &bp->sma_map1->gpio2 : &bp->sma_map2->gpio2;
+	shift = sma_nr & 1 ? 0 : 16;
+
+	return (ioread32(gpio) >> shift) & 0xffff;
+}
+
+static int
+ptp_ocp_sma_fb_set_output(struct ptp_ocp *bp, int sma_nr, u32 val)
+{
+	u32 reg, mask, shift;
+	unsigned long flags;
+	u32 __iomem *gpio;
+
+	gpio = sma_nr > 2 ? &bp->sma_map1->gpio2 : &bp->sma_map2->gpio2;
+	shift = sma_nr & 1 ? 0 : 16;
+
+	mask = 0xffff << (16 - shift);
+
+	spin_lock_irqsave(&bp->lock, flags);
+
+	reg = ioread32(gpio);
+	reg = (reg & mask) | (val << shift);
+
+	__handle_signal_outputs(bp, reg);
+
+	iowrite32(reg, gpio);
+
+	spin_unlock_irqrestore(&bp->lock, flags);
+
+	return 0;
+}
+
+static int
+ptp_ocp_sma_fb_set_inputs(struct ptp_ocp *bp, int sma_nr, u32 val)
+{
+	u32 reg, mask, shift;
+	unsigned long flags;
+	u32 __iomem *gpio;
+
+	gpio = sma_nr > 2 ? &bp->sma_map2->gpio1 : &bp->sma_map1->gpio1;
+	shift = sma_nr & 1 ? 0 : 16;
+
+	mask = 0xffff << (16 - shift);
+
+	spin_lock_irqsave(&bp->lock, flags);
+
+	reg = ioread32(gpio);
+	reg = (reg & mask) | (val << shift);
+
+	__handle_signal_inputs(bp, reg);
+
+	iowrite32(reg, gpio);
+
+	spin_unlock_irqrestore(&bp->lock, flags);
+
+	return 0;
+}
+
+static const struct ocp_sma_op ocp_fb_sma_op = {
+	.tbl		= { ptp_ocp_sma_in, ptp_ocp_sma_out },
+	.init		= ptp_ocp_sma_fb_init,
+	.get		= ptp_ocp_sma_fb_get,
+	.set_inputs	= ptp_ocp_sma_fb_set_inputs,
+	.set_output	= ptp_ocp_sma_fb_set_output,
+};
+
+static void
+ptp_ocp_art_sma_init(struct ptp_ocp *bp)
+{
+	u32 reg;
+	int i;
+
+	/* defaults */
+	bp->sma[0].mode = SMA_MODE_IN;
+	bp->sma[1].mode = SMA_MODE_IN;
+	bp->sma[2].mode = SMA_MODE_OUT;
+	bp->sma[3].mode = SMA_MODE_OUT;
+
+	bp->sma[0].default_fcn = 0x08;	/* IN: 10Mhz */
+	bp->sma[1].default_fcn = 0x01;	/* IN: PPS1 */
+	bp->sma[2].default_fcn = 0x10;	/* OUT: 10Mhz */
+	bp->sma[3].default_fcn = 0x02;	/* OUT: PHC */
+
+	/* If no SMA map, the pin functions and directions are fixed. */
+	if (!bp->art_sma) {
+		for (i = 0; i < 4; i++) {
+			bp->sma[i].fixed_fcn = true;
+			bp->sma[i].fixed_dir = true;
+		}
+		return;
+	}
+
+	for (i = 0; i < 4; i++) {
+		reg = ioread32(&bp->art_sma->map[i].gpio);
+
+		switch (reg & 0xff) {
+		case 0:
+			bp->sma[i].fixed_fcn = true;
+			bp->sma[i].fixed_dir = true;
+			break;
+		case 1:
+		case 8:
+			bp->sma[i].mode = SMA_MODE_IN;
+			break;
+		default:
+			bp->sma[i].mode = SMA_MODE_OUT;
+			break;
+		}
+	}
+}
+
+static u32
+ptp_ocp_art_sma_get(struct ptp_ocp *bp, int sma_nr)
+{
+	if (bp->sma[sma_nr - 1].fixed_fcn)
+		return bp->sma[sma_nr - 1].default_fcn;
+
+	return ioread32(&bp->art_sma->map[sma_nr - 1].gpio) & 0xff;
+}
+
+/* note: store 0 is considered invalid. */
+static int
+ptp_ocp_art_sma_set(struct ptp_ocp *bp, int sma_nr, u32 val)
+{
+	u32 __iomem *gpio;
+	u32 reg;
+
+	val &= SMA_SELECT_MASK;
+	if (hweight32(val) > 1)
+		return -EINVAL;
+
+	gpio = &bp->art_sma->map[sma_nr - 1].gpio;
+
+	reg = ioread32(gpio);
+	if (((reg >> 16) & val) == 0)
+		return -EOPNOTSUPP;
+
+	reg = (reg & 0xff00) | (val & 0xff);
+	iowrite32(reg, gpio);
+
+	return 0;
+}
+
+static const struct ocp_sma_op ocp_art_sma_op = {
+	.tbl		= { ptp_ocp_art_sma_in, ptp_ocp_art_sma_out },
+	.init		= ptp_ocp_art_sma_init,
+	.get		= ptp_ocp_art_sma_get,
+	.set_inputs	= ptp_ocp_art_sma_set,
+	.set_output	= ptp_ocp_art_sma_set,
+};
 
 static ssize_t
-ptp_ocp_show_output(u32 val, char *buf, int def_val)
+ptp_ocp_show_output(const struct ocp_selector *tbl, u32 val, char *buf,
+		    int def_val)
 {
 	const char *name;
 	ssize_t count;
 
 	count = sysfs_emit(buf, "OUT: ");
-	name = ptp_ocp_select_name_from_val(ptp_ocp_sma_out, val);
+	name = ptp_ocp_select_name_from_val(tbl, val);
 	if (!name)
-		name = ptp_ocp_select_name_from_val(ptp_ocp_sma_out, def_val);
+		name = ptp_ocp_select_name_from_val(tbl, def_val);
 	count += sysfs_emit_at(buf, count, "%s\n", name);
 	return count;
 }
 
 static ssize_t
-ptp_ocp_show_inputs(u32 val, char *buf, int def_val)
+ptp_ocp_show_inputs(const struct ocp_selector *tbl, u32 val, char *buf,
+		    int def_val)
 {
 	const char *name;
 	ssize_t count;
 	int i;
 
 	count = sysfs_emit(buf, "IN: ");
-	for (i = 0; i < ARRAY_SIZE(ptp_ocp_sma_in); i++) {
-		if (val & ptp_ocp_sma_in[i].value) {
-			name = ptp_ocp_sma_in[i].name;
+	for (i = 0; tbl[i].name; i++) {
+		if (val & tbl[i].value) {
+			name = tbl[i].name;
 			count += sysfs_emit_at(buf, count, "%s ", name);
 		}
 	}
 	if (!val && def_val >= 0) {
-		name = ptp_ocp_select_name_from_val(ptp_ocp_sma_in, def_val);
+		name = ptp_ocp_select_name_from_val(tbl, def_val);
 		count += sysfs_emit_at(buf, count, "%s ", name);
 	}
 	if (count)
@@ -2477,9 +2706,9 @@ ptp_ocp_show_inputs(u32 val, char *buf, int def_val)
 }
 
 static int
-sma_parse_inputs(const char *buf, enum ptp_ocp_sma_mode *mode)
+sma_parse_inputs(const struct ocp_selector * const tbl[], const char *buf,
+		 enum ptp_ocp_sma_mode *mode)
 {
-	struct ocp_selector *tbl[] = { ptp_ocp_sma_in, ptp_ocp_sma_out };
 	int idx, count, dir;
 	char **argv;
 	int ret;
@@ -2515,40 +2744,24 @@ out:
 	return ret;
 }
 
-static u32
-ptp_ocp_sma_get(struct ptp_ocp *bp, int sma_nr, enum ptp_ocp_sma_mode mode)
-{
-	u32 __iomem *gpio;
-	u32 shift;
-
-	if (bp->sma[sma_nr - 1].fixed_fcn)
-		return (sma_nr - 1) & 1;
-
-	if (mode == SMA_MODE_IN)
-		gpio = sma_nr > 2 ? &bp->sma_map2->gpio1 : &bp->sma_map1->gpio1;
-	else
-		gpio = sma_nr > 2 ? &bp->sma_map1->gpio2 : &bp->sma_map2->gpio2;
-	shift = sma_nr & 1 ? 0 : 16;
-
-	return (ioread32(gpio) >> shift) & 0xffff;
-}
-
 static ssize_t
 ptp_ocp_sma_show(struct ptp_ocp *bp, int sma_nr, char *buf,
 		 int default_in_val, int default_out_val)
 {
 	struct ptp_ocp_sma_connector *sma = &bp->sma[sma_nr - 1];
+	const struct ocp_selector * const *tbl;
 	u32 val;
 
-	val = ptp_ocp_sma_get(bp, sma_nr, sma->mode) & SMA_SELECT_MASK;
+	tbl = bp->sma_op->tbl;
+	val = ptp_ocp_sma_get(bp, sma_nr) & SMA_SELECT_MASK;
 
 	if (sma->mode == SMA_MODE_IN) {
 		if (sma->disabled)
 			val = SMA_DISABLE;
-		return ptp_ocp_show_inputs(val, buf, default_in_val);
+		return ptp_ocp_show_inputs(tbl[0], val, buf, default_in_val);
 	}
 
-	return ptp_ocp_show_output(val, buf, default_out_val);
+	return ptp_ocp_show_output(tbl[1], val, buf, default_out_val);
 }
 
 static ssize_t
@@ -2583,54 +2796,6 @@ sma4_show(struct device *dev, struct device_attribute *attr, char *buf)
 	return ptp_ocp_sma_show(bp, 4, buf, -1, 1);
 }
 
-static void
-ptp_ocp_sma_store_output(struct ptp_ocp *bp, int sma_nr, u32 val)
-{
-	u32 reg, mask, shift;
-	unsigned long flags;
-	u32 __iomem *gpio;
-
-	gpio = sma_nr > 2 ? &bp->sma_map1->gpio2 : &bp->sma_map2->gpio2;
-	shift = sma_nr & 1 ? 0 : 16;
-
-	mask = 0xffff << (16 - shift);
-
-	spin_lock_irqsave(&bp->lock, flags);
-
-	reg = ioread32(gpio);
-	reg = (reg & mask) | (val << shift);
-
-	__handle_signal_outputs(bp, reg);
-
-	iowrite32(reg, gpio);
-
-	spin_unlock_irqrestore(&bp->lock, flags);
-}
-
-static void
-ptp_ocp_sma_store_inputs(struct ptp_ocp *bp, int sma_nr, u32 val)
-{
-	u32 reg, mask, shift;
-	unsigned long flags;
-	u32 __iomem *gpio;
-
-	gpio = sma_nr > 2 ? &bp->sma_map2->gpio1 : &bp->sma_map1->gpio1;
-	shift = sma_nr & 1 ? 0 : 16;
-
-	mask = 0xffff << (16 - shift);
-
-	spin_lock_irqsave(&bp->lock, flags);
-
-	reg = ioread32(gpio);
-	reg = (reg & mask) | (val << shift);
-
-	__handle_signal_inputs(bp, reg);
-
-	iowrite32(reg, gpio);
-
-	spin_unlock_irqrestore(&bp->lock, flags);
-}
-
 static int
 ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
 {
@@ -2639,7 +2804,7 @@ ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
 	int val;
 
 	mode = sma->mode;
-	val = sma_parse_inputs(buf, &mode);
+	val = sma_parse_inputs(bp->sma_op->tbl, buf, &mode);
 	if (val < 0)
 		return val;
 
@@ -2647,7 +2812,7 @@ ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
 		return -EOPNOTSUPP;
 
 	if (sma->fixed_fcn) {
-		if (val != ((sma_nr - 1) & 1))
+		if (val != sma->default_fcn)
 			return -EOPNOTSUPP;
 		return 0;
 	}
@@ -2656,9 +2821,9 @@ ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
 
 	if (mode != sma->mode) {
 		if (mode == SMA_MODE_IN)
-			ptp_ocp_sma_store_output(bp, sma_nr, 0);
+			ptp_ocp_sma_set_output(bp, sma_nr, 0);
 		else
-			ptp_ocp_sma_store_inputs(bp, sma_nr, 0);
+			ptp_ocp_sma_set_inputs(bp, sma_nr, 0);
 		sma->mode = mode;
 	}
 
@@ -2669,11 +2834,11 @@ ptp_ocp_sma_store(struct ptp_ocp *bp, const char *buf, int sma_nr)
 		val = 0;
 
 	if (mode == SMA_MODE_IN)
-		ptp_ocp_sma_store_inputs(bp, sma_nr, val);
+		val = ptp_ocp_sma_set_inputs(bp, sma_nr, val);
 	else
-		ptp_ocp_sma_store_output(bp, sma_nr, val);
+		val = ptp_ocp_sma_set_output(bp, sma_nr, val);
 
-	return 0;
+	return val;
 }
 
 static ssize_t
@@ -2728,7 +2893,9 @@ static ssize_t
 available_sma_inputs_show(struct device *dev,
 			  struct device_attribute *attr, char *buf)
 {
-	return ptp_ocp_select_table_show(ptp_ocp_sma_in, buf);
+	struct ptp_ocp *bp = dev_get_drvdata(dev);
+
+	return ptp_ocp_select_table_show(bp->sma_op->tbl[0], buf);
 }
 static DEVICE_ATTR_RO(available_sma_inputs);
 
@@ -2736,7 +2903,9 @@ static ssize_t
 available_sma_outputs_show(struct device *dev,
 			   struct device_attribute *attr, char *buf)
 {
-	return ptp_ocp_select_table_show(ptp_ocp_sma_out, buf);
+	struct ptp_ocp *bp = dev_get_drvdata(dev);
+
+	return ptp_ocp_select_table_show(bp->sma_op->tbl[1], buf);
 }
 static DEVICE_ATTR_RO(available_sma_outputs);
 
@@ -3377,6 +3546,12 @@ static struct attribute *art_timecard_attrs[] = {
 	&dev_attr_clock_source.attr,
 	&dev_attr_utc_tai_offset.attr,
 	&dev_attr_ts_window_adjust.attr,
+	&dev_attr_sma1.attr,
+	&dev_attr_sma2.attr,
+	&dev_attr_sma3.attr,
+	&dev_attr_sma4.attr,
+	&dev_attr_available_sma_inputs.attr,
+	&dev_attr_available_sma_outputs.attr,
 	NULL,
 };
 static const struct attribute_group art_timecard_group = {
@@ -3483,11 +3658,12 @@ ptp_ocp_summary_show(struct seq_file *s, void *data)
 {
 	struct device *dev = s->private;
 	struct ptp_system_timestamp sts;
-	u16 sma_val[4][2], ctrl, val;
 	struct ts_reg __iomem *ts_reg;
 	struct timespec64 ts;
 	struct ptp_ocp *bp;
+	u16 sma_val[4][2];
 	char *src, *buf;
+	u32 ctrl, val;
 	bool on, map;
 	int i;
 
@@ -3912,6 +4088,9 @@ ptp_ocp_complete(struct ptp_ocp *bp)
 	if (pps)
 		ptp_ocp_symlink(bp, pps->dev, "pps");
 
+	if (bp->mro50.name)
+		ptp_ocp_symlink(bp, bp->mro50.this_device, "mro50");
+
 	for (i = 0; bp->attr_tbl[i].cap; i++) {
 		if (!(bp->attr_tbl[i].cap & bp->fw_cap))
 			continue;
@@ -3989,6 +4168,7 @@ ptp_ocp_detach_sysfs(struct ptp_ocp *bp)
 	sysfs_remove_link(&dev->kobj, "ttyMAC");
 	sysfs_remove_link(&dev->kobj, "ptp");
 	sysfs_remove_link(&dev->kobj, "pps");
+	sysfs_remove_link(&dev->kobj, "mro50");
 	if (bp->attr_tbl)
 		for (i = 0; bp->attr_tbl[i].cap; i++)
 			sysfs_remove_group(&dev->kobj, bp->attr_tbl[i].group);
