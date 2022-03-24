@@ -713,7 +713,7 @@ static void end_workqueue_bio(struct bio *bio)
 	struct btrfs_workqueue *wq;
 
 	fs_info = end_io_wq->info;
-	if (bio->bi_status != BLK_STS_OK)
+	if (WARN_ON_ONCE(bio->bi_status != BLK_STS_OK))
 		btrfs_warn_rl(fs_info, "bio failed: %d", bio->bi_status);
 	end_io_wq->status = bio->bi_status;
 
