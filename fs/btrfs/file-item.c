@@ -306,7 +306,7 @@ out:
 	if (ret == -ENOENT)
 		ret = 0;
 	if (ret < 0)
-		btrfs_warn_rl(fs_info, "csum lookup failed %d\n", ret);
+		btrfs_warn_rl(fs_info, "csum lookup failed %d", ret);
 	return ret;
 }
 
