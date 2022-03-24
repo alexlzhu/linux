@@ -303,10 +303,10 @@ found:
 	read_extent_buffer(path->nodes[0], dst, (unsigned long)item,
 			ret * csum_size);
 out:
-	if (ret == -ENOENT)
+	if (ret == -ENOENT || ret == -EFBIG)
 		ret = 0;
 	if (ret < 0)
-		btrfs_warn_rl(fs_info, "csum lookup failed %d\n", ret);
+		btrfs_warn_rl(fs_info, "csum lookup failed %d", ret);
 	return ret;
 }
 
