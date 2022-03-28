@@ -713,8 +713,8 @@ static void end_workqueue_bio(struct bio *bio)
 	struct btrfs_workqueue *wq;
 
 	fs_info = end_io_wq->info;
-	if (WARN_ON_ONCE(bio->bi_status != BLK_STS_OK))
-		btrfs_warn_rl(fs_info, "bio failed: %d", bio->bi_status);
+	if (WARN_ON_ONCE(bio->bi_status != BLK_STS_OK && bio->bi_opf & REQ_META))
+		btrfs_warn_rl(fs_info, "metadata bio failed: %d", bio->bi_status);
 	end_io_wq->status = bio->bi_status;
 
 	if (btrfs_op(bio) == BTRFS_MAP_WRITE) {
