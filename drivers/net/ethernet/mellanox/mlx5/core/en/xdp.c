@@ -431,6 +431,15 @@ bool mlx5e_poll_xdpsq_cq(struct mlx5e_cq *cq)
 
 		wqe_counter = be16_to_cpu(cqe->wqe_counter);
 
+		if (unlikely(get_cqe_opcode(cqe) != MLX5_CQE_REQ)) {
+			netdev_WARN_ONCE(sq->channel->netdev,
+					 "Bad OP in XDPSQ CQE: 0x%x\n",
+					 get_cqe_opcode(cqe));
+			mlx5e_dump_error_cqe(&sq->cq, sq->sqn,
+					     (struct mlx5_err_cqe *)cqe);
+			mlx5_wq_cyc_wqe_dump(&sq->wq, ci, wi->num_wqebbs);
+		}
+
 		do {
 			last_wqe = (sqcc == wqe_counter);
 			ci = mlx5_wq_cyc_ctr2ix(&sq->wq, sqcc);
@@ -440,15 +449,6 @@ bool mlx5e_poll_xdpsq_cq(struct mlx5e_cq *cq)
 
 			mlx5e_free_xdpsq_desc(sq, wi, &xsk_frames, true, &bq);
 		} while (!last_wqe);
-
-		if (unlikely(get_cqe_opcode(cqe) != MLX5_CQE_REQ)) {
-			netdev_WARN_ONCE(sq->channel->netdev,
-					 "Bad OP in XDPSQ CQE: 0x%x\n",
-					 get_cqe_opcode(cqe));
-			mlx5e_dump_error_cqe(&sq->cq, sq->sqn,
-					     (struct mlx5_err_cqe *)cqe);
-			mlx5_wq_cyc_wqe_dump(&sq->wq, ci, wi->num_wqebbs);
-		}
 	} while ((++i < MLX5E_TX_CQ_POLL_BUDGET) && (cqe = mlx5_cqwq_get_cqe(&cq->wq)));
 
 	xdp_flush_frame_bulk(&bq);
