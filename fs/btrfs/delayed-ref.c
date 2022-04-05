@@ -32,6 +32,10 @@ bool btrfs_check_space_for_delayed_refs(struct btrfs_fs_info *fs_info)
 	struct btrfs_block_rsv *global_rsv = &fs_info->global_block_rsv;
 	bool ret = false;
 	u64 reserved;
+	u64 size;
+
+	if (delayed_refs_rsv->space_info->full == 0)
+		return false;
 
 	spin_lock(&global_rsv->lock);
 	reserved = global_rsv->reserved;
@@ -45,7 +49,9 @@ bool btrfs_check_space_for_delayed_refs(struct btrfs_fs_info *fs_info)
 	 */
 	spin_lock(&delayed_refs_rsv->lock);
 	reserved += delayed_refs_rsv->reserved;
-	if (delayed_refs_rsv->size >= reserved)
+	size = delayed_refs_rsv->size;
+
+	if (size >= reserved)
 		ret = true;
 	spin_unlock(&delayed_refs_rsv->lock);
 	return ret;
