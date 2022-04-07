@@ -4,7 +4,6 @@
 # Copyright (c) 2019 Cloudflare
 
 set -eu
-readonly NS1="ns1-$(mktemp -u XXXXXX)"
 
 wait_for_ip()
 {
@@ -29,12 +28,12 @@ get_prog_id()
 
 ns1_exec()
 {
-	ip netns exec ${NS1} "$@"
+	ip netns exec ns1 "$@"
 }
 
 setup()
 {
-	ip netns add ${NS1}
+	ip netns add ns1
 	ns1_exec ip link set lo up
 
 	ns1_exec sysctl -w net.ipv4.tcp_syncookies=2

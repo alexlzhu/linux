@@ -8,12 +8,6 @@
 #include <test_progs.h>
 #include "test_bpf_cookie.skel.h"
 
-/* uprobe attach point */
-static void trigger_func(void)
-{
-	asm volatile ("");
-}
-
 static void kprobe_subtest(struct test_bpf_cookie *skel)
 {
 	DECLARE_LIBBPF_OPTS(bpf_kprobe_opts, opts);
@@ -68,11 +62,11 @@ static void uprobe_subtest(struct test_bpf_cookie *skel)
 	DECLARE_LIBBPF_OPTS(bpf_uprobe_opts, opts);
 	struct bpf_link *link1 = NULL, *link2 = NULL;
 	struct bpf_link *retlink1 = NULL, *retlink2 = NULL;
-	ssize_t uprobe_offset;
+	size_t uprobe_offset;
+	ssize_t base_addr;
 
-	uprobe_offset = get_uprobe_offset(&trigger_func);
-	if (!ASSERT_GE(uprobe_offset, 0, "uprobe_offset"))
-		goto cleanup;
+	base_addr = get_base_addr();
+	uprobe_offset = get_uprobe_offset(&get_base_addr, base_addr);
 
 	/* attach two uprobes */
 	opts.bpf_cookie = 0x100;
@@ -105,7 +99,7 @@ static void uprobe_subtest(struct test_bpf_cookie *skel)
 		goto cleanup;
 
 	/* trigger uprobe && uretprobe */
-	trigger_func();
+	get_base_addr();
 
 	ASSERT_EQ(skel->bss->uprobe_res, 0x100 | 0x200, "uprobe_res");
 	ASSERT_EQ(skel->bss->uretprobe_res, 0x1000 | 0x2000, "uretprobe_res");

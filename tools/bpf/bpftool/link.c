@@ -2,7 +2,6 @@
 /* Copyright (C) 2020 Facebook */
 
 #include <errno.h>
-#include <linux/err.h>
 #include <net/if.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -307,7 +306,7 @@ static int do_show(int argc, char **argv)
 	if (show_pinned) {
 		link_table = hashmap__new(hash_fn_for_key_as_id,
 					  equal_fn_for_key_as_id, NULL);
-		if (IS_ERR(link_table)) {
+		if (!link_table) {
 			p_err("failed to create hashmap for pinned paths");
 			return -1;
 		}

@@ -100,7 +100,7 @@ static int bump_memlock_rlimit(void)
 
 void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 {
-	const struct runq_event *e = data;
+	const struct event *e = data;
 	struct tm *tm;
 	char ts[32];
 	time_t t;

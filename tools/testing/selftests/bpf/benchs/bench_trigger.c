@@ -154,6 +154,7 @@ static void *uprobe_producer_without_nop(void *input)
 static void usetup(bool use_retprobe, bool use_nop)
 {
 	size_t uprobe_offset;
+	ssize_t base_addr;
 	struct bpf_link *link;
 
 	setup_libbpf();
@@ -164,10 +165,11 @@ static void usetup(bool use_retprobe, bool use_nop)
 		exit(1);
 	}
 
+	base_addr = get_base_addr();
 	if (use_nop)
-		uprobe_offset = get_uprobe_offset(&uprobe_target_with_nop);
+		uprobe_offset = get_uprobe_offset(&uprobe_target_with_nop, base_addr);
 	else
-		uprobe_offset = get_uprobe_offset(&uprobe_target_without_nop);
+		uprobe_offset = get_uprobe_offset(&uprobe_target_without_nop, base_addr);
 
 	link = bpf_program__attach_uprobe(ctx.skel->progs.bench_trigger_uprobe,
 					  use_retprobe,

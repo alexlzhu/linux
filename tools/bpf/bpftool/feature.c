@@ -487,12 +487,17 @@ probe_prog_type(enum bpf_prog_type prog_type, bool *supported_types,
 	size_t maxlen;
 	bool res;
 
-	if (ifindex) {
-		p_info("BPF offload feature probing is not supported");
-		return;
-	}
+	if (ifindex)
+		/* Only test offload-able program types */
+		switch (prog_type) {
+		case BPF_PROG_TYPE_SCHED_CLS:
+		case BPF_PROG_TYPE_XDP:
+			break;
+		default:
+			return;
+		}
 
-	res = libbpf_probe_bpf_prog_type(prog_type, NULL);
+	res = bpf_probe_prog_type(prog_type, ifindex);
 #ifdef USE_LIBCAP
 	/* Probe may succeed even if program load fails, for unprivileged users
 	 * check that we did not fail because of insufficient permissions
@@ -530,12 +535,7 @@ probe_map_type(enum bpf_map_type map_type, const char *define_prefix,
 	size_t maxlen;
 	bool res;
 
-	if (ifindex) {
-		p_info("BPF offload feature probing is not supported");
-		return;
-	}
-
-	res = libbpf_probe_bpf_map_type(map_type, NULL);
+	res = bpf_probe_map_type(map_type, ifindex);
 
 	/* Probe result depends on the success of map creation, no additional
 	 * check required for unprivileged users
@@ -567,12 +567,7 @@ probe_helper_for_progtype(enum bpf_prog_type prog_type, bool supported_type,
 	bool res = false;
 
 	if (supported_type) {
-		if (ifindex) {
-			p_info("BPF offload feature probing is not supported");
-			return;
-		}
-
-		res = libbpf_probe_bpf_helper(prog_type, id, NULL);
+		res = bpf_probe_helper(id, prog_type, ifindex);
 #ifdef USE_LIBCAP
 		/* Probe may succeed even if program load fails, for
 		 * unprivileged users check that we did not fail because of
@@ -648,111 +643,15 @@ probe_helpers_for_progtype(enum bpf_prog_type prog_type, bool supported_type,
 }
 
 static void
-probe_misc_feature(struct bpf_insn *insns, size_t len,
-		   const char *define_prefix, __u32 ifindex,
-		   const char *feat_name, const char *plain_name,
-		   const char *define_name)
+probe_large_insn_limit(const char *define_prefix, __u32 ifindex)
 {
-	LIBBPF_OPTS(bpf_prog_load_opts, opts,
-		.prog_ifindex = ifindex,
-	);
 	bool res;
-	int fd;
 
-	errno = 0;
-	fd = bpf_prog_load(BPF_PROG_TYPE_SOCKET_FILTER, NULL, "GPL",
-			   insns, len, &opts);
-	res = fd >= 0 || !errno;
-
-	if (fd >= 0)
-		close(fd);
-
-	print_bool_feature(feat_name, plain_name, define_name, res,
-			   define_prefix);
-}
-
-/*
- * Probe for availability of kernel commit (5.3):
- *
- * c04c0d2b968a ("bpf: increase complexity limit and maximum program size")
- */
-static void probe_large_insn_limit(const char *define_prefix, __u32 ifindex)
-{
-	struct bpf_insn insns[BPF_MAXINSNS + 1];
-	int i;
-
-	for (i = 0; i < BPF_MAXINSNS; i++)
-		insns[i] = BPF_MOV64_IMM(BPF_REG_0, 1);
-	insns[BPF_MAXINSNS] = BPF_EXIT_INSN();
-
-	probe_misc_feature(insns, ARRAY_SIZE(insns),
-			   define_prefix, ifindex,
-			   "have_large_insn_limit",
+	res = bpf_probe_large_insn_limit(ifindex);
+	print_bool_feature("have_large_insn_limit",
 			   "Large program size limit",
-			   "LARGE_INSN_LIMIT");
-}
-
-/*
- * Probe for bounded loop support introduced in commit 2589726d12a1
- * ("bpf: introduce bounded loops").
- */
-static void
-probe_bounded_loops(const char *define_prefix, __u32 ifindex)
-{
-	struct bpf_insn insns[4] = {
-		BPF_MOV64_IMM(BPF_REG_0, 10),
-		BPF_ALU64_IMM(BPF_SUB, BPF_REG_0, 1),
-		BPF_JMP_IMM(BPF_JNE, BPF_REG_0, 0, -2),
-		BPF_EXIT_INSN()
-	};
-
-	probe_misc_feature(insns, ARRAY_SIZE(insns),
-			   define_prefix, ifindex,
-			   "have_bounded_loops",
-			   "Bounded loop support",
-			   "BOUNDED_LOOPS");
-}
-
-/*
- * Probe for the v2 instruction set extension introduced in commit 92b31a9af73b
- * ("bpf: add BPF_J{LT,LE,SLT,SLE} instructions").
- */
-static void
-probe_v2_isa_extension(const char *define_prefix, __u32 ifindex)
-{
-	struct bpf_insn insns[4] = {
-		BPF_MOV64_IMM(BPF_REG_0, 0),
-		BPF_JMP_IMM(BPF_JLT, BPF_REG_0, 0, 1),
-		BPF_MOV64_IMM(BPF_REG_0, 1),
-		BPF_EXIT_INSN()
-	};
-
-	probe_misc_feature(insns, ARRAY_SIZE(insns),
-			   define_prefix, ifindex,
-			   "have_v2_isa_extension",
-			   "ISA extension v2",
-			   "V2_ISA_EXTENSION");
-}
-
-/*
- * Probe for the v3 instruction set extension introduced in commit 092ed0968bb6
- * ("bpf: verifier support JMP32").
- */
-static void
-probe_v3_isa_extension(const char *define_prefix, __u32 ifindex)
-{
-	struct bpf_insn insns[4] = {
-		BPF_MOV64_IMM(BPF_REG_0, 0),
-		BPF_JMP32_IMM(BPF_JLT, BPF_REG_0, 0, 1),
-		BPF_MOV64_IMM(BPF_REG_0, 1),
-		BPF_EXIT_INSN()
-	};
-
-	probe_misc_feature(insns, ARRAY_SIZE(insns),
-			   define_prefix, ifindex,
-			   "have_v3_isa_extension",
-			   "ISA extension v3",
-			   "V3_ISA_EXTENSION");
+			   "LARGE_INSN_LIMIT",
+			   res, define_prefix);
 }
 
 static void
@@ -869,9 +768,6 @@ static void section_misc(const char *define_prefix, __u32 ifindex)
 			    "/*** eBPF misc features ***/",
 			    define_prefix);
 	probe_large_insn_limit(define_prefix, ifindex);
-	probe_bounded_loops(define_prefix, ifindex);
-	probe_v2_isa_extension(define_prefix, ifindex);
-	probe_v3_isa_extension(define_prefix, ifindex);
 	print_end_section();
 }
 

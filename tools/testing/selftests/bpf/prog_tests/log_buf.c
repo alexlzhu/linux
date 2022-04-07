@@ -202,7 +202,7 @@ static void bpf_btf_load_log_buf(void)
 	const void *raw_btf_data;
 	__u32 raw_btf_size;
 	struct btf *btf;
-	char *log_buf = NULL;
+	char *log_buf;
 	int fd = -1;
 
 	btf = btf__new_empty();

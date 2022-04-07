@@ -7,7 +7,6 @@
  */
 #define pr_fmt(fmt)	"trace_kprobe: " fmt
 
-#include <linux/bpf-cgroup.h>
 #include <linux/security.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>

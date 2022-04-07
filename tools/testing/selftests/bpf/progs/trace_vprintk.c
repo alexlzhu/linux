@@ -4,7 +4,6 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-#include "bpf_misc.h"
 
 char _license[] SEC("license") = "GPL";
 
@@ -12,7 +11,7 @@ int null_data_vprintk_ret = 0;
 int trace_vprintk_ret = 0;
 int trace_vprintk_ran = 0;
 
-SEC("fentry/" SYS_PREFIX "sys_nanosleep")
+SEC("fentry/__x64_sys_nanosleep")
 int sys_enter(void *ctx)
 {
 	static const char one[] = "1";

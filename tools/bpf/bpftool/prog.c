@@ -26,7 +26,6 @@
 #include <bpf/btf.h>
 #include <bpf/hashmap.h>
 #include <bpf/libbpf.h>
-#include <bpf/libbpf_internal.h>
 #include <bpf/skel_internal.h>
 
 #include "cfg.h"
@@ -425,10 +424,8 @@ out_free:
 	free(value);
 }
 
-static void print_prog_header_json(struct bpf_prog_info *info, int fd)
+static void print_prog_header_json(struct bpf_prog_info *info)
 {
-	char prog_name[MAX_PROG_FULL_NAME];
-
 	jsonw_uint_field(json_wtr, "id", info->id);
 	if (info->type < ARRAY_SIZE(prog_type_name))
 		jsonw_string_field(json_wtr, "type",
@@ -436,10 +433,8 @@ static void print_prog_header_json(struct bpf_prog_info *info, int fd)
 	else
 		jsonw_uint_field(json_wtr, "type", info->type);
 
-	if (*info->name) {
-		get_prog_full_name(info, fd, prog_name, sizeof(prog_name));
-		jsonw_string_field(json_wtr, "name", prog_name);
-	}
+	if (*info->name)
+		jsonw_string_field(json_wtr, "name", info->name);
 
 	jsonw_name(json_wtr, "tag");
 	jsonw_printf(json_wtr, "\"" BPF_TAG_FMT "\"",
@@ -460,7 +455,7 @@ static void print_prog_json(struct bpf_prog_info *info, int fd)
 	char *memlock;
 
 	jsonw_start_object(json_wtr);
-	print_prog_header_json(info, fd);
+	print_prog_header_json(info);
 	print_dev_json(info->ifindex, info->netns_dev, info->netns_ino);
 
 	if (info->load_time) {
@@ -512,20 +507,16 @@ static void print_prog_json(struct bpf_prog_info *info, int fd)
 	jsonw_end_object(json_wtr);
 }
 
-static void print_prog_header_plain(struct bpf_prog_info *info, int fd)
+static void print_prog_header_plain(struct bpf_prog_info *info)
 {
-	char prog_name[MAX_PROG_FULL_NAME];
-
 	printf("%u: ", info->id);
 	if (info->type < ARRAY_SIZE(prog_type_name))
 		printf("%s  ", prog_type_name[info->type]);
 	else
 		printf("type %u  ", info->type);
 
-	if (*info->name) {
-		get_prog_full_name(info, fd, prog_name, sizeof(prog_name));
-		printf("name %s  ", prog_name);
-	}
+	if (*info->name)
+		printf("name %s  ", info->name);
 
 	printf("tag ");
 	fprint_hex(stdout, info->tag, BPF_TAG_SIZE, "");
@@ -543,7 +534,7 @@ static void print_prog_plain(struct bpf_prog_info *info, int fd)
 {
 	char *memlock;
 
-	print_prog_header_plain(info, fd);
+	print_prog_header_plain(info);
 
 	if (info->load_time) {
 		char buf[32];
@@ -650,7 +641,7 @@ static int do_show(int argc, char **argv)
 	if (show_pinned) {
 		prog_table = hashmap__new(hash_fn_for_key_as_id,
 					  equal_fn_for_key_as_id, NULL);
-		if (IS_ERR(prog_table)) {
+		if (!prog_table) {
 			p_err("failed to create hashmap for pinned paths");
 			return -1;
 		}
@@ -981,10 +972,10 @@ static int do_dump(int argc, char **argv)
 
 		if (json_output && nb_fds > 1) {
 			jsonw_start_object(json_wtr);	/* prog object */
-			print_prog_header_json(&info, fds[i]);
+			print_prog_header_json(&info);
 			jsonw_name(json_wtr, "insns");
 		} else if (nb_fds > 1) {
-			print_prog_header_plain(&info, fds[i]);
+			print_prog_header_plain(&info);
 		}
 
 		err = prog_dump(&info, mode, filepath, opcodes, visual, linum);
@@ -1273,12 +1264,12 @@ static int do_run(int argc, char **argv)
 {
 	char *data_fname_in = NULL, *data_fname_out = NULL;
 	char *ctx_fname_in = NULL, *ctx_fname_out = NULL;
+	struct bpf_prog_test_run_attr test_attr = {0};
 	const unsigned int default_size = SZ_32K;
 	void *data_in = NULL, *data_out = NULL;
 	void *ctx_in = NULL, *ctx_out = NULL;
 	unsigned int repeat = 1;
 	int fd, err;
-	LIBBPF_OPTS(bpf_test_run_opts, test_attr);
 
 	if (!REQ_ARGS(4))
 		return -1;
@@ -1396,13 +1387,14 @@ static int do_run(int argc, char **argv)
 			goto free_ctx_in;
 	}
 
+	test_attr.prog_fd	= fd;
 	test_attr.repeat	= repeat;
 	test_attr.data_in	= data_in;
 	test_attr.data_out	= data_out;
 	test_attr.ctx_in	= ctx_in;
 	test_attr.ctx_out	= ctx_out;
 
-	err = bpf_prog_test_run_opts(fd, &test_attr);
+	err = bpf_prog_test_run_xattr(&test_attr);
 	if (err) {
 		p_err("failed to run program: %s", strerror(errno));
 		goto free_ctx_out;
@@ -1559,9 +1551,9 @@ static int load_with_options(int argc, char **argv, bool first_prog_only)
 			if (fd < 0)
 				goto err_free_reuse_maps;
 
-			new_map_replace = libbpf_reallocarray(map_replace,
-							      old_map_fds + 1,
-							      sizeof(*map_replace));
+			new_map_replace = reallocarray(map_replace,
+						       old_map_fds + 1,
+						       sizeof(*map_replace));
 			if (!new_map_replace) {
 				p_err("mem alloc failed");
 				goto err_free_reuse_maps;
@@ -1663,7 +1655,7 @@ static int load_with_options(int argc, char **argv, bool first_prog_only)
 	j = 0;
 	idx = 0;
 	bpf_object__for_each_map(map, obj) {
-		if (bpf_map__type(map) != BPF_MAP_TYPE_PERF_EVENT_ARRAY)
+		if (!bpf_map__is_offload_neutral(map))
 			bpf_map__set_ifindex(map, ifindex);
 
 		if (j < old_map_fds && idx == map_replace[j].idx) {
@@ -2283,10 +2275,10 @@ static int do_profile(int argc, char **argv)
 	profile_obj->rodata->num_metric = num_metric;
 
 	/* adjust map sizes */
-	bpf_map__set_max_entries(profile_obj->maps.events, num_metric * num_cpu);
-	bpf_map__set_max_entries(profile_obj->maps.fentry_readings, num_metric);
-	bpf_map__set_max_entries(profile_obj->maps.accum_readings, num_metric);
-	bpf_map__set_max_entries(profile_obj->maps.counts, 1);
+	bpf_map__resize(profile_obj->maps.events, num_metric * num_cpu);
+	bpf_map__resize(profile_obj->maps.fentry_readings, num_metric);
+	bpf_map__resize(profile_obj->maps.accum_readings, num_metric);
+	bpf_map__resize(profile_obj->maps.counts, 1);
 
 	/* change target name */
 	profile_tgt_name = profile_target_name(profile_tgt_fd);

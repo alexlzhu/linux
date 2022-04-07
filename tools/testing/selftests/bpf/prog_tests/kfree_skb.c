@@ -53,24 +53,24 @@ static void on_sample(void *ctx, int cpu, void *data, __u32 size)
 void serial_test_kfree_skb(void)
 {
 	struct __sk_buff skb = {};
-	LIBBPF_OPTS(bpf_test_run_opts, topts,
+	struct bpf_prog_test_run_attr tattr = {
 		.data_in = &pkt_v6,
 		.data_size_in = sizeof(pkt_v6),
 		.ctx_in = &skb,
 		.ctx_size_in = sizeof(skb),
-	);
+	};
 	struct kfree_skb *skel = NULL;
 	struct bpf_link *link;
 	struct bpf_object *obj;
 	struct perf_buffer *pb = NULL;
-	int err, prog_fd;
+	int err;
 	bool passed = false;
 	__u32 duration = 0;
 	const int zero = 0;
 	bool test_ok[2];
 
 	err = bpf_prog_test_load("./test_pkt_access.o", BPF_PROG_TYPE_SCHED_CLS,
-				 &obj, &prog_fd);
+			    &obj, &tattr.prog_fd);
 	if (CHECK(err, "prog_load sched cls", "err %d errno %d\n", err, errno))
 		return;
 
@@ -100,9 +100,11 @@ void serial_test_kfree_skb(void)
 		goto close_prog;
 
 	memcpy(skb.cb, &cb, sizeof(cb));
-	err = bpf_prog_test_run_opts(prog_fd, &topts);
-	ASSERT_OK(err, "ipv6 test_run");
-	ASSERT_OK(topts.retval, "ipv6 test_run retval");
+	err = bpf_prog_test_run_xattr(&tattr);
+	duration = tattr.duration;
+	CHECK(err || tattr.retval, "ipv6",
+	      "err %d errno %d retval %d duration %d\n",
+	      err, errno, tattr.retval, duration);
 
 	/* read perf buffer */
 	err = perf_buffer__poll(pb, 100);

@@ -5,10 +5,9 @@
 /* this is how USDT semaphore is actually defined, except volatile modifier */
 volatile unsigned short uprobe_ref_ctr __attribute__((unused)) __attribute((section(".probes")));
 
-/* uprobe attach point */
-static void trigger_func(void)
-{
-	asm volatile ("");
+/* attach point */
+static void method(void) {
+	return ;
 }
 
 void test_attach_probe(void)
@@ -18,7 +17,8 @@ void test_attach_probe(void)
 	struct bpf_link *kprobe_link, *kretprobe_link;
 	struct bpf_link *uprobe_link, *uretprobe_link;
 	struct test_attach_probe* skel;
-	ssize_t uprobe_offset, ref_ctr_offset;
+	size_t uprobe_offset;
+	ssize_t base_addr, ref_ctr_offset;
 	bool legacy;
 
 	/* Check if new-style kprobe/uprobe API is supported.
@@ -34,9 +34,11 @@ void test_attach_probe(void)
 	 */
 	legacy = access("/sys/bus/event_source/devices/kprobe/type", F_OK) != 0;
 
-	uprobe_offset = get_uprobe_offset(&trigger_func);
-	if (!ASSERT_GE(uprobe_offset, 0, "uprobe_offset"))
+	base_addr = get_base_addr();
+	if (CHECK(base_addr < 0, "get_base_addr",
+		  "failed to find base addr: %zd", base_addr))
 		return;
+	uprobe_offset = get_uprobe_offset(&method, base_addr);
 
 	ref_ctr_offset = get_rel_offset((uintptr_t)&uprobe_ref_ctr);
 	if (!ASSERT_GE(ref_ctr_offset, 0, "ref_ctr_offset"))
@@ -101,7 +103,7 @@ void test_attach_probe(void)
 		goto cleanup;
 
 	/* trigger & validate uprobe & uretprobe */
-	trigger_func();
+	method();
 
 	if (CHECK(skel->bss->uprobe_res != 3, "check_uprobe_res",
 		  "wrong uprobe res: %d\n", skel->bss->uprobe_res))

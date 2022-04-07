@@ -196,40 +196,12 @@ msg_bytes_ready:
 		long timeo;
 		int data, err = 0;
 
-		if (sock_flag(sk, SOCK_DONE))
-			goto out;
-
-		if (sk->sk_err) {
-			copied = sock_error(sk);
-			goto out;
-		}
-
-		if (sk->sk_shutdown & RCV_SHUTDOWN)
-			goto out;
-
-		if (sk->sk_state == TCP_CLOSE) {
-			copied = -ENOTCONN;
-			goto out;
-		}
-
 		timeo = sock_rcvtimeo(sk, nonblock);
-
-		if (!timeo) {
-			copied = -EAGAIN;
-			goto out;
-		}
-
-		if (signal_pending(current)) {
-			copied = sock_intr_errno(timeo);
-			goto out;
-		}
-
 		data = tcp_msg_wait_data(sk, psock, flags, timeo, &err);
 		if (data && !sk_psock_queue_empty(psock))
 			goto msg_bytes_ready;
 		copied = -EAGAIN;
 	}
-out:
 	release_sock(sk);
 	sk_psock_put(sk, psock);
 	return copied;

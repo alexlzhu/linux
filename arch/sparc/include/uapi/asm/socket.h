@@ -122,8 +122,6 @@
 
 #define SO_NETNS_COOKIE          0x0050
 
-#define SO_TXREHASH              0x0053
-
 #if !defined(__KERNEL__)
 
 

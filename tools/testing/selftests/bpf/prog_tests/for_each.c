@@ -12,13 +12,8 @@ static void test_hash_map(void)
 	int i, err, hashmap_fd, max_entries, percpu_map_fd;
 	struct for_each_hash_map_elem *skel;
 	__u64 *percpu_valbuf = NULL;
-	__u32 key, num_cpus;
+	__u32 key, num_cpus, retval;
 	__u64 val;
-	LIBBPF_OPTS(bpf_test_run_opts, topts,
-		.data_in = &pkt_v4,
-		.data_size_in = sizeof(pkt_v4),
-		.repeat = 1,
-	);
 
 	skel = for_each_hash_map_elem__open_and_load();
 	if (!ASSERT_OK_PTR(skel, "for_each_hash_map_elem__open_and_load"))
@@ -47,10 +42,11 @@ static void test_hash_map(void)
 	if (!ASSERT_OK(err, "percpu_map_update"))
 		goto out;
 
-	err = bpf_prog_test_run_opts(bpf_program__fd(skel->progs.test_pkt_access), &topts);
-	duration = topts.duration;
-	if (CHECK(err || topts.retval, "ipv4", "err %d errno %d retval %d\n",
-		  err, errno, topts.retval))
+	err = bpf_prog_test_run(bpf_program__fd(skel->progs.test_pkt_access),
+				1, &pkt_v4, sizeof(pkt_v4), NULL, NULL,
+				&retval, &duration);
+	if (CHECK(err || retval, "ipv4", "err %d errno %d retval %d\n",
+		  err, errno, retval))
 		goto out;
 
 	ASSERT_EQ(skel->bss->hashmap_output, 4, "hashmap_output");
@@ -73,16 +69,11 @@ out:
 
 static void test_array_map(void)
 {
-	__u32 key, num_cpus, max_entries;
+	__u32 key, num_cpus, max_entries, retval;
 	int i, arraymap_fd, percpu_map_fd, err;
 	struct for_each_array_map_elem *skel;
 	__u64 *percpu_valbuf = NULL;
 	__u64 val, expected_total;
-	LIBBPF_OPTS(bpf_test_run_opts, topts,
-		.data_in = &pkt_v4,
-		.data_size_in = sizeof(pkt_v4),
-		.repeat = 1,
-	);
 
 	skel = for_each_array_map_elem__open_and_load();
 	if (!ASSERT_OK_PTR(skel, "for_each_array_map_elem__open_and_load"))
@@ -115,10 +106,11 @@ static void test_array_map(void)
 	if (!ASSERT_OK(err, "percpu_map_update"))
 		goto out;
 
-	err = bpf_prog_test_run_opts(bpf_program__fd(skel->progs.test_pkt_access), &topts);
-	duration = topts.duration;
-	if (CHECK(err || topts.retval, "ipv4", "err %d errno %d retval %d\n",
-		  err, errno, topts.retval))
+	err = bpf_prog_test_run(bpf_program__fd(skel->progs.test_pkt_access),
+				1, &pkt_v4, sizeof(pkt_v4), NULL, NULL,
+				&retval, &duration);
+	if (CHECK(err || retval, "ipv4", "err %d errno %d retval %d\n",
+		  err, errno, retval))
 		goto out;
 
 	ASSERT_EQ(skel->bss->arraymap_output, expected_total, "array_output");

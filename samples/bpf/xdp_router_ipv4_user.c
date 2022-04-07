@@ -43,13 +43,13 @@ static void int_exit(int sig)
 	int i = 0;
 
 	for (i = 0; i < total_ifindex; i++) {
-		if (bpf_xdp_query_id(ifindex_list[i], flags, &prog_id)) {
-			printf("bpf_xdp_query_id on iface %d failed\n",
+		if (bpf_get_link_xdp_id(ifindex_list[i], &prog_id, flags)) {
+			printf("bpf_get_link_xdp_id on iface %d failed\n",
 			       ifindex_list[i]);
 			exit(1);
 		}
 		if (prog_id_list[i] == prog_id)
-			bpf_xdp_detach(ifindex_list[i], flags, NULL);
+			bpf_set_link_xdp_fd(ifindex_list[i], -1, flags);
 		else if (!prog_id)
 			printf("couldn't find a prog id on iface %d\n",
 			       ifindex_list[i]);
@@ -640,10 +640,12 @@ static void usage(const char *prog)
 
 int main(int ac, char **argv)
 {
+	struct bpf_prog_load_attr prog_load_attr = {
+		.prog_type	= BPF_PROG_TYPE_XDP,
+	};
 	struct bpf_prog_info info = {};
 	__u32 info_len = sizeof(info);
 	const char *optstr = "SF";
-	struct bpf_program *prog;
 	struct bpf_object *obj;
 	char filename[256];
 	char **ifname_list;
@@ -651,6 +653,7 @@ int main(int ac, char **argv)
 	int err, i = 1;
 
 	snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
+	prog_load_attr.file = filename;
 
 	total_ifindex = ac - 1;
 	ifname_list = (argv + 1);
@@ -681,20 +684,14 @@ int main(int ac, char **argv)
 		return 1;
 	}
 
-	obj = bpf_object__open_file(filename, NULL);
-	if (libbpf_get_error(obj))
+	if (bpf_prog_load_xattr(&prog_load_attr, &obj, &prog_fd))
 		return 1;
-
-	prog = bpf_object__next_program(obj, NULL);
-	bpf_program__set_type(prog, BPF_PROG_TYPE_XDP);
 
 	printf("\n******************loading bpf file*********************\n");
-	err = bpf_object__load(obj);
-	if (err) {
-		printf("bpf_object__load(): %s\n", strerror(errno));
+	if (!prog_fd) {
+		printf("bpf_prog_load_xattr: %s\n", strerror(errno));
 		return 1;
 	}
-	prog_fd = bpf_program__fd(prog);
 
 	lpm_map_fd = bpf_object__find_map_fd_by_name(obj, "lpm_map");
 	rxcnt_map_fd = bpf_object__find_map_fd_by_name(obj, "rxcnt");
@@ -719,12 +716,12 @@ int main(int ac, char **argv)
 	}
 	prog_id_list = (__u32 *)calloc(total_ifindex, sizeof(__u32 *));
 	for (i = 0; i < total_ifindex; i++) {
-		if (bpf_xdp_attach(ifindex_list[i], prog_fd, flags, NULL) < 0) {
+		if (bpf_set_link_xdp_fd(ifindex_list[i], prog_fd, flags) < 0) {
 			printf("link set xdp fd failed\n");
 			int recovery_index = i;
 
 			for (i = 0; i < recovery_index; i++)
-				bpf_xdp_detach(ifindex_list[i], flags, NULL);
+				bpf_set_link_xdp_fd(ifindex_list[i], -1, flags);
 
 			return 1;
 		}

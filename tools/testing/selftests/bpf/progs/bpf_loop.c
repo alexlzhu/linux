@@ -3,7 +3,6 @@
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
-#include "bpf_misc.h"
 
 char _license[] SEC("license") = "GPL";
 
@@ -54,7 +53,7 @@ static int nested_callback1(__u32 index, void *data)
 	return 0;
 }
 
-SEC("fentry/" SYS_PREFIX "sys_nanosleep")
+SEC("fentry/__x64_sys_nanosleep")
 int test_prog(void *ctx)
 {
 	struct callback_ctx data = {};
@@ -72,7 +71,7 @@ int test_prog(void *ctx)
 	return 0;
 }
 
-SEC("fentry/" SYS_PREFIX "sys_nanosleep")
+SEC("fentry/__x64_sys_nanosleep")
 int prog_null_ctx(void *ctx)
 {
 	if (bpf_get_current_pid_tgid() >> 32 != pid)
@@ -83,7 +82,7 @@ int prog_null_ctx(void *ctx)
 	return 0;
 }
 
-SEC("fentry/" SYS_PREFIX "sys_nanosleep")
+SEC("fentry/__x64_sys_nanosleep")
 int prog_invalid_flags(void *ctx)
 {
 	struct callback_ctx data = {};
@@ -96,7 +95,7 @@ int prog_invalid_flags(void *ctx)
 	return 0;
 }
 
-SEC("fentry/" SYS_PREFIX "sys_nanosleep")
+SEC("fentry/__x64_sys_nanosleep")
 int prog_nested_calls(void *ctx)
 {
 	struct callback_ctx data = {};

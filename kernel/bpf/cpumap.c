@@ -397,8 +397,7 @@ static int cpu_map_kthread_run(void *data)
 	return 0;
 }
 
-static int __cpu_map_load_bpf_program(struct bpf_cpu_map_entry *rcpu,
-				      struct bpf_map *map, int fd)
+static int __cpu_map_load_bpf_program(struct bpf_cpu_map_entry *rcpu, int fd)
 {
 	struct bpf_prog *prog;
 
@@ -406,8 +405,7 @@ static int __cpu_map_load_bpf_program(struct bpf_cpu_map_entry *rcpu,
 	if (IS_ERR(prog))
 		return PTR_ERR(prog);
 
-	if (prog->expected_attach_type != BPF_XDP_CPUMAP ||
-	    !bpf_prog_map_compatible(map, prog)) {
+	if (prog->expected_attach_type != BPF_XDP_CPUMAP) {
 		bpf_prog_put(prog);
 		return -EINVAL;
 	}
@@ -459,7 +457,7 @@ __cpu_map_entry_alloc(struct bpf_map *map, struct bpf_cpumap_val *value,
 	rcpu->map_id = map->id;
 	rcpu->value.qsize  = value->qsize;
 
-	if (fd > 0 && __cpu_map_load_bpf_program(rcpu, map, fd))
+	if (fd > 0 && __cpu_map_load_bpf_program(rcpu, fd))
 		goto free_ptr_ring;
 
 	/* Setup kthread */
@@ -748,9 +746,15 @@ static void bq_enqueue(struct bpf_cpu_map_entry *rcpu, struct xdp_frame *xdpf)
 		list_add(&bq->flush_node, flush_list);
 }
 
-int cpu_map_enqueue(struct bpf_cpu_map_entry *rcpu, struct xdp_frame *xdpf,
+int cpu_map_enqueue(struct bpf_cpu_map_entry *rcpu, struct xdp_buff *xdp,
 		    struct net_device *dev_rx)
 {
+	struct xdp_frame *xdpf;
+
+	xdpf = xdp_convert_buff_to_frame(xdp);
+	if (unlikely(!xdpf))
+		return -EOVERFLOW;
+
 	/* Info needed when constructing SKB on remote CPU */
 	xdpf->dev_rx = dev_rx;
 

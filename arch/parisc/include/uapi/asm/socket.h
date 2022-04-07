@@ -121,8 +121,6 @@
 
 #define SO_NETNS_COOKIE		0x4045
 
-#define SO_TXREHASH		0x4048
-
 #if !defined(__KERNEL__)
 
 #if __BITS_PER_LONG == 64

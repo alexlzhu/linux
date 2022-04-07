@@ -105,13 +105,6 @@ static int setns_by_fd(int nsfd)
 	if (!ASSERT_OK(err, "unshare"))
 		return err;
 
-	/* Make our /sys mount private, so the following umount won't
-	 * trigger the global umount in case it's shared.
-	 */
-	err = mount("none", "/sys", NULL, MS_PRIVATE, NULL);
-	if (!ASSERT_OK(err, "remount private /sys"))
-		return err;
-
 	err = umount2("/sys", MNT_DETACH);
 	if (!ASSERT_OK(err, "umount2 /sys"))
 		return err;
@@ -140,7 +133,7 @@ static struct nstoken *open_netns(const char *name)
 	int err;
 	struct nstoken *token;
 
-	token = calloc(1, sizeof(struct nstoken));
+	token = malloc(sizeof(struct nstoken));
 	if (!ASSERT_OK_PTR(token, "malloc token"))
 		return NULL;
 
