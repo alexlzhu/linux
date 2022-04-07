@@ -3318,6 +3318,8 @@ again:
 static void *bpf_iter_unix_seq_start(struct seq_file *seq, loff_t *pos)
 	__acquires(unix_table_lock)
 {
+	void *sk;
+
 	spin_lock(&unix_table_lock);
 
 	if (!*pos)
