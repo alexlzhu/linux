@@ -464,6 +464,10 @@ next:
 
 const struct btrfs_compress_op btrfs_zlib_compress = {
 	.workspace_manager	= &wsm,
+	/*
+	 * Note that level 0 will not compress the underlying payload.
+	 */
+	.min_level		= 1,
 	.max_level		= 9,
 	.default_level		= BTRFS_ZLIB_DEFAULT_LEVEL,
 };

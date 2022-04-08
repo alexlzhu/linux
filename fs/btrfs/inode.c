@@ -626,8 +626,8 @@ again:
 		}
 
 		/* Compression level is applied here and only here */
-		ret = btrfs_compress_pages(
-			compress_type | (fs_info->compress_level << 4),
+		ret = btrfs_compress_pages(compress_type,
+					   fs_info->compress_level,
 					   inode->i_mapping, start,
 					   pages,
 					   &nr_pages,

@@ -62,10 +62,14 @@ bool btrfs_compress_is_valid_type(const char *str, size_t len)
 	return false;
 }
 
-static int compression_compress_pages(int type, struct list_head *ws,
-               struct address_space *mapping, u64 start, struct page **pages,
-               unsigned long *out_pages, unsigned long *total_in,
-               unsigned long *total_out)
+static int compression_compress_pages(enum btrfs_compression_type type,
+				      struct list_head *ws,
+				      struct address_space *mapping,
+				      u64 start,
+				      struct page **pages,
+				      unsigned long *out_pages,
+				      unsigned long *total_in,
+				      unsigned long *total_out)
 {
 	switch (type) {
 	case BTRFS_COMPRESS_ZLIB:
@@ -110,7 +114,7 @@ static int compression_decompress_bio(int type, struct list_head *ws,
 	}
 }
 
-static int compression_decompress(int type, struct list_head *ws,
+static int compression_decompress(enum btrfs_compression_type type, struct list_head *ws,
                unsigned char *data_in, struct page *dest_page,
                unsigned long start_byte, size_t srclen, size_t destlen)
 {
@@ -909,12 +913,31 @@ static const struct btrfs_compress_op * const btrfs_compress_op[] = {
 	&btrfs_zstd_compress,
 };
 
-static struct list_head *alloc_workspace(int type, unsigned int level)
+static void check_type_and_level(enum btrfs_compression_type type, int level)
 {
+	/*
+	 * There is a problem if the type is not zstd and the level is
+	 * negative.
+	 *
+	 * Zstd is the only compression type that supports negative levels.
+	 *
+	 * This typically shouldn't happen since the level gets capped very
+	 * early.
+	 */
+	BUG_ON((type != BTRFS_COMPRESS_ZSTD) && (level < 0));
+}
+
+static struct list_head *alloc_workspace(enum btrfs_compression_type type,
+					 int level)
+{
+	unsigned int unsigned_level = (unsigned int)level;
+
+	check_type_and_level(type, level);
+
 	switch (type) {
-	case BTRFS_COMPRESS_NONE: return alloc_heuristic_ws(level);
-	case BTRFS_COMPRESS_ZLIB: return zlib_alloc_workspace(level);
-	case BTRFS_COMPRESS_LZO:  return lzo_alloc_workspace(level);
+	case BTRFS_COMPRESS_NONE: return alloc_heuristic_ws(unsigned_level);
+	case BTRFS_COMPRESS_ZLIB: return zlib_alloc_workspace(unsigned_level);
+	case BTRFS_COMPRESS_LZO:  return lzo_alloc_workspace(unsigned_level);
 	case BTRFS_COMPRESS_ZSTD: return zstd_alloc_workspace(level);
 	default:
 		/*
@@ -925,7 +948,8 @@ static struct list_head *alloc_workspace(int type, unsigned int level)
 	}
 }
 
-static void free_workspace(int type, struct list_head *ws)
+static void free_workspace(enum btrfs_compression_type type,
+			   struct list_head *ws)
 {
 	switch (type) {
 	case BTRFS_COMPRESS_NONE: return free_heuristic_ws(ws);
@@ -941,7 +965,7 @@ static void free_workspace(int type, struct list_head *ws)
 	}
 }
 
-static void btrfs_init_workspace_manager(int type)
+static void btrfs_init_workspace_manager(enum btrfs_compression_type type)
 {
 	struct workspace_manager *wsm;
 	struct list_head *workspace;
@@ -967,7 +991,7 @@ static void btrfs_init_workspace_manager(int type)
 	}
 }
 
-static void btrfs_cleanup_workspace_manager(int type)
+static void btrfs_cleanup_workspace_manager(enum btrfs_compression_type type)
 {
 	struct workspace_manager *wsman;
 	struct list_head *ws;
@@ -987,7 +1011,8 @@ static void btrfs_cleanup_workspace_manager(int type)
  * Preallocation makes a forward progress guarantees and we do not return
  * errors.
  */
-struct list_head *btrfs_get_workspace(int type, unsigned int level)
+struct list_head *btrfs_get_workspace(enum btrfs_compression_type type,
+				      unsigned int level)
 {
 	struct workspace_manager *wsm;
 	struct list_head *workspace;
@@ -1035,7 +1060,7 @@ again:
 	 * context of btrfs_compress_bio/btrfs_compress_pages
 	 */
 	nofs_flag = memalloc_nofs_save();
-	workspace = alloc_workspace(type, level);
+	workspace = alloc_workspace(type, (int)level);
 	memalloc_nofs_restore(nofs_flag);
 
 	if (IS_ERR(workspace)) {
@@ -1066,12 +1091,16 @@ again:
 	return workspace;
 }
 
-static struct list_head *get_workspace(int type, int level)
+static struct list_head *get_workspace(enum btrfs_compression_type type, int level)
 {
+	unsigned int unsigned_level = (unsigned int)level;
+
+	check_type_and_level(type, level);
+
 	switch (type) {
-	case BTRFS_COMPRESS_NONE: return btrfs_get_workspace(type, level);
-	case BTRFS_COMPRESS_ZLIB: return zlib_get_workspace(level);
-	case BTRFS_COMPRESS_LZO:  return btrfs_get_workspace(type, level);
+	case BTRFS_COMPRESS_NONE: return btrfs_get_workspace(type, unsigned_level);
+	case BTRFS_COMPRESS_ZLIB: return zlib_get_workspace(unsigned_level);
+	case BTRFS_COMPRESS_LZO:  return btrfs_get_workspace(type, unsigned_level);
 	case BTRFS_COMPRESS_ZSTD: return zstd_get_workspace(level);
 	default:
 		/*
@@ -1086,7 +1115,7 @@ static struct list_head *get_workspace(int type, int level)
  * put a workspace struct back on the list or free it if we have enough
  * idle ones sitting around
  */
-void btrfs_put_workspace(int type, struct list_head *ws)
+void btrfs_put_workspace(enum btrfs_compression_type type, struct list_head *ws)
 {
 	struct workspace_manager *wsm;
 	struct list_head *idle_ws;
@@ -1117,7 +1146,8 @@ wake:
 	cond_wake_up(ws_wait);
 }
 
-static void put_workspace(int type, struct list_head *ws)
+static void put_workspace(enum btrfs_compression_type type,
+			  struct list_head *ws)
 {
 	switch (type) {
 	case BTRFS_COMPRESS_NONE: return btrfs_put_workspace(type, ws);
@@ -1137,14 +1167,16 @@ static void put_workspace(int type, struct list_head *ws)
  * Adjust @level according to the limits of the compression algorithm or
  * fallback to default
  */
-static unsigned int btrfs_compress_set_level(int type, unsigned level)
+static int btrfs_compress_set_level(enum btrfs_compression_type type, int level)
 {
 	const struct btrfs_compress_op *ops = btrfs_compress_op[type];
 
 	if (level == 0)
 		level = ops->default_level;
-	else
+	else {
 		level = min(level, ops->max_level);
+		level = max(level, ops->min_level);
+	}
 
 	return level;
 }
@@ -1153,10 +1185,9 @@ static unsigned int btrfs_compress_set_level(int type, unsigned level)
  * Given an address space and start and length, compress the bytes into @pages
  * that are allocated on demand.
  *
- * @type_level is encoded algorithm and level, where level 0 means whatever
- * default the algorithm chooses and is opaque here;
- * - compression algo are 0-3
- * - the level are bits 4-7
+ * @type is the compression algorithm
+ *
+ * @level is the compression level; note that this can be negative for zstd
  *
  * @out_pages is an in/out parameter, holds maximum number of pages to allocate
  * and returns number of actually allocated pages
@@ -1172,14 +1203,14 @@ static unsigned int btrfs_compress_set_level(int type, unsigned level)
  * @max_out tells us the max number of bytes that we're allowed to
  * stuff into pages
  */
-int btrfs_compress_pages(unsigned int type_level, struct address_space *mapping,
+int btrfs_compress_pages(enum btrfs_compression_type type,
+			 int level,
+			 struct address_space *mapping,
 			 u64 start, struct page **pages,
 			 unsigned long *out_pages,
 			 unsigned long *total_in,
 			 unsigned long *total_out)
 {
-	int type = btrfs_compress_type(type_level);
-	int level = btrfs_compress_level(type_level);
 	struct list_head *workspace;
 	int ret;
 
@@ -1209,7 +1240,7 @@ static int btrfs_decompress_bio(struct compressed_bio *cb)
 {
 	struct list_head *workspace;
 	int ret;
-	int type = cb->compress_type;
+	enum btrfs_compression_type type = cb->compress_type;
 
 	workspace = get_workspace(type, 0);
 	ret = compression_decompress_bio(type, workspace, cb);
@@ -1223,8 +1254,9 @@ static int btrfs_decompress_bio(struct compressed_bio *cb)
  * single page, and we want to read a single page out of it.
  * start_byte tells us the offset into the compressed data we're interested in
  */
-int btrfs_decompress(int type, unsigned char *data_in, struct page *dest_page,
-		     unsigned long start_byte, size_t srclen, size_t destlen)
+int btrfs_decompress(enum btrfs_compression_type type, unsigned char *data_in,
+		     struct page *dest_page, unsigned long start_byte,
+		     size_t srclen, size_t destlen)
 {
 	struct list_head *workspace;
 	int ret;
@@ -1736,16 +1768,16 @@ out:
  * Convert the compression suffix (eg. after "zlib" starting with ":") to
  * level, unrecognized string will set the default level
  */
-unsigned int btrfs_compress_str2level(unsigned int type, const char *str)
+int btrfs_compress_str2level(enum btrfs_compression_type type, const char *str)
 {
-	unsigned int level = 0;
+	int level = 0;
 	int ret;
 
 	if (!type)
 		return 0;
 
 	if (str[0] == ':') {
-		ret = kstrtouint(str + 1, 10, &level);
+		ret = kstrtoint(str + 1, 10, &level);
 		if (ret)
 			level = 0;
 	}
