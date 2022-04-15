@@ -25,12 +25,20 @@ static int ksym_cmp(const void *p1, const void *p2)
 
 int load_kallsyms(void)
 {
-	FILE *f = fopen("/proc/kallsyms", "r");
+	FILE *f;
 	char func[256], buf[256];
 	char symbol;
 	void *addr;
 	int i = 0;
 
+	/*
+	 * This is called/used from multiplace places,
+	 * load symbols just once.
+	 */
+	if (sym_cnt)
+		return 0;
+
+	f = fopen("/proc/kallsyms", "r");
 	if (!f)
 		return -ENOENT;
 
