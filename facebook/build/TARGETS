@@ -13,6 +13,15 @@ http_file(
     visibility = ["PUBLIC"],
 )
 
+http_file(
+    name = "kpatch-build-rpm",
+    urls = [
+        "http://yum/yum/centos/8.x/backports/x86_64/RPMS/kpatch-build-0.9.6-2.9.hs.el8.x86_64.rpm",
+    ],
+    sha256 = "665975347ce286624c4e727ee41985dd8f8a56a7fa660b3ca5d4d415048bdffa",
+    visibility = ["PUBLIC"],
+)
+
 export_file(
     name = "nspawn.sh",
     src = "nspawn.sh",

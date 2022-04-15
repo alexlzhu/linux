@@ -221,12 +221,27 @@ def klp():
         compiler_args = "LLVM=1"
 
 
+    native.genrule(
+      name = "kpatch-rpm-dir",
+      cmd = """
+          pushd $(location :target-sources)
+          mkdir $OUT
+          if NO_BUCKD=1 ./facebook/build/buck query '//facebook/build:kpatch-build-rpm' --output-attributes urls 0 &>/dev/null; then
+            wget --no-proxy -P $OUT `NO_BUCKD=1 ./facebook/build/buck query '//facebook/build:kpatch-build-rpm' --output-attributes urls 0 | jq -r '.[][][]'`
+          fi
+          popd
+      """,
+      out = "kpatch-rpm-dir",
+    )
+    bind_ros.append(("$(location :kpatch-rpm-dir)", "/tmp/kptach-build-rpm"))
+
     #feed artifacts to kpatch-build in a container
     bind_rws = [(":baseline-sources", "/rw/linux"), ("$OUT", "/rw/output"), (":target-sources", "/rw/target")]
     container_genrule(
         name="klp-build",
         cmd="""
             rpm -ivh /tmp/kernel-bin/*.rpm /tmp/kernel-devel/*.rpm
+            test -f /tmp/kptach-build-rpm/*.rpm && rpm -Uvh /tmp/kptach-build-rpm/*.rpm
             pushd /rw/target
             # prepare config for the target. It could be different from the baselines config
             cp /tmp/config .config
