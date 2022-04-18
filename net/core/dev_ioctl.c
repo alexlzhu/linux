@@ -7,6 +7,9 @@
 #include <linux/wireless.h>
 #include <net/dsa.h>
 #include <net/wext.h>
+#ifdef CONFIG_NETLINK_DEBUG_RINGBUFFER_SIZE
+#include <net/netlink_debug.h>
+#endif
 
 /*
  *	Map an interface index to its name (SIOCGIFNAME)
@@ -246,6 +249,8 @@ static int dev_ifsioc(struct net *net, struct ifreq *ifr, unsigned int cmd)
 
 	if (!dev)
 		return -ENODEV;
+
+	record_ifr(cmd, ifr);
 
 	ops = dev->netdev_ops;
 
