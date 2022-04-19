@@ -290,7 +290,7 @@ nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
 
 	iph = ip_hdr(skb);
 	ip_decrease_ttl(iph);
-	skb->tstamp = 0;
+	skb_clear_tstamp(skb);
 
 	if (flow_table->flags & NF_FLOWTABLE_COUNTER)
 		nf_ct_acct_update(flow->ct, tuplehash->tuple.dir, skb->len);
@@ -531,7 +531,7 @@ nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
 
 	ip6h = ipv6_hdr(skb);
 	ip6h->hop_limit--;
-	skb->tstamp = 0;
+	skb_clear_tstamp(skb);
 
 	if (flow_table->flags & NF_FLOWTABLE_COUNTER)
 		nf_ct_acct_update(flow->ct, tuplehash->tuple.dir, skb->len);

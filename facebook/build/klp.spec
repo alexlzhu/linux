@@ -6,7 +6,7 @@
 Name:	klp-%{rpm_kernel_version}
 Version: %{hf_name}
 Release: r1
-Summary: kernel live patch version
+Summary: Kernel live patch. The rpm as well as build system are not designed to be used directly. Follow https://www.internalfb.com/intern/wiki/Kernel/Release/Process/KLP_(Kernel_Live_Patch)_release_process/ to prepare and release KLP. Do not install it manually unless you really know what you are doing.
 Requires: kpatch
 
 Group: System Environment/Kernel

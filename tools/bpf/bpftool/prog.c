@@ -68,6 +68,7 @@ const char * const prog_type_name[] = {
 	[BPF_PROG_TYPE_EXT]			= "ext",
 	[BPF_PROG_TYPE_LSM]			= "lsm",
 	[BPF_PROG_TYPE_SK_LOOKUP]		= "sk_lookup",
+	[BPF_PROG_TYPE_SYSCALL]			= "syscall",
 };
 
 const size_t prog_type_name_size = ARRAY_SIZE(prog_type_name);
@@ -485,7 +486,7 @@ static void print_prog_json(struct bpf_prog_info *info, int fd)
 
 	memlock = get_fdinfo(fd, "memlock");
 	if (memlock)
-		jsonw_int_field(json_wtr, "bytes_memlock", atoi(memlock));
+		jsonw_int_field(json_wtr, "bytes_memlock", atoll(memlock));
 	free(memlock);
 
 	if (info->nr_map_ids)

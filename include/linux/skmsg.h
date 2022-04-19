@@ -280,11 +280,22 @@ static inline struct sk_psock *sk_psock(const struct sock *sk)
 	return rcu_dereference_sk_user_data(sk);
 }
 
+static inline bool sk_psock_test_state(const struct sk_psock *psock,
+				       enum sk_psock_state_bits bit)
+{
+	return test_bit(bit, &psock->state);
+}
+
 static inline void sk_psock_queue_msg(struct sk_psock *psock,
 				      struct sk_msg *msg)
 {
 	spin_lock_bh(&psock->ingress_lock);
-	list_add_tail(&msg->list, &psock->ingress_msg);
+	if (sk_psock_test_state(psock, SK_PSOCK_TX_ENABLED))
+		list_add_tail(&msg->list, &psock->ingress_msg);
+	else {
+		sk_msg_free(psock->sk, msg);
+		kfree(msg);
+	}
 	spin_unlock_bh(&psock->ingress_lock);
 }
 
@@ -411,12 +422,6 @@ static inline void sk_psock_clear_state(struct sk_psock *psock,
 					enum sk_psock_state_bits bit)
 {
 	clear_bit(bit, &psock->state);
-}
-
-static inline bool sk_psock_test_state(const struct sk_psock *psock,
-				       enum sk_psock_state_bits bit)
-{
-	return test_bit(bit, &psock->state);
 }
 
 static inline struct sk_psock *sk_psock_get(struct sock *sk)

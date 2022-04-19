@@ -9,37 +9,41 @@ family=facebook
 
 arch=$1
 archconf=$(find ${family}/config -name arch-${arch}.config)
-if [ ! -f "${archconf}" ]; then
-    echo "Found no arch configuration for '${arch}'." 1>&2
-    exit 1
-fi
-
-# Deal with flavors, if any
-shift
-fconf=()
-for flavor in $* ; do
-  FCONF=$(find ${family}/config | \
-          egrep "flavor.*-${flavor}-.*\.config" | \
-          egrep "${arch}|common")
-  if [ -z "$FCONF" ]; then
-    echo "Found no flavor configuration for '${flavor}'." 1>&2
-    exit 1
+if [ -f config.override ]; then
+  cat config.override > .config
+else
+  if [ ! -f "${archconf}" ]; then
+      echo "Found no arch configuration for '${arch}'." 1>&2
+      exit 1
   fi
-  fconf+=( $FCONF )
-done
 
-echo "Preparing config based on:"
-echo "  ${family}/config/common.config"
-echo "  ${archconf}"
-for f in "${fconf[@]}" ; do
-  echo "  ${f}"
-done
-
-# Generate .config
-(
-  cat "${family}/config/common.config"
-  cat "${archconf}"
-  for f in "${fconf[@]}" ; do
-    cat "${f}"
+  # Deal with flavors, if any
+  shift
+  fconf=()
+  for flavor in $* ; do
+    FCONF=$(find ${family}/config | \
+            egrep "flavor.*-${flavor}-.*\.config" | \
+            egrep "${arch}|common")
+    if [ -z "$FCONF" ]; then
+      echo "Found no flavor configuration for '${flavor}'." 1>&2
+      exit 1
+    fi
+    fconf+=( $FCONF )
   done
-) > .config
+
+  echo "Preparing config based on:"
+  echo "  ${family}/config/common.config"
+  echo "  ${archconf}"
+  for f in "${fconf[@]}" ; do
+    echo "  ${f}"
+  done
+
+  # Generate .config
+  (
+    cat "${family}/config/common.config"
+    cat "${archconf}"
+    for f in "${fconf[@]}" ; do
+      cat "${f}"
+    done
+  ) > .config
+fi

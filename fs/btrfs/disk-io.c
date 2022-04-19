@@ -713,8 +713,8 @@ static void end_workqueue_bio(struct bio *bio)
 	struct btrfs_workqueue *wq;
 
 	fs_info = end_io_wq->info;
-	if (WARN_ON_ONCE(bio->bi_status != BLK_STS_OK))
-		btrfs_warn_rl(fs_info, "bio failed: %d", bio->bi_status);
+	if (WARN_ON_ONCE(bio->bi_status != BLK_STS_OK && bio->bi_opf & REQ_META))
+		btrfs_warn_rl(fs_info, "metadata bio failed: %d", bio->bi_status);
 	end_io_wq->status = bio->bi_status;
 
 	if (btrfs_op(bio) == BTRFS_MAP_WRITE) {
@@ -3575,6 +3575,10 @@ int __cold open_ctree(struct super_block *sb, struct btrfs_fs_devices *fs_device
 
 	set_bit(BTRFS_FS_OPEN, &fs_info->flags);
 
+	/* Kick the cleaner thread so it'll start deleting snapshots. */
+	if (test_bit(BTRFS_FS_UNFINISHED_DROPS, &fs_info->flags))
+		wake_up_process(fs_info->cleaner_kthread);
+
 clear_oneshot:
 	btrfs_clear_oneshot_options(fs_info);
 	return 0;
@@ -4243,6 +4247,12 @@ void __cold close_ctree(struct btrfs_fs_info *fs_info)
 	 * still try to wake up the cleaner.
 	 */
 	kthread_park(fs_info->cleaner_kthread);
+
+	/*
+	 * If we had UNFINISHED_DROPS we could still be processing them, so
+	 * clear that bit and wake up relocation so it can stop.
+	 */
+	btrfs_wake_unfinished_drop(fs_info);
 
 	/* wait for the qgroup rescan worker to stop */
 	btrfs_qgroup_wait_for_completion(fs_info, false);

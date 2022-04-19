@@ -2107,7 +2107,7 @@ static inline int __bpf_tx_skb(struct net_device *dev, struct sk_buff *skb)
 	}
 
 	skb->dev = dev;
-	skb->tstamp = 0;
+	skb_clear_tstamp(skb);
 
 	dev_xmit_recursion_inc();
 	ret = dev_queue_xmit(skb);
@@ -2176,7 +2176,7 @@ static int bpf_out_neigh_v6(struct net *net, struct sk_buff *skb,
 	}
 
 	skb->dev = dev;
-	skb->tstamp = 0;
+	skb_clear_tstamp(skb);
 
 	if (unlikely(skb_headroom(skb) < hh_len && dev->header_ops)) {
 		skb = skb_expand_head(skb, hh_len);
@@ -2274,7 +2274,7 @@ static int bpf_out_neigh_v4(struct net *net, struct sk_buff *skb,
 	}
 
 	skb->dev = dev;
-	skb->tstamp = 0;
+	skb_clear_tstamp(skb);
 
 	if (unlikely(skb_headroom(skb) < hh_len && dev->header_ops)) {
 		skb = skb_expand_head(skb, hh_len);
@@ -7016,22 +7016,31 @@ BPF_CALL_5(bpf_tcp_check_syncookie, struct sock *, sk, void *, iph, u32, iph_len
 	if (!th->ack || th->rst || th->syn)
 		return -ENOENT;
 
+	if (unlikely(iph_len < sizeof(struct iphdr)))
+		return -EINVAL;
+
 	if (tcp_synq_no_recent_overflow(sk))
 		return -ENOENT;
 
 	cookie = ntohl(th->ack_seq) - 1;
 
-	switch (sk->sk_family) {
-	case AF_INET:
-		if (unlikely(iph_len < sizeof(struct iphdr)))
+	/* Both struct iphdr and struct ipv6hdr have the version field at the
+	 * same offset so we can cast to the shorter header (struct iphdr).
+	 */
+	switch (((struct iphdr *)iph)->version) {
+	case 4:
+		if (sk->sk_family == AF_INET6 && ipv6_only_sock(sk))
 			return -EINVAL;
 
 		ret = __cookie_v4_check((struct iphdr *)iph, th, cookie);
 		break;
 
 #if IS_BUILTIN(CONFIG_IPV6)
-	case AF_INET6:
+	case 6:
 		if (unlikely(iph_len < sizeof(struct ipv6hdr)))
+			return -EINVAL;
+
+		if (sk->sk_family != AF_INET6)
 			return -EINVAL;
 
 		ret = __cookie_v6_check((struct ipv6hdr *)iph, th, cookie);
@@ -7386,6 +7395,43 @@ static const struct bpf_func_proto bpf_sock_ops_reserve_hdr_opt_proto = {
 	.arg1_type	= ARG_PTR_TO_CTX,
 	.arg2_type	= ARG_ANYTHING,
 	.arg3_type	= ARG_ANYTHING,
+};
+
+BPF_CALL_3(bpf_skb_set_tstamp, struct sk_buff *, skb,
+	   u64, tstamp, u32, tstamp_type)
+{
+	/* skb_clear_delivery_time() is done for inet protocol */
+	if (skb->protocol != htons(ETH_P_IP) &&
+	    skb->protocol != htons(ETH_P_IPV6))
+		return -EOPNOTSUPP;
+
+	switch (tstamp_type) {
+	case BPF_SKB_TSTAMP_DELIVERY_MONO:
+		if (!tstamp)
+			return -EINVAL;
+		skb->tstamp = tstamp;
+		skb->mono_delivery_time = 1;
+		break;
+	case BPF_SKB_TSTAMP_UNSPEC:
+		if (tstamp)
+			return -EINVAL;
+		skb->tstamp = 0;
+		skb->mono_delivery_time = 0;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_skb_set_tstamp_proto = {
+	.func           = bpf_skb_set_tstamp,
+	.gpl_only       = false,
+	.ret_type       = RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_CTX,
+	.arg2_type      = ARG_ANYTHING,
+	.arg3_type      = ARG_ANYTHING,
 };
 
 #endif /* CONFIG_INET */
@@ -7749,6 +7795,8 @@ tc_cls_act_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_tcp_gen_syncookie_proto;
 	case BPF_FUNC_sk_assign:
 		return &bpf_sk_assign_proto;
+	case BPF_FUNC_skb_set_tstamp:
+		return &bpf_skb_set_tstamp_proto;
 #endif
 	default:
 		return bpf_sk_base_func_proto(func_id);
@@ -8088,7 +8136,9 @@ static bool bpf_skb_is_valid_access(int off, int size, enum bpf_access_type type
 			return false;
 		info->reg_type = PTR_TO_SOCK_COMMON_OR_NULL;
 		break;
-	case offsetofend(struct __sk_buff, gso_size) ... offsetof(struct __sk_buff, hwtstamp) - 1:
+	case offsetof(struct __sk_buff, tstamp_type):
+		return false;
+	case offsetofend(struct __sk_buff, tstamp_type) ... offsetof(struct __sk_buff, hwtstamp) - 1:
 		/* Explicitly prohibit access to padding in __sk_buff. */
 		return false;
 	default:
@@ -8443,6 +8493,15 @@ static bool tc_cls_act_is_valid_access(int off, int size,
 		break;
 	case bpf_ctx_range_till(struct __sk_buff, family, local_port):
 		return false;
+	case offsetof(struct __sk_buff, tstamp_type):
+		/* The convert_ctx_access() on reading and writing
+		 * __sk_buff->tstamp depends on whether the bpf prog
+		 * has used __sk_buff->tstamp_type or not.
+		 * Thus, we need to set prog->tstamp_type_access
+		 * earlier during is_valid_access() here.
+		 */
+		((struct bpf_prog *)prog)->tstamp_type_access = 1;
+		return size == sizeof(__u8);
 	}
 
 	return bpf_skb_is_valid_access(off, size, type, prog, info);
@@ -8838,6 +8897,25 @@ static u32 flow_dissector_convert_ctx_access(enum bpf_access_type type,
 	return insn - insn_buf;
 }
 
+static struct bpf_insn *bpf_convert_tstamp_type_read(const struct bpf_insn *si,
+						     struct bpf_insn *insn)
+{
+	__u8 value_reg = si->dst_reg;
+	__u8 skb_reg = si->src_reg;
+	/* AX is needed because src_reg and dst_reg could be the same */
+	__u8 tmp_reg = BPF_REG_AX;
+
+	*insn++ = BPF_LDX_MEM(BPF_B, tmp_reg, skb_reg,
+			      PKT_VLAN_PRESENT_OFFSET);
+	*insn++ = BPF_JMP32_IMM(BPF_JSET, tmp_reg,
+				SKB_MONO_DELIVERY_TIME_MASK, 2);
+	*insn++ = BPF_MOV32_IMM(value_reg, BPF_SKB_TSTAMP_UNSPEC);
+	*insn++ = BPF_JMP_A(1);
+	*insn++ = BPF_MOV32_IMM(value_reg, BPF_SKB_TSTAMP_DELIVERY_MONO);
+
+	return insn;
+}
+
 static struct bpf_insn *bpf_convert_shinfo_access(const struct bpf_insn *si,
 						  struct bpf_insn *insn)
 {
@@ -8856,6 +8934,74 @@ static struct bpf_insn *bpf_convert_shinfo_access(const struct bpf_insn *si,
 			      offsetof(struct sk_buff, end));
 #endif
 
+	return insn;
+}
+
+static struct bpf_insn *bpf_convert_tstamp_read(const struct bpf_prog *prog,
+						const struct bpf_insn *si,
+						struct bpf_insn *insn)
+{
+	__u8 value_reg = si->dst_reg;
+	__u8 skb_reg = si->src_reg;
+
+#ifdef CONFIG_NET_CLS_ACT
+	/* If the tstamp_type is read,
+	 * the bpf prog is aware the tstamp could have delivery time.
+	 * Thus, read skb->tstamp as is if tstamp_type_access is true.
+	 */
+	if (!prog->tstamp_type_access) {
+		/* AX is needed because src_reg and dst_reg could be the same */
+		__u8 tmp_reg = BPF_REG_AX;
+
+		*insn++ = BPF_LDX_MEM(BPF_B, tmp_reg, skb_reg, PKT_VLAN_PRESENT_OFFSET);
+		*insn++ = BPF_ALU32_IMM(BPF_AND, tmp_reg,
+					TC_AT_INGRESS_MASK | SKB_MONO_DELIVERY_TIME_MASK);
+		*insn++ = BPF_JMP32_IMM(BPF_JNE, tmp_reg,
+					TC_AT_INGRESS_MASK | SKB_MONO_DELIVERY_TIME_MASK, 2);
+		/* skb->tc_at_ingress && skb->mono_delivery_time,
+		 * read 0 as the (rcv) timestamp.
+		 */
+		*insn++ = BPF_MOV64_IMM(value_reg, 0);
+		*insn++ = BPF_JMP_A(1);
+	}
+#endif
+
+	*insn++ = BPF_LDX_MEM(BPF_DW, value_reg, skb_reg,
+			      offsetof(struct sk_buff, tstamp));
+	return insn;
+}
+
+static struct bpf_insn *bpf_convert_tstamp_write(const struct bpf_prog *prog,
+						 const struct bpf_insn *si,
+						 struct bpf_insn *insn)
+{
+	__u8 value_reg = si->src_reg;
+	__u8 skb_reg = si->dst_reg;
+
+#ifdef CONFIG_NET_CLS_ACT
+	/* If the tstamp_type is read,
+	 * the bpf prog is aware the tstamp could have delivery time.
+	 * Thus, write skb->tstamp as is if tstamp_type_access is true.
+	 * Otherwise, writing at ingress will have to clear the
+	 * mono_delivery_time bit also.
+	 */
+	if (!prog->tstamp_type_access) {
+		__u8 tmp_reg = BPF_REG_AX;
+
+		*insn++ = BPF_LDX_MEM(BPF_B, tmp_reg, skb_reg, PKT_VLAN_PRESENT_OFFSET);
+		/* Writing __sk_buff->tstamp as ingress, goto <clear> */
+		*insn++ = BPF_JMP32_IMM(BPF_JSET, tmp_reg, TC_AT_INGRESS_MASK, 1);
+		/* goto <store> */
+		*insn++ = BPF_JMP_A(2);
+		/* <clear>: mono_delivery_time */
+		*insn++ = BPF_ALU32_IMM(BPF_AND, tmp_reg, ~SKB_MONO_DELIVERY_TIME_MASK);
+		*insn++ = BPF_STX_MEM(BPF_B, skb_reg, tmp_reg, PKT_VLAN_PRESENT_OFFSET);
+	}
+#endif
+
+	/* <store>: skb->tstamp = tstamp */
+	*insn++ = BPF_STX_MEM(BPF_DW, skb_reg, value_reg,
+			      offsetof(struct sk_buff, tstamp));
 	return insn;
 }
 
@@ -9167,17 +9313,13 @@ static u32 bpf_convert_ctx_access(enum bpf_access_type type,
 		BUILD_BUG_ON(sizeof_field(struct sk_buff, tstamp) != 8);
 
 		if (type == BPF_WRITE)
-			*insn++ = BPF_STX_MEM(BPF_DW,
-					      si->dst_reg, si->src_reg,
-					      bpf_target_off(struct sk_buff,
-							     tstamp, 8,
-							     target_size));
+			insn = bpf_convert_tstamp_write(prog, si, insn);
 		else
-			*insn++ = BPF_LDX_MEM(BPF_DW,
-					      si->dst_reg, si->src_reg,
-					      bpf_target_off(struct sk_buff,
-							     tstamp, 8,
-							     target_size));
+			insn = bpf_convert_tstamp_read(prog, si, insn);
+		break;
+
+	case offsetof(struct __sk_buff, tstamp_type):
+		insn = bpf_convert_tstamp_type_read(si, insn);
 		break;
 
 	case offsetof(struct __sk_buff, gso_segs):
@@ -10856,12 +10998,23 @@ static bool sk_lookup_is_valid_access(int off, int size,
 	case bpf_ctx_range(struct bpf_sk_lookup, local_ip4):
 	case bpf_ctx_range_till(struct bpf_sk_lookup, remote_ip6[0], remote_ip6[3]):
 	case bpf_ctx_range_till(struct bpf_sk_lookup, local_ip6[0], local_ip6[3]):
-	case offsetof(struct bpf_sk_lookup, remote_port) ...
-	     offsetof(struct bpf_sk_lookup, local_ip4) - 1:
 	case bpf_ctx_range(struct bpf_sk_lookup, local_port):
 	case bpf_ctx_range(struct bpf_sk_lookup, ingress_ifindex):
 		bpf_ctx_record_field_size(info, sizeof(__u32));
 		return bpf_ctx_narrow_access_ok(off, size, sizeof(__u32));
+
+	case bpf_ctx_range(struct bpf_sk_lookup, remote_port):
+		/* Allow 4-byte access to 2-byte field for backward compatibility */
+		if (size == sizeof(__u32))
+			return true;
+		bpf_ctx_record_field_size(info, sizeof(__be16));
+		return bpf_ctx_narrow_access_ok(off, size, sizeof(__be16));
+
+	case offsetofend(struct bpf_sk_lookup, remote_port) ...
+	     offsetof(struct bpf_sk_lookup, local_ip4) - 1:
+		/* Allow access to zero padding for backward compatibility */
+		bpf_ctx_record_field_size(info, sizeof(__u16));
+		return bpf_ctx_narrow_access_ok(off, size, sizeof(__u16));
 
 	default:
 		return false;
@@ -10942,6 +11095,11 @@ static u32 sk_lookup_convert_ctx_access(enum bpf_access_type type,
 		*insn++ = BPF_LDX_MEM(BPF_H, si->dst_reg, si->src_reg,
 				      bpf_target_off(struct bpf_sk_lookup_kern,
 						     sport, 2, target_size));
+		break;
+
+	case offsetofend(struct bpf_sk_lookup, remote_port):
+		*target_size = 2;
+		*insn++ = BPF_MOV32_IMM(si->dst_reg, 0);
 		break;
 
 	case offsetof(struct bpf_sk_lookup, local_port):

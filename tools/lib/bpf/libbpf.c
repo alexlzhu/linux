@@ -201,12 +201,6 @@ struct reloc_desc {
 	};
 };
 
-struct bpf_sec_def;
-
-typedef int (*init_fn_t)(struct bpf_program *prog, long cookie);
-typedef int (*preload_fn_t)(struct bpf_program *prog, struct bpf_prog_load_opts *opts, long cookie);
-typedef struct bpf_link *(*attach_fn_t)(const struct bpf_program *prog, long cookie);
-
 /* stored as sec_def->cookie for all libbpf-supported SEC()s */
 enum sec_def_flags {
 	SEC_NONE = 0,
@@ -234,14 +228,15 @@ enum sec_def_flags {
 };
 
 struct bpf_sec_def {
-	const char *sec;
+	char *sec;
 	enum bpf_prog_type prog_type;
 	enum bpf_attach_type expected_attach_type;
 	long cookie;
+	int handler_id;
 
-	init_fn_t init_fn;
-	preload_fn_t preload_fn;
-	attach_fn_t attach_fn;
+	libbpf_prog_setup_fn_t prog_setup_fn;
+	libbpf_prog_prepare_load_fn_t prog_prepare_load_fn;
+	libbpf_prog_attach_fn_t prog_attach_fn;
 };
 
 /*
@@ -488,6 +483,8 @@ struct elf_state {
 	int st_ops_shndx;
 };
 
+struct usdt_manager;
+
 struct bpf_object {
 	char name[BPF_OBJ_NAME_LEN];
 	char license[64];
@@ -549,6 +546,8 @@ struct bpf_object {
 	int *fd_array;
 	size_t fd_array_cap;
 	size_t fd_array_cnt;
+
+	struct usdt_manager *usdt_man;
 
 	char path[];
 };
@@ -1523,6 +1522,9 @@ static char *internal_map_name(struct bpf_object *obj, const char *real_name)
 }
 
 static int
+bpf_map_find_btf_info(struct bpf_object *obj, struct bpf_map *map);
+
+static int
 bpf_object__init_internal_map(struct bpf_object *obj, enum libbpf_map_type type,
 			      const char *real_name, int sec_idx, void *data, size_t data_sz)
 {
@@ -1568,6 +1570,9 @@ bpf_object__init_internal_map(struct bpf_object *obj, enum libbpf_map_type type,
 		zfree(&map->name);
 		return err;
 	}
+
+	/* failures are fine because of maps like .rodata.str1.1 */
+	(void) bpf_map_find_btf_info(obj, map);
 
 	if (data)
 		memcpy(map->mmaped, data, data_sz);
@@ -2051,6 +2056,9 @@ static int bpf_object__init_user_maps(struct bpf_object *obj, bool strict)
 			}
 			memcpy(&map->def, def, sizeof(struct bpf_map_def));
 		}
+
+		/* btf info may not exist but fill it in if it does exist */
+		(void) bpf_map_find_btf_info(obj, map);
 	}
 	return 0;
 }
@@ -2538,6 +2546,10 @@ static int bpf_object__init_user_btf_map(struct bpf_object *obj,
 
 		fill_map_from_def(map->inner_map, &inner_def);
 	}
+
+	err = bpf_map_find_btf_info(obj, map);
+	if (err)
+		return err;
 
 	return 0;
 }
@@ -3837,7 +3849,14 @@ static bool prog_is_subprog(const struct bpf_object *obj,
 	 * .text programs are subprograms (even if they are not called from
 	 * other programs), because libbpf never explicitly supported mixing
 	 * SEC()-designated BPF programs and .text entry-point BPF programs.
+	 *
+	 * In libbpf 1.0 strict mode, we always consider .text
+	 * programs to be subprograms.
 	 */
+
+	if (libbpf_mode & LIBBPF_STRICT_SEC_NAME)
+		return prog->sec_idx == obj->efile.text_shndx;
+
 	return prog->sec_idx == obj->efile.text_shndx && obj->nr_programs > 1;
 }
 
@@ -4181,6 +4200,9 @@ static int bpf_map_find_btf_info(struct bpf_object *obj, struct bpf_map *map)
 	struct bpf_map_def *def = &map->def;
 	__u32 key_type_id = 0, value_type_id = 0;
 	int ret;
+
+	if (!obj->btf)
+		return -ENOENT;
 
 	/* if it's BTF-defined map, we don't need to search for type IDs.
 	 * For struct_ops map, it does not need btf_key_type_id and
@@ -4660,6 +4682,18 @@ static int probe_perf_link(void)
 	return link_fd < 0 && err == -EBADF;
 }
 
+static int probe_kern_bpf_cookie(void)
+{
+	struct bpf_insn insns[] = {
+		BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0, BPF_FUNC_get_attach_cookie),
+		BPF_EXIT_INSN(),
+	};
+	int ret, insn_cnt = ARRAY_SIZE(insns);
+
+	ret = bpf_prog_load(BPF_PROG_TYPE_KPROBE, NULL, "GPL", insns, insn_cnt, NULL);
+	return probe_fd(ret);
+}
+
 enum kern_feature_result {
 	FEAT_UNKNOWN = 0,
 	FEAT_SUPPORTED = 1,
@@ -4721,6 +4755,9 @@ static struct kern_feature_desc {
 	},
 	[FEAT_MEMCG_ACCOUNT] = {
 		"memcg-based memory accounting", probe_memcg_account,
+	},
+	[FEAT_BPF_COOKIE] = {
+		"BPF cookie support", probe_kern_bpf_cookie,
 	},
 };
 
@@ -4805,8 +4842,8 @@ bpf_object__reuse_map(struct bpf_map *map)
 	}
 
 	err = bpf_map__reuse_fd(map, pin_fd);
+	close(pin_fd);
 	if (err) {
-		close(pin_fd);
 		return err;
 	}
 	map->pinned = true;
@@ -4871,7 +4908,7 @@ static int bpf_object__create_map(struct bpf_object *obj, struct bpf_map *map, b
 	if (bpf_map__is_struct_ops(map))
 		create_attr.btf_vmlinux_value_type_id = map->btf_vmlinux_value_type_id;
 
-	if (obj->btf && btf__fd(obj->btf) >= 0 && !bpf_map_find_btf_info(obj, map)) {
+	if (obj->btf && btf__fd(obj->btf) >= 0) {
 		create_attr.btf_fd = btf__fd(obj->btf);
 		create_attr.btf_key_type_id = map->btf_key_type_id;
 		create_attr.btf_value_type_id = map->btf_value_type_id;
@@ -6572,9 +6609,9 @@ static int bpf_object__sanitize_prog(struct bpf_object *obj, struct bpf_program 
 static int libbpf_find_attach_btf_id(struct bpf_program *prog, const char *attach_name,
 				     int *btf_obj_fd, int *btf_type_id);
 
-/* this is called as prog->sec_def->preload_fn for libbpf-supported sec_defs */
-static int libbpf_preload_prog(struct bpf_program *prog,
-			       struct bpf_prog_load_opts *opts, long cookie)
+/* this is called as prog->sec_def->prog_prepare_load_fn for libbpf-supported sec_defs */
+static int libbpf_prepare_prog_load(struct bpf_program *prog,
+				    struct bpf_prog_load_opts *opts, long cookie)
 {
 	enum sec_def_flags def = cookie;
 
@@ -6670,8 +6707,8 @@ static int bpf_object_load_prog_instance(struct bpf_object *obj, struct bpf_prog
 	load_attr.fd_array = obj->fd_array;
 
 	/* adjust load_attr if sec_def provides custom preload callback */
-	if (prog->sec_def && prog->sec_def->preload_fn) {
-		err = prog->sec_def->preload_fn(prog, &load_attr, prog->sec_def->cookie);
+	if (prog->sec_def && prog->sec_def->prog_prepare_load_fn) {
+		err = prog->sec_def->prog_prepare_load_fn(prog, &load_attr, prog->sec_def->cookie);
 		if (err < 0) {
 			pr_warn("prog '%s': failed to prepare load attributes: %d\n",
 				prog->name, err);
@@ -6971,8 +7008,8 @@ static int bpf_object_init_progs(struct bpf_object *obj, const struct bpf_object
 		/* sec_def can have custom callback which should be called
 		 * after bpf_program is initialized to adjust its properties
 		 */
-		if (prog->sec_def->init_fn) {
-			err = prog->sec_def->init_fn(prog, prog->sec_def->cookie);
+		if (prog->sec_def->prog_setup_fn) {
+			err = prog->sec_def->prog_setup_fn(prog, prog->sec_def->cookie);
 			if (err < 0) {
 				pr_warn("prog '%s': failed to initialize: %d\n",
 					prog->name, err);
@@ -7176,12 +7213,10 @@ static int bpf_object__sanitize_maps(struct bpf_object *obj)
 	return 0;
 }
 
-static int bpf_object__read_kallsyms_file(struct bpf_object *obj)
+int libbpf_kallsyms_parse(kallsyms_cb_t cb, void *ctx)
 {
 	char sym_type, sym_name[500];
 	unsigned long long sym_addr;
-	const struct btf_type *t;
-	struct extern_desc *ext;
 	int ret, err = 0;
 	FILE *f;
 
@@ -7200,33 +7235,49 @@ static int bpf_object__read_kallsyms_file(struct bpf_object *obj)
 		if (ret != 3) {
 			pr_warn("failed to read kallsyms entry: %d\n", ret);
 			err = -EINVAL;
-			goto out;
+			break;
 		}
 
-		ext = find_extern_by_name(obj, sym_name);
-		if (!ext || ext->type != EXT_KSYM)
-			continue;
-
-		t = btf__type_by_id(obj->btf, ext->btf_id);
-		if (!btf_is_var(t))
-			continue;
-
-		if (ext->is_set && ext->ksym.addr != sym_addr) {
-			pr_warn("extern (ksym) '%s' resolution is ambiguous: 0x%llx or 0x%llx\n",
-				sym_name, ext->ksym.addr, sym_addr);
-			err = -EINVAL;
-			goto out;
-		}
-		if (!ext->is_set) {
-			ext->is_set = true;
-			ext->ksym.addr = sym_addr;
-			pr_debug("extern (ksym) %s=0x%llx\n", sym_name, sym_addr);
-		}
+		err = cb(sym_addr, sym_type, sym_name, ctx);
+		if (err)
+			break;
 	}
 
-out:
 	fclose(f);
 	return err;
+}
+
+static int kallsyms_cb(unsigned long long sym_addr, char sym_type,
+		       const char *sym_name, void *ctx)
+{
+	struct bpf_object *obj = ctx;
+	const struct btf_type *t;
+	struct extern_desc *ext;
+
+	ext = find_extern_by_name(obj, sym_name);
+	if (!ext || ext->type != EXT_KSYM)
+		return 0;
+
+	t = btf__type_by_id(obj->btf, ext->btf_id);
+	if (!btf_is_var(t))
+		return 0;
+
+	if (ext->is_set && ext->ksym.addr != sym_addr) {
+		pr_warn("extern (ksym) '%s' resolution is ambiguous: 0x%llx or 0x%llx\n",
+			sym_name, ext->ksym.addr, sym_addr);
+		return -EINVAL;
+	}
+	if (!ext->is_set) {
+		ext->is_set = true;
+		ext->ksym.addr = sym_addr;
+		pr_debug("extern (ksym) %s=0x%llx\n", sym_name, sym_addr);
+	}
+	return 0;
+}
+
+static int bpf_object__read_kallsyms_file(struct bpf_object *obj)
+{
+	return libbpf_kallsyms_parse(kallsyms_cb, obj);
 }
 
 static int find_ksym_btf_id(struct bpf_object *obj, const char *ksym_name,
@@ -8168,6 +8219,9 @@ void bpf_object__close(struct bpf_object *obj)
 	if (obj->clear_priv)
 		obj->clear_priv(obj, obj->priv);
 
+	usdt_manager_free(obj->usdt_man);
+	obj->usdt_man = NULL;
+
 	bpf_gen__free(obj->gen_loader);
 	bpf_object__elf_finish(obj);
 	bpf_object_unload(obj);
@@ -8589,29 +8643,35 @@ int bpf_program__set_log_buf(struct bpf_program *prog, char *log_buf, size_t log
 }
 
 #define SEC_DEF(sec_pfx, ptype, atype, flags, ...) {			    \
-	.sec = sec_pfx,							    \
+	.sec = (char *)sec_pfx,						    \
 	.prog_type = BPF_PROG_TYPE_##ptype,				    \
 	.expected_attach_type = atype,					    \
 	.cookie = (long)(flags),					    \
-	.preload_fn = libbpf_preload_prog,				    \
+	.prog_prepare_load_fn = libbpf_prepare_prog_load,		    \
 	__VA_ARGS__							    \
 }
 
-static struct bpf_link *attach_kprobe(const struct bpf_program *prog, long cookie);
-static struct bpf_link *attach_tp(const struct bpf_program *prog, long cookie);
-static struct bpf_link *attach_raw_tp(const struct bpf_program *prog, long cookie);
-static struct bpf_link *attach_trace(const struct bpf_program *prog, long cookie);
-static struct bpf_link *attach_lsm(const struct bpf_program *prog, long cookie);
-static struct bpf_link *attach_iter(const struct bpf_program *prog, long cookie);
+static int attach_kprobe(const struct bpf_program *prog, long cookie, struct bpf_link **link);
+static int attach_uprobe(const struct bpf_program *prog, long cookie, struct bpf_link **link);
+static int attach_usdt(const struct bpf_program *prog, long cookie, struct bpf_link **link);
+static int attach_tp(const struct bpf_program *prog, long cookie, struct bpf_link **link);
+static int attach_raw_tp(const struct bpf_program *prog, long cookie, struct bpf_link **link);
+static int attach_trace(const struct bpf_program *prog, long cookie, struct bpf_link **link);
+static int attach_kprobe_multi(const struct bpf_program *prog, long cookie, struct bpf_link **link);
+static int attach_lsm(const struct bpf_program *prog, long cookie, struct bpf_link **link);
+static int attach_iter(const struct bpf_program *prog, long cookie, struct bpf_link **link);
 
 static const struct bpf_sec_def section_defs[] = {
 	SEC_DEF("socket",		SOCKET_FILTER, 0, SEC_NONE | SEC_SLOPPY_PFX),
 	SEC_DEF("sk_reuseport/migrate",	SK_REUSEPORT, BPF_SK_REUSEPORT_SELECT_OR_MIGRATE, SEC_ATTACHABLE | SEC_SLOPPY_PFX),
 	SEC_DEF("sk_reuseport",		SK_REUSEPORT, BPF_SK_REUSEPORT_SELECT, SEC_ATTACHABLE | SEC_SLOPPY_PFX),
 	SEC_DEF("kprobe/",		KPROBE,	0, SEC_NONE, attach_kprobe),
-	SEC_DEF("uprobe/",		KPROBE,	0, SEC_NONE),
+	SEC_DEF("uprobe+",		KPROBE,	0, SEC_NONE, attach_uprobe),
 	SEC_DEF("kretprobe/",		KPROBE, 0, SEC_NONE, attach_kprobe),
-	SEC_DEF("uretprobe/",		KPROBE, 0, SEC_NONE),
+	SEC_DEF("uretprobe+",		KPROBE, 0, SEC_NONE, attach_uprobe),
+	SEC_DEF("kprobe.multi/",	KPROBE,	BPF_TRACE_KPROBE_MULTI, SEC_NONE, attach_kprobe_multi),
+	SEC_DEF("kretprobe.multi/",	KPROBE,	BPF_TRACE_KPROBE_MULTI, SEC_NONE, attach_kprobe_multi),
+	SEC_DEF("usdt+",		KPROBE,	0, SEC_NONE, attach_usdt),
 	SEC_DEF("tc",			SCHED_CLS, 0, SEC_NONE),
 	SEC_DEF("classifier",		SCHED_CLS, 0, SEC_NONE | SEC_SLOPPY_PFX | SEC_DEPRECATED),
 	SEC_DEF("action",		SCHED_ACT, 0, SEC_NONE | SEC_SLOPPY_PFX),
@@ -8682,60 +8742,166 @@ static const struct bpf_sec_def section_defs[] = {
 	SEC_DEF("sk_lookup",		SK_LOOKUP, BPF_SK_LOOKUP, SEC_ATTACHABLE | SEC_SLOPPY_PFX),
 };
 
-#define MAX_TYPE_NAME_SIZE 32
+static size_t custom_sec_def_cnt;
+static struct bpf_sec_def *custom_sec_defs;
+static struct bpf_sec_def custom_fallback_def;
+static bool has_custom_fallback_def;
+
+static int last_custom_sec_def_handler_id;
+
+int libbpf_register_prog_handler(const char *sec,
+				 enum bpf_prog_type prog_type,
+				 enum bpf_attach_type exp_attach_type,
+				 const struct libbpf_prog_handler_opts *opts)
+{
+	struct bpf_sec_def *sec_def;
+
+	if (!OPTS_VALID(opts, libbpf_prog_handler_opts))
+		return libbpf_err(-EINVAL);
+
+	if (last_custom_sec_def_handler_id == INT_MAX) /* prevent overflow */
+		return libbpf_err(-E2BIG);
+
+	if (sec) {
+		sec_def = libbpf_reallocarray(custom_sec_defs, custom_sec_def_cnt + 1,
+					      sizeof(*sec_def));
+		if (!sec_def)
+			return libbpf_err(-ENOMEM);
+
+		custom_sec_defs = sec_def;
+		sec_def = &custom_sec_defs[custom_sec_def_cnt];
+	} else {
+		if (has_custom_fallback_def)
+			return libbpf_err(-EBUSY);
+
+		sec_def = &custom_fallback_def;
+	}
+
+	sec_def->sec = sec ? strdup(sec) : NULL;
+	if (sec && !sec_def->sec)
+		return libbpf_err(-ENOMEM);
+
+	sec_def->prog_type = prog_type;
+	sec_def->expected_attach_type = exp_attach_type;
+	sec_def->cookie = OPTS_GET(opts, cookie, 0);
+
+	sec_def->prog_setup_fn = OPTS_GET(opts, prog_setup_fn, NULL);
+	sec_def->prog_prepare_load_fn = OPTS_GET(opts, prog_prepare_load_fn, NULL);
+	sec_def->prog_attach_fn = OPTS_GET(opts, prog_attach_fn, NULL);
+
+	sec_def->handler_id = ++last_custom_sec_def_handler_id;
+
+	if (sec)
+		custom_sec_def_cnt++;
+	else
+		has_custom_fallback_def = true;
+
+	return sec_def->handler_id;
+}
+
+int libbpf_unregister_prog_handler(int handler_id)
+{
+	struct bpf_sec_def *sec_defs;
+	int i;
+
+	if (handler_id <= 0)
+		return libbpf_err(-EINVAL);
+
+	if (has_custom_fallback_def && custom_fallback_def.handler_id == handler_id) {
+		memset(&custom_fallback_def, 0, sizeof(custom_fallback_def));
+		has_custom_fallback_def = false;
+		return 0;
+	}
+
+	for (i = 0; i < custom_sec_def_cnt; i++) {
+		if (custom_sec_defs[i].handler_id == handler_id)
+			break;
+	}
+
+	if (i == custom_sec_def_cnt)
+		return libbpf_err(-ENOENT);
+
+	free(custom_sec_defs[i].sec);
+	for (i = i + 1; i < custom_sec_def_cnt; i++)
+		custom_sec_defs[i - 1] = custom_sec_defs[i];
+	custom_sec_def_cnt--;
+
+	/* try to shrink the array, but it's ok if we couldn't */
+	sec_defs = libbpf_reallocarray(custom_sec_defs, custom_sec_def_cnt, sizeof(*sec_defs));
+	if (sec_defs)
+		custom_sec_defs = sec_defs;
+
+	return 0;
+}
+
+static bool sec_def_matches(const struct bpf_sec_def *sec_def, const char *sec_name,
+			    bool allow_sloppy)
+{
+	size_t len = strlen(sec_def->sec);
+
+	/* "type/" always has to have proper SEC("type/extras") form */
+	if (sec_def->sec[len - 1] == '/') {
+		if (str_has_pfx(sec_name, sec_def->sec))
+			return true;
+		return false;
+	}
+
+	/* "type+" means it can be either exact SEC("type") or
+	 * well-formed SEC("type/extras") with proper '/' separator
+	 */
+	if (sec_def->sec[len - 1] == '+') {
+		len--;
+		/* not even a prefix */
+		if (strncmp(sec_name, sec_def->sec, len) != 0)
+			return false;
+		/* exact match or has '/' separator */
+		if (sec_name[len] == '\0' || sec_name[len] == '/')
+			return true;
+		return false;
+	}
+
+	/* SEC_SLOPPY_PFX definitions are allowed to be just prefix
+	 * matches, unless strict section name mode
+	 * (LIBBPF_STRICT_SEC_NAME) is enabled, in which case the
+	 * match has to be exact.
+	 */
+	if (allow_sloppy && str_has_pfx(sec_name, sec_def->sec))
+		return true;
+
+	/* Definitions not marked SEC_SLOPPY_PFX (e.g.,
+	 * SEC("syscall")) are exact matches in both modes.
+	 */
+	return strcmp(sec_name, sec_def->sec) == 0;
+}
 
 static const struct bpf_sec_def *find_sec_def(const char *sec_name)
 {
 	const struct bpf_sec_def *sec_def;
-	enum sec_def_flags sec_flags;
-	int i, n = ARRAY_SIZE(section_defs), len;
-	bool strict = libbpf_mode & LIBBPF_STRICT_SEC_NAME;
+	int i, n;
+	bool strict = libbpf_mode & LIBBPF_STRICT_SEC_NAME, allow_sloppy;
 
+	n = custom_sec_def_cnt;
 	for (i = 0; i < n; i++) {
-		sec_def = &section_defs[i];
-		sec_flags = sec_def->cookie;
-		len = strlen(sec_def->sec);
-
-		/* "type/" always has to have proper SEC("type/extras") form */
-		if (sec_def->sec[len - 1] == '/') {
-			if (str_has_pfx(sec_name, sec_def->sec))
-				return sec_def;
-			continue;
-		}
-
-		/* "type+" means it can be either exact SEC("type") or
-		 * well-formed SEC("type/extras") with proper '/' separator
-		 */
-		if (sec_def->sec[len - 1] == '+') {
-			len--;
-			/* not even a prefix */
-			if (strncmp(sec_name, sec_def->sec, len) != 0)
-				continue;
-			/* exact match or has '/' separator */
-			if (sec_name[len] == '\0' || sec_name[len] == '/')
-				return sec_def;
-			continue;
-		}
-
-		/* SEC_SLOPPY_PFX definitions are allowed to be just prefix
-		 * matches, unless strict section name mode
-		 * (LIBBPF_STRICT_SEC_NAME) is enabled, in which case the
-		 * match has to be exact.
-		 */
-		if ((sec_flags & SEC_SLOPPY_PFX) && !strict)  {
-			if (str_has_pfx(sec_name, sec_def->sec))
-				return sec_def;
-			continue;
-		}
-
-		/* Definitions not marked SEC_SLOPPY_PFX (e.g.,
-		 * SEC("syscall")) are exact matches in both modes.
-		 */
-		if (strcmp(sec_name, sec_def->sec) == 0)
+		sec_def = &custom_sec_defs[i];
+		if (sec_def_matches(sec_def, sec_name, false))
 			return sec_def;
 	}
+
+	n = ARRAY_SIZE(section_defs);
+	for (i = 0; i < n; i++) {
+		sec_def = &section_defs[i];
+		allow_sloppy = (sec_def->cookie & SEC_SLOPPY_PFX) && !strict;
+		if (sec_def_matches(sec_def, sec_name, allow_sloppy))
+			return sec_def;
+	}
+
+	if (has_custom_fallback_def)
+		return &custom_fallback_def;
+
 	return NULL;
 }
+
+#define MAX_TYPE_NAME_SIZE 32
 
 static char *libbpf_get_type_names(bool attach_type)
 {
@@ -8752,7 +8918,7 @@ static char *libbpf_get_type_names(bool attach_type)
 		const struct bpf_sec_def *sec_def = &section_defs[i];
 
 		if (attach_type) {
-			if (sec_def->preload_fn != libbpf_preload_prog)
+			if (sec_def->prog_prepare_load_fn != libbpf_prepare_prog_load)
 				continue;
 
 			if (!(sec_def->cookie & SEC_ATTACHABLE))
@@ -9135,7 +9301,7 @@ int libbpf_attach_type_by_name(const char *name,
 		return libbpf_err(-EINVAL);
 	}
 
-	if (sec_def->preload_fn != libbpf_preload_prog)
+	if (sec_def->prog_prepare_load_fn != libbpf_prepare_prog_load)
 		return libbpf_err(-EINVAL);
 	if (!(sec_def->cookie & SEC_ATTACHABLE))
 		return libbpf_err(-EINVAL);
@@ -9550,14 +9716,6 @@ int bpf_prog_load_deprecated(const char *file, enum bpf_prog_type type,
 
 	return bpf_prog_load_xattr2(&attr, pobj, prog_fd);
 }
-
-struct bpf_link {
-	int (*detach)(struct bpf_link *link);
-	void (*dealloc)(struct bpf_link *link);
-	char *pin_path;		/* NULL, if not pinned */
-	int fd;			/* hook FD, -1 if not applicable */
-	bool disconnected;
-};
 
 /* Replace link's underlying BPF program with the new one */
 int bpf_link__update_program(struct bpf_link *link, struct bpf_program *prog)
@@ -10109,14 +10267,146 @@ struct bpf_link *bpf_program__attach_kprobe(const struct bpf_program *prog,
 	return bpf_program__attach_kprobe_opts(prog, func_name, &opts);
 }
 
-static struct bpf_link *attach_kprobe(const struct bpf_program *prog, long cookie)
+/* Adapted from perf/util/string.c */
+static bool glob_match(const char *str, const char *pat)
+{
+	while (*str && *pat && *pat != '*') {
+		if (*pat == '?') {      /* Matches any single character */
+			str++;
+			pat++;
+			continue;
+		}
+		if (*str != *pat)
+			return false;
+		str++;
+		pat++;
+	}
+	/* Check wild card */
+	if (*pat == '*') {
+		while (*pat == '*')
+			pat++;
+		if (!*pat) /* Tail wild card matches all */
+			return true;
+		while (*str)
+			if (glob_match(str++, pat))
+				return true;
+	}
+	return !*str && !*pat;
+}
+
+struct kprobe_multi_resolve {
+	const char *pattern;
+	unsigned long *addrs;
+	size_t cap;
+	size_t cnt;
+};
+
+static int
+resolve_kprobe_multi_cb(unsigned long long sym_addr, char sym_type,
+			const char *sym_name, void *ctx)
+{
+	struct kprobe_multi_resolve *res = ctx;
+	int err;
+
+	if (!glob_match(sym_name, res->pattern))
+		return 0;
+
+	err = libbpf_ensure_mem((void **) &res->addrs, &res->cap, sizeof(unsigned long),
+				res->cnt + 1);
+	if (err)
+		return err;
+
+	res->addrs[res->cnt++] = (unsigned long) sym_addr;
+	return 0;
+}
+
+struct bpf_link *
+bpf_program__attach_kprobe_multi_opts(const struct bpf_program *prog,
+				      const char *pattern,
+				      const struct bpf_kprobe_multi_opts *opts)
+{
+	LIBBPF_OPTS(bpf_link_create_opts, lopts);
+	struct kprobe_multi_resolve res = {
+		.pattern = pattern,
+	};
+	struct bpf_link *link = NULL;
+	char errmsg[STRERR_BUFSIZE];
+	const unsigned long *addrs;
+	int err, link_fd, prog_fd;
+	const __u64 *cookies;
+	const char **syms;
+	bool retprobe;
+	size_t cnt;
+
+	if (!OPTS_VALID(opts, bpf_kprobe_multi_opts))
+		return libbpf_err_ptr(-EINVAL);
+
+	syms    = OPTS_GET(opts, syms, false);
+	addrs   = OPTS_GET(opts, addrs, false);
+	cnt     = OPTS_GET(opts, cnt, false);
+	cookies = OPTS_GET(opts, cookies, false);
+
+	if (!pattern && !addrs && !syms)
+		return libbpf_err_ptr(-EINVAL);
+	if (pattern && (addrs || syms || cookies || cnt))
+		return libbpf_err_ptr(-EINVAL);
+	if (!pattern && !cnt)
+		return libbpf_err_ptr(-EINVAL);
+	if (addrs && syms)
+		return libbpf_err_ptr(-EINVAL);
+
+	if (pattern) {
+		err = libbpf_kallsyms_parse(resolve_kprobe_multi_cb, &res);
+		if (err)
+			goto error;
+		if (!res.cnt) {
+			err = -ENOENT;
+			goto error;
+		}
+		addrs = res.addrs;
+		cnt = res.cnt;
+	}
+
+	retprobe = OPTS_GET(opts, retprobe, false);
+
+	lopts.kprobe_multi.syms = syms;
+	lopts.kprobe_multi.addrs = addrs;
+	lopts.kprobe_multi.cookies = cookies;
+	lopts.kprobe_multi.cnt = cnt;
+	lopts.kprobe_multi.flags = retprobe ? BPF_F_KPROBE_MULTI_RETURN : 0;
+
+	link = calloc(1, sizeof(*link));
+	if (!link) {
+		err = -ENOMEM;
+		goto error;
+	}
+	link->detach = &bpf_link__detach_fd;
+
+	prog_fd = bpf_program__fd(prog);
+	link_fd = bpf_link_create(prog_fd, 0, BPF_TRACE_KPROBE_MULTI, &lopts);
+	if (link_fd < 0) {
+		err = -errno;
+		pr_warn("prog '%s': failed to attach: %s\n",
+			prog->name, libbpf_strerror_r(err, errmsg, sizeof(errmsg)));
+		goto error;
+	}
+	link->fd = link_fd;
+	free(res.addrs);
+	return link;
+
+error:
+	free(link);
+	free(res.addrs);
+	return libbpf_err_ptr(err);
+}
+
+static int attach_kprobe(const struct bpf_program *prog, long cookie, struct bpf_link **link)
 {
 	DECLARE_LIBBPF_OPTS(bpf_kprobe_opts, opts);
 	unsigned long offset = 0;
-	struct bpf_link *link;
 	const char *func_name;
 	char *func;
-	int n, err;
+	int n;
 
 	opts.retprobe = str_has_pfx(prog->sec_name, "kretprobe/");
 	if (opts.retprobe)
@@ -10126,21 +10416,43 @@ static struct bpf_link *attach_kprobe(const struct bpf_program *prog, long cooki
 
 	n = sscanf(func_name, "%m[a-zA-Z0-9_.]+%li", &func, &offset);
 	if (n < 1) {
-		err = -EINVAL;
 		pr_warn("kprobe name is invalid: %s\n", func_name);
-		return libbpf_err_ptr(err);
+		return -EINVAL;
 	}
 	if (opts.retprobe && offset != 0) {
 		free(func);
-		err = -EINVAL;
 		pr_warn("kretprobes do not support offset specification\n");
-		return libbpf_err_ptr(err);
+		return -EINVAL;
 	}
 
 	opts.offset = offset;
-	link = bpf_program__attach_kprobe_opts(prog, func, &opts);
+	*link = bpf_program__attach_kprobe_opts(prog, func, &opts);
 	free(func);
-	return link;
+	return libbpf_get_error(*link);
+}
+
+static int attach_kprobe_multi(const struct bpf_program *prog, long cookie, struct bpf_link **link)
+{
+	LIBBPF_OPTS(bpf_kprobe_multi_opts, opts);
+	const char *spec;
+	char *pattern;
+	int n;
+
+	opts.retprobe = str_has_pfx(prog->sec_name, "kretprobe.multi/");
+	if (opts.retprobe)
+		spec = prog->sec_name + sizeof("kretprobe.multi/") - 1;
+	else
+		spec = prog->sec_name + sizeof("kprobe.multi/") - 1;
+
+	n = sscanf(spec, "%m[a-zA-Z0-9_.*?]", &pattern);
+	if (n < 1) {
+		pr_warn("kprobe multi pattern is invalid: %s\n", pattern);
+		return -EINVAL;
+	}
+
+	*link = bpf_program__attach_kprobe_multi_opts(prog, pattern, &opts);
+	free(pattern);
+	return libbpf_get_error(*link);
 }
 
 static void gen_uprobe_legacy_event_name(char *buf, size_t buf_sz,
@@ -10222,6 +10534,273 @@ static int perf_event_uprobe_open_legacy(const char *probe_name, bool retprobe,
 	return pfd;
 }
 
+/* uprobes deal in relative offsets; subtract the base address associated with
+ * the mapped binary.  See Documentation/trace/uprobetracer.rst for more
+ * details.
+ */
+static long elf_find_relative_offset(const char *filename, Elf *elf, long addr)
+{
+	size_t n;
+	int i;
+
+	if (elf_getphdrnum(elf, &n)) {
+		pr_warn("elf: failed to find program headers for '%s': %s\n", filename,
+			elf_errmsg(-1));
+		return -ENOENT;
+	}
+
+	for (i = 0; i < n; i++) {
+		int seg_start, seg_end, seg_offset;
+		GElf_Phdr phdr;
+
+		if (!gelf_getphdr(elf, i, &phdr)) {
+			pr_warn("elf: failed to get program header %d from '%s': %s\n", i, filename,
+				elf_errmsg(-1));
+			return -ENOENT;
+		}
+		if (phdr.p_type != PT_LOAD || !(phdr.p_flags & PF_X))
+			continue;
+
+		seg_start = phdr.p_vaddr;
+		seg_end = seg_start + phdr.p_memsz;
+		seg_offset = phdr.p_offset;
+		if (addr >= seg_start && addr < seg_end)
+			return addr - seg_start + seg_offset;
+	}
+	pr_warn("elf: failed to find prog header containing 0x%lx in '%s'\n", addr, filename);
+	return -ENOENT;
+}
+
+/* Return next ELF section of sh_type after scn, or first of that type if scn is NULL. */
+static Elf_Scn *elf_find_next_scn_by_type(Elf *elf, int sh_type, Elf_Scn *scn)
+{
+	while ((scn = elf_nextscn(elf, scn)) != NULL) {
+		GElf_Shdr sh;
+
+		if (!gelf_getshdr(scn, &sh))
+			continue;
+		if (sh.sh_type == sh_type)
+			return scn;
+	}
+	return NULL;
+}
+
+/* Find offset of function name in object specified by path.  "name" matches
+ * symbol name or name@@LIB for library functions.
+ */
+static long elf_find_func_offset(const char *binary_path, const char *name)
+{
+	int fd, i, sh_types[2] = { SHT_DYNSYM, SHT_SYMTAB };
+	bool is_shared_lib, is_name_qualified;
+	char errmsg[STRERR_BUFSIZE];
+	long ret = -ENOENT;
+	size_t name_len;
+	GElf_Ehdr ehdr;
+	Elf *elf;
+
+	fd = open(binary_path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		ret = -errno;
+		pr_warn("failed to open %s: %s\n", binary_path,
+			libbpf_strerror_r(ret, errmsg, sizeof(errmsg)));
+		return ret;
+	}
+	elf = elf_begin(fd, ELF_C_READ_MMAP, NULL);
+	if (!elf) {
+		pr_warn("elf: could not read elf from %s: %s\n", binary_path, elf_errmsg(-1));
+		close(fd);
+		return -LIBBPF_ERRNO__FORMAT;
+	}
+	if (!gelf_getehdr(elf, &ehdr)) {
+		pr_warn("elf: failed to get ehdr from %s: %s\n", binary_path, elf_errmsg(-1));
+		ret = -LIBBPF_ERRNO__FORMAT;
+		goto out;
+	}
+	/* for shared lib case, we do not need to calculate relative offset */
+	is_shared_lib = ehdr.e_type == ET_DYN;
+
+	name_len = strlen(name);
+	/* Does name specify "@@LIB"? */
+	is_name_qualified = strstr(name, "@@") != NULL;
+
+	/* Search SHT_DYNSYM, SHT_SYMTAB for symbol.  This search order is used because if
+	 * a binary is stripped, it may only have SHT_DYNSYM, and a fully-statically
+	 * linked binary may not have SHT_DYMSYM, so absence of a section should not be
+	 * reported as a warning/error.
+	 */
+	for (i = 0; i < ARRAY_SIZE(sh_types); i++) {
+		size_t nr_syms, strtabidx, idx;
+		Elf_Data *symbols = NULL;
+		Elf_Scn *scn = NULL;
+		int last_bind = -1;
+		const char *sname;
+		GElf_Shdr sh;
+
+		scn = elf_find_next_scn_by_type(elf, sh_types[i], NULL);
+		if (!scn) {
+			pr_debug("elf: failed to find symbol table ELF sections in '%s'\n",
+				 binary_path);
+			continue;
+		}
+		if (!gelf_getshdr(scn, &sh))
+			continue;
+		strtabidx = sh.sh_link;
+		symbols = elf_getdata(scn, 0);
+		if (!symbols) {
+			pr_warn("elf: failed to get symbols for symtab section in '%s': %s\n",
+				binary_path, elf_errmsg(-1));
+			ret = -LIBBPF_ERRNO__FORMAT;
+			goto out;
+		}
+		nr_syms = symbols->d_size / sh.sh_entsize;
+
+		for (idx = 0; idx < nr_syms; idx++) {
+			int curr_bind;
+			GElf_Sym sym;
+
+			if (!gelf_getsym(symbols, idx, &sym))
+				continue;
+
+			if (GELF_ST_TYPE(sym.st_info) != STT_FUNC)
+				continue;
+
+			sname = elf_strptr(elf, strtabidx, sym.st_name);
+			if (!sname)
+				continue;
+
+			curr_bind = GELF_ST_BIND(sym.st_info);
+
+			/* User can specify func, func@@LIB or func@@LIB_VERSION. */
+			if (strncmp(sname, name, name_len) != 0)
+				continue;
+			/* ...but we don't want a search for "foo" to match 'foo2" also, so any
+			 * additional characters in sname should be of the form "@@LIB".
+			 */
+			if (!is_name_qualified && sname[name_len] != '\0' && sname[name_len] != '@')
+				continue;
+
+			if (ret >= 0) {
+				/* handle multiple matches */
+				if (last_bind != STB_WEAK && curr_bind != STB_WEAK) {
+					/* Only accept one non-weak bind. */
+					pr_warn("elf: ambiguous match for '%s', '%s' in '%s'\n",
+						sname, name, binary_path);
+					ret = -LIBBPF_ERRNO__FORMAT;
+					goto out;
+				} else if (curr_bind == STB_WEAK) {
+					/* already have a non-weak bind, and
+					 * this is a weak bind, so ignore.
+					 */
+					continue;
+				}
+			}
+			ret = sym.st_value;
+			last_bind = curr_bind;
+		}
+		/* For binaries that are not shared libraries, we need relative offset */
+		if (ret > 0 && !is_shared_lib)
+			ret = elf_find_relative_offset(binary_path, elf, ret);
+		if (ret > 0)
+			break;
+	}
+
+	if (ret > 0) {
+		pr_debug("elf: symbol address match for '%s' in '%s': 0x%lx\n", name, binary_path,
+			 ret);
+	} else {
+		if (ret == 0) {
+			pr_warn("elf: '%s' is 0 in symtab for '%s': %s\n", name, binary_path,
+				is_shared_lib ? "should not be 0 in a shared library" :
+						"try using shared library path instead");
+			ret = -ENOENT;
+		} else {
+			pr_warn("elf: failed to find symbol '%s' in '%s'\n", name, binary_path);
+		}
+	}
+out:
+	elf_end(elf);
+	close(fd);
+	return ret;
+}
+
+static const char *arch_specific_lib_paths(void)
+{
+	/*
+	 * Based on https://packages.debian.org/sid/libc6.
+	 *
+	 * Assume that the traced program is built for the same architecture
+	 * as libbpf, which should cover the vast majority of cases.
+	 */
+#if defined(__x86_64__)
+	return "/lib/x86_64-linux-gnu";
+#elif defined(__i386__)
+	return "/lib/i386-linux-gnu";
+#elif defined(__s390x__)
+	return "/lib/s390x-linux-gnu";
+#elif defined(__s390__)
+	return "/lib/s390-linux-gnu";
+#elif defined(__arm__) && defined(__SOFTFP__)
+	return "/lib/arm-linux-gnueabi";
+#elif defined(__arm__) && !defined(__SOFTFP__)
+	return "/lib/arm-linux-gnueabihf";
+#elif defined(__aarch64__)
+	return "/lib/aarch64-linux-gnu";
+#elif defined(__mips__) && defined(__MIPSEL__) && _MIPS_SZLONG == 64
+	return "/lib/mips64el-linux-gnuabi64";
+#elif defined(__mips__) && defined(__MIPSEL__) && _MIPS_SZLONG == 32
+	return "/lib/mipsel-linux-gnu";
+#elif defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	return "/lib/powerpc64le-linux-gnu";
+#elif defined(__sparc__) && defined(__arch64__)
+	return "/lib/sparc64-linux-gnu";
+#elif defined(__riscv) && __riscv_xlen == 64
+	return "/lib/riscv64-linux-gnu";
+#else
+	return NULL;
+#endif
+}
+
+/* Get full path to program/shared library. */
+static int resolve_full_path(const char *file, char *result, size_t result_sz)
+{
+	const char *search_paths[3] = {};
+	int i;
+
+	if (str_has_sfx(file, ".so") || strstr(file, ".so.")) {
+		search_paths[0] = getenv("LD_LIBRARY_PATH");
+		search_paths[1] = "/usr/lib64:/usr/lib";
+		search_paths[2] = arch_specific_lib_paths();
+	} else {
+		search_paths[0] = getenv("PATH");
+		search_paths[1] = "/usr/bin:/usr/sbin";
+	}
+
+	for (i = 0; i < ARRAY_SIZE(search_paths); i++) {
+		const char *s;
+
+		if (!search_paths[i])
+			continue;
+		for (s = search_paths[i]; s != NULL; s = strchr(s, ':')) {
+			char *next_path;
+			int seg_len;
+
+			if (s[0] == ':')
+				s++;
+			next_path = strchr(s, ':');
+			seg_len = next_path ? next_path - s : strlen(s);
+			if (!seg_len)
+				continue;
+			snprintf(result, result_sz, "%.*s/%s", seg_len, s, file);
+			/* ensure it is an executable file/link */
+			if (access(result, R_OK | X_OK) < 0)
+				continue;
+			pr_debug("resolved '%s' to '%s'\n", file, result);
+			return 0;
+		}
+	}
+	return -ENOENT;
+}
+
 LIBBPF_API struct bpf_link *
 bpf_program__attach_uprobe_opts(const struct bpf_program *prog, pid_t pid,
 				const char *binary_path, size_t func_offset,
@@ -10229,10 +10808,12 @@ bpf_program__attach_uprobe_opts(const struct bpf_program *prog, pid_t pid,
 {
 	DECLARE_LIBBPF_OPTS(bpf_perf_event_opts, pe_opts);
 	char errmsg[STRERR_BUFSIZE], *legacy_probe = NULL;
+	char full_binary_path[PATH_MAX];
 	struct bpf_link *link;
 	size_t ref_ctr_off;
 	int pfd, err;
 	bool retprobe, legacy;
+	const char *func_name;
 
 	if (!OPTS_VALID(opts, bpf_uprobe_opts))
 		return libbpf_err_ptr(-EINVAL);
@@ -10241,12 +10822,37 @@ bpf_program__attach_uprobe_opts(const struct bpf_program *prog, pid_t pid,
 	ref_ctr_off = OPTS_GET(opts, ref_ctr_offset, 0);
 	pe_opts.bpf_cookie = OPTS_GET(opts, bpf_cookie, 0);
 
+	if (binary_path && !strchr(binary_path, '/')) {
+		err = resolve_full_path(binary_path, full_binary_path,
+					sizeof(full_binary_path));
+		if (err) {
+			pr_warn("prog '%s': failed to resolve full path for '%s': %d\n",
+				prog->name, binary_path, err);
+			return libbpf_err_ptr(err);
+		}
+		binary_path = full_binary_path;
+	}
+	func_name = OPTS_GET(opts, func_name, NULL);
+	if (func_name) {
+		long sym_off;
+
+		if (!binary_path) {
+			pr_warn("prog '%s': name-based attach requires binary_path\n",
+				prog->name);
+			return libbpf_err_ptr(-EINVAL);
+		}
+		sym_off = elf_find_func_offset(binary_path, func_name);
+		if (sym_off < 0)
+			return libbpf_err_ptr(sym_off);
+		func_offset += sym_off;
+	}
+
 	legacy = determine_uprobe_perf_type() < 0;
 	if (!legacy) {
 		pfd = perf_event_open_probe(true /* uprobe */, retprobe, binary_path,
 					    func_offset, pid, ref_ctr_off);
 	} else {
-		char probe_name[512];
+		char probe_name[PATH_MAX + 64];
 
 		if (ref_ctr_off)
 			return libbpf_err_ptr(-EINVAL);
@@ -10294,6 +10900,60 @@ err_out:
 
 }
 
+/* Format of u[ret]probe section definition supporting auto-attach:
+ * u[ret]probe/binary:function[+offset]
+ *
+ * binary can be an absolute/relative path or a filename; the latter is resolved to a
+ * full binary path via bpf_program__attach_uprobe_opts.
+ *
+ * Specifying uprobe+ ensures we carry out strict matching; either "uprobe" must be
+ * specified (and auto-attach is not possible) or the above format is specified for
+ * auto-attach.
+ */
+static int attach_uprobe(const struct bpf_program *prog, long cookie, struct bpf_link **link)
+{
+	DECLARE_LIBBPF_OPTS(bpf_uprobe_opts, opts);
+	char *probe_type = NULL, *binary_path = NULL, *func_name = NULL;
+	int n, ret = -EINVAL;
+	long offset = 0;
+
+	*link = NULL;
+
+	n = sscanf(prog->sec_name, "%m[^/]/%m[^:]:%m[a-zA-Z0-9_.]+%li",
+		   &probe_type, &binary_path, &func_name, &offset);
+	switch (n) {
+	case 1:
+		/* handle SEC("u[ret]probe") - format is valid, but auto-attach is impossible. */
+		ret = 0;
+		break;
+	case 2:
+		pr_warn("prog '%s': section '%s' missing ':function[+offset]' specification\n",
+			prog->name, prog->sec_name);
+		break;
+	case 3:
+	case 4:
+		opts.retprobe = strcmp(probe_type, "uretprobe") == 0;
+		if (opts.retprobe && offset != 0) {
+			pr_warn("prog '%s': uretprobes do not support offset specification\n",
+				prog->name);
+			break;
+		}
+		opts.func_name = func_name;
+		*link = bpf_program__attach_uprobe_opts(prog, -1, binary_path, offset, &opts);
+		ret = libbpf_get_error(*link);
+		break;
+	default:
+		pr_warn("prog '%s': invalid format of section definition '%s'\n", prog->name,
+			prog->sec_name);
+		break;
+	}
+	free(probe_type);
+	free(binary_path);
+	free(func_name);
+
+	return ret;
+}
+
 struct bpf_link *bpf_program__attach_uprobe(const struct bpf_program *prog,
 					    bool retprobe, pid_t pid,
 					    const char *binary_path,
@@ -10302,6 +10962,85 @@ struct bpf_link *bpf_program__attach_uprobe(const struct bpf_program *prog,
 	DECLARE_LIBBPF_OPTS(bpf_uprobe_opts, opts, .retprobe = retprobe);
 
 	return bpf_program__attach_uprobe_opts(prog, pid, binary_path, func_offset, &opts);
+}
+
+struct bpf_link *bpf_program__attach_usdt(const struct bpf_program *prog,
+					  pid_t pid, const char *binary_path,
+					  const char *usdt_provider, const char *usdt_name,
+					  const struct bpf_usdt_opts *opts)
+{
+	char resolved_path[512];
+	struct bpf_object *obj = prog->obj;
+	struct bpf_link *link;
+	long usdt_cookie;
+	int err;
+
+	if (!OPTS_VALID(opts, bpf_uprobe_opts))
+		return libbpf_err_ptr(-EINVAL);
+
+	if (bpf_program__fd(prog) < 0) {
+		pr_warn("prog '%s': can't attach BPF program w/o FD (did you load it?)\n",
+			prog->name);
+		return libbpf_err_ptr(-EINVAL);
+	}
+
+	if (!strchr(binary_path, '/')) {
+		err = resolve_full_path(binary_path, resolved_path, sizeof(resolved_path));
+		if (err) {
+			pr_warn("prog '%s': failed to resolve full path for '%s': %d\n",
+				prog->name, binary_path, err);
+			return libbpf_err_ptr(err);
+		}
+		binary_path = resolved_path;
+	}
+
+	/* USDT manager is instantiated lazily on first USDT attach. It will
+	 * be destroyed together with BPF object in bpf_object__close().
+	 */
+	if (IS_ERR(obj->usdt_man))
+		return libbpf_ptr(obj->usdt_man);
+	if (!obj->usdt_man) {
+		obj->usdt_man = usdt_manager_new(obj);
+		if (IS_ERR(obj->usdt_man))
+			return libbpf_ptr(obj->usdt_man);
+	}
+
+	usdt_cookie = OPTS_GET(opts, usdt_cookie, 0);
+	link = usdt_manager_attach_usdt(obj->usdt_man, prog, pid, binary_path,
+				        usdt_provider, usdt_name, usdt_cookie);
+	err = libbpf_get_error(link);
+	if (err)
+		return libbpf_err_ptr(err);
+	return link;
+}
+
+static int attach_usdt(const struct bpf_program *prog, long cookie, struct bpf_link **link)
+{
+	char *path = NULL, *provider = NULL, *name = NULL;
+	const char *sec_name;
+	int n, err;
+
+	sec_name = bpf_program__section_name(prog);
+	if (strcmp(sec_name, "usdt") == 0) {
+		/* no auto-attach for just SEC("usdt") */
+		*link = NULL;
+		return 0;
+	}
+
+	n = sscanf(sec_name, "usdt/%m[^:]:%m[^:]:%m[^:]", &path, &provider, &name);
+	if (n != 3) {
+		pr_warn("invalid section '%s', expected SEC(\"usdt/<path>:<provider>:<name>\")\n",
+			sec_name);
+		err = -EINVAL;
+	} else {
+		*link = bpf_program__attach_usdt(prog, -1 /* any process */, path,
+						 provider, name, NULL);
+		err = libbpf_get_error(*link);
+	}
+	free(path);
+	free(provider);
+	free(name);
+	return err;
 }
 
 static int determine_tracepoint_id(const char *tp_category,
@@ -10395,14 +11134,13 @@ struct bpf_link *bpf_program__attach_tracepoint(const struct bpf_program *prog,
 	return bpf_program__attach_tracepoint_opts(prog, tp_category, tp_name, NULL);
 }
 
-static struct bpf_link *attach_tp(const struct bpf_program *prog, long cookie)
+static int attach_tp(const struct bpf_program *prog, long cookie, struct bpf_link **link)
 {
 	char *sec_name, *tp_cat, *tp_name;
-	struct bpf_link *link;
 
 	sec_name = strdup(prog->sec_name);
 	if (!sec_name)
-		return libbpf_err_ptr(-ENOMEM);
+		return -ENOMEM;
 
 	/* extract "tp/<category>/<name>" or "tracepoint/<category>/<name>" */
 	if (str_has_pfx(prog->sec_name, "tp/"))
@@ -10412,14 +11150,14 @@ static struct bpf_link *attach_tp(const struct bpf_program *prog, long cookie)
 	tp_name = strchr(tp_cat, '/');
 	if (!tp_name) {
 		free(sec_name);
-		return libbpf_err_ptr(-EINVAL);
+		return -EINVAL;
 	}
 	*tp_name = '\0';
 	tp_name++;
 
-	link = bpf_program__attach_tracepoint(prog, tp_cat, tp_name);
+	*link = bpf_program__attach_tracepoint(prog, tp_cat, tp_name);
 	free(sec_name);
-	return link;
+	return libbpf_get_error(*link);
 }
 
 struct bpf_link *bpf_program__attach_raw_tracepoint(const struct bpf_program *prog,
@@ -10452,7 +11190,7 @@ struct bpf_link *bpf_program__attach_raw_tracepoint(const struct bpf_program *pr
 	return link;
 }
 
-static struct bpf_link *attach_raw_tp(const struct bpf_program *prog, long cookie)
+static int attach_raw_tp(const struct bpf_program *prog, long cookie, struct bpf_link **link)
 {
 	static const char *const prefixes[] = {
 		"raw_tp/",
@@ -10472,10 +11210,11 @@ static struct bpf_link *attach_raw_tp(const struct bpf_program *prog, long cooki
 	if (!tp_name) {
 		pr_warn("prog '%s': invalid section name '%s'\n",
 			prog->name, prog->sec_name);
-		return libbpf_err_ptr(-EINVAL);
+		return -EINVAL;
 	}
 
-	return bpf_program__attach_raw_tracepoint(prog, tp_name);
+	*link = bpf_program__attach_raw_tracepoint(prog, tp_name);
+	return libbpf_get_error(link);
 }
 
 /* Common logic for all BPF program types that attach to a btf_id */
@@ -10518,14 +11257,16 @@ struct bpf_link *bpf_program__attach_lsm(const struct bpf_program *prog)
 	return bpf_program__attach_btf_id(prog);
 }
 
-static struct bpf_link *attach_trace(const struct bpf_program *prog, long cookie)
+static int attach_trace(const struct bpf_program *prog, long cookie, struct bpf_link **link)
 {
-	return bpf_program__attach_trace(prog);
+	*link = bpf_program__attach_trace(prog);
+	return libbpf_get_error(*link);
 }
 
-static struct bpf_link *attach_lsm(const struct bpf_program *prog, long cookie)
+static int attach_lsm(const struct bpf_program *prog, long cookie, struct bpf_link **link)
 {
-	return bpf_program__attach_lsm(prog);
+	*link = bpf_program__attach_lsm(prog);
+	return libbpf_get_error(*link);
 }
 
 static struct bpf_link *
@@ -10654,17 +11395,33 @@ bpf_program__attach_iter(const struct bpf_program *prog,
 	return link;
 }
 
-static struct bpf_link *attach_iter(const struct bpf_program *prog, long cookie)
+static int attach_iter(const struct bpf_program *prog, long cookie, struct bpf_link **link)
 {
-	return bpf_program__attach_iter(prog, NULL);
+	*link = bpf_program__attach_iter(prog, NULL);
+	return libbpf_get_error(*link);
 }
 
 struct bpf_link *bpf_program__attach(const struct bpf_program *prog)
 {
-	if (!prog->sec_def || !prog->sec_def->attach_fn)
-		return libbpf_err_ptr(-ESRCH);
+	struct bpf_link *link = NULL;
+	int err;
 
-	return prog->sec_def->attach_fn(prog, prog->sec_def->cookie);
+	if (!prog->sec_def || !prog->sec_def->prog_attach_fn)
+		return libbpf_err_ptr(-EOPNOTSUPP);
+
+	err = prog->sec_def->prog_attach_fn(prog, prog->sec_def->cookie, &link);
+	if (err)
+		return libbpf_err_ptr(err);
+
+	/* When calling bpf_program__attach() explicitly, auto-attach support
+	 * is expected to work, so NULL returned link is considered an error.
+	 * This is different for skeleton's attach, see comment in
+	 * bpf_object__attach_skeleton().
+	 */
+	if (!link)
+		return libbpf_err_ptr(-EOPNOTSUPP);
+
+	return link;
 }
 
 static int bpf_link__detach_struct_ops(struct bpf_link *link)
@@ -10951,7 +11708,7 @@ struct perf_buffer *perf_buffer__new_raw_v0_6_0(int map_fd, size_t page_cnt,
 {
 	struct perf_buffer_params p = {};
 
-	if (page_cnt == 0 || !attr)
+	if (!attr)
 		return libbpf_err_ptr(-EINVAL);
 
 	if (!OPTS_VALID(opts, perf_buffer_raw_opts))
@@ -10992,7 +11749,7 @@ static struct perf_buffer *__perf_buffer__new(int map_fd, size_t page_cnt,
 	__u32 map_info_len;
 	int err, i, j, n;
 
-	if (page_cnt & (page_cnt - 1)) {
+	if (page_cnt == 0 || (page_cnt & (page_cnt - 1))) {
 		pr_warn("page count should be power of two, but is %zu\n",
 			page_cnt);
 		return ERR_PTR(-EINVAL);
@@ -11679,6 +12436,49 @@ int libbpf_num_possible_cpus(void)
 	return tmp_cpus;
 }
 
+static int populate_skeleton_maps(const struct bpf_object *obj,
+				  struct bpf_map_skeleton *maps,
+				  size_t map_cnt)
+{
+	int i;
+
+	for (i = 0; i < map_cnt; i++) {
+		struct bpf_map **map = maps[i].map;
+		const char *name = maps[i].name;
+		void **mmaped = maps[i].mmaped;
+
+		*map = bpf_object__find_map_by_name(obj, name);
+		if (!*map) {
+			pr_warn("failed to find skeleton map '%s'\n", name);
+			return -ESRCH;
+		}
+
+		/* externs shouldn't be pre-setup from user code */
+		if (mmaped && (*map)->libbpf_type != LIBBPF_MAP_KCONFIG)
+			*mmaped = (*map)->mmaped;
+	}
+	return 0;
+}
+
+static int populate_skeleton_progs(const struct bpf_object *obj,
+				   struct bpf_prog_skeleton *progs,
+				   size_t prog_cnt)
+{
+	int i;
+
+	for (i = 0; i < prog_cnt; i++) {
+		struct bpf_program **prog = progs[i].prog;
+		const char *name = progs[i].name;
+
+		*prog = bpf_object__find_program_by_name(obj, name);
+		if (!*prog) {
+			pr_warn("failed to find skeleton program '%s'\n", name);
+			return -ESRCH;
+		}
+	}
+	return 0;
+}
+
 int bpf_object__open_skeleton(struct bpf_object_skeleton *s,
 			      const struct bpf_object_open_opts *opts)
 {
@@ -11686,7 +12486,7 @@ int bpf_object__open_skeleton(struct bpf_object_skeleton *s,
 		.object_name = s->name,
 	);
 	struct bpf_object *obj;
-	int i, err;
+	int err;
 
 	/* Attempt to preserve opts->object_name, unless overriden by user
 	 * explicitly. Overwriting object name for skeletons is discouraged,
@@ -11709,35 +12509,89 @@ int bpf_object__open_skeleton(struct bpf_object_skeleton *s,
 	}
 
 	*s->obj = obj;
-
-	for (i = 0; i < s->map_cnt; i++) {
-		struct bpf_map **map = s->maps[i].map;
-		const char *name = s->maps[i].name;
-		void **mmaped = s->maps[i].mmaped;
-
-		*map = bpf_object__find_map_by_name(obj, name);
-		if (!*map) {
-			pr_warn("failed to find skeleton map '%s'\n", name);
-			return libbpf_err(-ESRCH);
-		}
-
-		/* externs shouldn't be pre-setup from user code */
-		if (mmaped && (*map)->libbpf_type != LIBBPF_MAP_KCONFIG)
-			*mmaped = (*map)->mmaped;
+	err = populate_skeleton_maps(obj, s->maps, s->map_cnt);
+	if (err) {
+		pr_warn("failed to populate skeleton maps for '%s': %d\n", s->name, err);
+		return libbpf_err(err);
 	}
 
-	for (i = 0; i < s->prog_cnt; i++) {
-		struct bpf_program **prog = s->progs[i].prog;
-		const char *name = s->progs[i].name;
-
-		*prog = bpf_object__find_program_by_name(obj, name);
-		if (!*prog) {
-			pr_warn("failed to find skeleton program '%s'\n", name);
-			return libbpf_err(-ESRCH);
-		}
+	err = populate_skeleton_progs(obj, s->progs, s->prog_cnt);
+	if (err) {
+		pr_warn("failed to populate skeleton progs for '%s': %d\n", s->name, err);
+		return libbpf_err(err);
 	}
 
 	return 0;
+}
+
+int bpf_object__open_subskeleton(struct bpf_object_subskeleton *s)
+{
+	int err, len, var_idx, i;
+	const char *var_name;
+	const struct bpf_map *map;
+	struct btf *btf;
+	__u32 map_type_id;
+	const struct btf_type *map_type, *var_type;
+	const struct bpf_var_skeleton *var_skel;
+	struct btf_var_secinfo *var;
+
+	if (!s->obj)
+		return libbpf_err(-EINVAL);
+
+	btf = bpf_object__btf(s->obj);
+	if (!btf) {
+		pr_warn("subskeletons require BTF at runtime (object %s)\n",
+		        bpf_object__name(s->obj));
+		return libbpf_err(-errno);
+	}
+
+	err = populate_skeleton_maps(s->obj, s->maps, s->map_cnt);
+	if (err) {
+		pr_warn("failed to populate subskeleton maps: %d\n", err);
+		return libbpf_err(err);
+	}
+
+	err = populate_skeleton_progs(s->obj, s->progs, s->prog_cnt);
+	if (err) {
+		pr_warn("failed to populate subskeleton maps: %d\n", err);
+		return libbpf_err(err);
+	}
+
+	for (var_idx = 0; var_idx < s->var_cnt; var_idx++) {
+		var_skel = &s->vars[var_idx];
+		map = *var_skel->map;
+		map_type_id = bpf_map__btf_value_type_id(map);
+		map_type = btf__type_by_id(btf, map_type_id);
+
+		if (!btf_is_datasec(map_type)) {
+			pr_warn("type for map '%1$s' is not a datasec: %2$s",
+				bpf_map__name(map),
+				__btf_kind_str(btf_kind(map_type)));
+			return libbpf_err(-EINVAL);
+		}
+
+		len = btf_vlen(map_type);
+		var = btf_var_secinfos(map_type);
+		for (i = 0; i < len; i++, var++) {
+			var_type = btf__type_by_id(btf, var->type);
+			var_name = btf__name_by_offset(btf, var_type->name_off);
+			if (strcmp(var_name, var_skel->name) == 0) {
+				*var_skel->addr = map->mmaped + var->offset;
+				break;
+			}
+		}
+	}
+	return 0;
+}
+
+void bpf_object__destroy_subskeleton(struct bpf_object_subskeleton *s)
+{
+	if (!s)
+		return;
+	free(s->maps);
+	free(s->progs);
+	free(s->vars);
+	free(s);
 }
 
 int bpf_object__load_skeleton(struct bpf_object_skeleton *s)
@@ -11805,16 +12659,30 @@ int bpf_object__attach_skeleton(struct bpf_object_skeleton *s)
 			continue;
 
 		/* auto-attaching not supported for this program */
-		if (!prog->sec_def || !prog->sec_def->attach_fn)
+		if (!prog->sec_def || !prog->sec_def->prog_attach_fn)
 			continue;
 
-		*link = bpf_program__attach(prog);
-		err = libbpf_get_error(*link);
+		/* if user already set the link manually, don't attempt auto-attach */
+		if (*link)
+			continue;
+
+		err = prog->sec_def->prog_attach_fn(prog, prog->sec_def->cookie, link);
 		if (err) {
-			pr_warn("failed to auto-attach program '%s': %d\n",
+			pr_warn("prog '%s': failed to auto-attach: %d\n",
 				bpf_program__name(prog), err);
 			return libbpf_err(err);
 		}
+
+		/* It's possible that for some SEC() definitions auto-attach
+		 * is supported in some cases (e.g., if definition completely
+		 * specifies target information), but is not in other cases.
+		 * SEC("uprobe") is one such case. If user specified target
+		 * binary and function name, such BPF program can be
+		 * auto-attached. But if not, it shouldn't trigger skeleton's
+		 * attach to fail. It should just be skipped.
+		 * attach_fn signals such case with returning 0 (no error) and
+		 * setting link to NULL.
+		 */
 	}
 
 	return 0;
