@@ -1784,6 +1784,10 @@ static inline struct io_uring_cqe *io_get_cqe(struct io_ring_ctx *ctx)
 {
 	struct io_rings *rings = ctx->rings;
 	unsigned tail, mask = ctx->cq_entries - 1;
+	unsigned int shift = 0;
+
+	if (ctx->flags & IORING_SETUP_CQE32)
+		shift = 1;
 
 	/*
 	 * writes to the cq entry need to come after reading head; the
@@ -1794,7 +1798,7 @@ static inline struct io_uring_cqe *io_get_cqe(struct io_ring_ctx *ctx)
 		return NULL;
 
 	tail = ctx->cached_cq_tail++;
-	return &rings->cqes[tail & mask];
+	return &rings->cqes[(tail & mask) << shift];
 }
 
 static void io_eventfd_signal(struct io_ring_ctx *ctx)
