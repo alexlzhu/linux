@@ -938,12 +938,9 @@ void __kfree_skb_defer(struct sk_buff *skb)
 
 void napi_skb_free_stolen_head(struct sk_buff *skb)
 {
-	if (unlikely(skb->slow_gro)) {
-		nf_reset_ct(skb);
-		skb_dst_drop(skb);
-		skb_ext_put(skb);
-		skb->slow_gro = 0;
-	}
+	nf_reset_ct(skb);
+	skb_dst_drop(skb);
+	skb_ext_put(skb);
 	napi_skb_cache_put(skb);
 }
 
