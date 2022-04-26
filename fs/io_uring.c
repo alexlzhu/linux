@@ -2012,6 +2012,35 @@ static inline bool __io_fill_cqe(struct io_ring_ctx *ctx, u64 user_data,
 	return io_cqring_event_overflow(ctx, user_data, res, cflags);
 }
 
+static inline bool __io_fill_cqe32_req_filled(struct io_ring_ctx *ctx,
+					      struct io_kiocb *req)
+{
+	struct io_uring_cqe *cqe;
+	u64 extra1 = req->extra1;
+	u64 extra2 = req->extra2;
+
+	trace_io_uring_complete(req->ctx, req, req->user_data,
+				req->result, req->flags);
+
+	/*
+	 * If we can't get a cq entry, userspace overflowed the
+	 * submission (by quite a lot). Increment the overflow count in
+	 * the ring.
+	 */
+	cqe = io_get_cqe(ctx);
+	if (likely(cqe)) {
+		WRITE_ONCE(cqe->user_data, req->user_data);
+		WRITE_ONCE(cqe->res, req->result);
+		WRITE_ONCE(cqe->flags, req->cflags);
+		cqe->big_cqe[0] = extra1;
+		cqe->big_cqe[1] = extra2;
+		return true;
+	}
+
+	return io_cqring_event_overflow(ctx, req->user_data, req->result,
+					req->flags);
+}
+
 static inline bool __io_fill_cqe_req(struct io_kiocb *req, s32 res, u32 cflags)
 {
 	trace_io_uring_complete(req->ctx, req, req->user_data, res, cflags);
@@ -2022,6 +2051,37 @@ static noinline void io_fill_cqe_req(struct io_kiocb *req, s32 res, u32 cflags)
 {
 	if (!(req->flags & REQ_F_CQE_SKIP))
 		__io_fill_cqe_req(req, res, cflags);
+}
+
+static inline void __io_fill_cqe32_req(struct io_kiocb *req, s32 res, u32 cflags,
+				u64 extra1, u64 extra2)
+{
+	struct io_ring_ctx *ctx = req->ctx;
+	struct io_uring_cqe *cqe;
+
+	if (WARN_ON_ONCE(!(ctx->flags & IORING_SETUP_CQE32)))
+		return;
+	if (req->flags & REQ_F_CQE_SKIP)
+		return;
+
+	trace_io_uring_complete(ctx, req, req->user_data, res, cflags);
+
+	/*
+	 * If we can't get a cq entry, userspace overflowed the
+	 * submission (by quite a lot). Increment the overflow count in
+	 * the ring.
+	 */
+	cqe = io_get_cqe(ctx);
+	if (likely(cqe)) {
+		WRITE_ONCE(cqe->user_data, req->user_data);
+		WRITE_ONCE(cqe->res, res);
+		WRITE_ONCE(cqe->flags, cflags);
+		WRITE_ONCE(cqe->big_cqe[0], extra1);
+		WRITE_ONCE(cqe->big_cqe[1], extra2);
+		return;
+	}
+
+	io_cqring_event_overflow(ctx, req->user_data, res, cflags);
 }
 
 static noinline bool io_fill_cqe_aux(struct io_ring_ctx *ctx, u64 user_data,
