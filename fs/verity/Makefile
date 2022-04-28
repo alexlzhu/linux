@@ -9,3 +9,5 @@ obj-$(CONFIG_FS_VERITY) += enable.o \
 			   verify.o
 
 obj-$(CONFIG_FS_VERITY_BUILTIN_SIGNATURES) += signature.o
+
+obj-$(CONFIG_SYSCTL) += sysctl.o

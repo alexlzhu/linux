@@ -12,11 +12,7 @@
 #include <linux/slab.h>
 #include <linux/verification.h>
 
-/*
- * /proc/sys/fs/verity/require_signatures
- * If 1, all verity files must have a valid builtin signature.
- */
-static int fsverity_require_signatures;
+extern int fsverity_require_signatures;
 
 /*
  * Keyring that contains the trusted X.509 certificates.
@@ -87,49 +83,9 @@ int fsverity_verify_signature(const struct fsverity_info *vi,
 	return 0;
 }
 
-#ifdef CONFIG_SYSCTL
-static struct ctl_table_header *fsverity_sysctl_header;
-
-static const struct ctl_path fsverity_sysctl_path[] = {
-	{ .procname = "fs", },
-	{ .procname = "verity", },
-	{ }
-};
-
-static struct ctl_table fsverity_sysctl_table[] = {
-	{
-		.procname       = "require_signatures",
-		.data           = &fsverity_require_signatures,
-		.maxlen         = sizeof(int),
-		.mode           = 0644,
-		.proc_handler   = proc_dointvec_minmax,
-		.extra1         = SYSCTL_ZERO,
-		.extra2         = SYSCTL_ONE,
-	},
-	{ }
-};
-
-static int __init fsverity_sysctl_init(void)
-{
-	fsverity_sysctl_header = register_sysctl_paths(fsverity_sysctl_path,
-						       fsverity_sysctl_table);
-	if (!fsverity_sysctl_header) {
-		pr_err("sysctl registration failed!\n");
-		return -ENOMEM;
-	}
-	return 0;
-}
-#else /* !CONFIG_SYSCTL */
-static inline int __init fsverity_sysctl_init(void)
-{
-	return 0;
-}
-#endif /* !CONFIG_SYSCTL */
-
 int __init fsverity_init_signature(void)
 {
 	struct key *ring;
-	int err;
 
 	ring = keyring_alloc(".fs-verity", KUIDT_INIT(0), KGIDT_INIT(0),
 			     current_cred(), KEY_POS_SEARCH |
@@ -139,14 +95,6 @@ int __init fsverity_init_signature(void)
 	if (IS_ERR(ring))
 		return PTR_ERR(ring);
 
-	err = fsverity_sysctl_init();
-	if (err)
-		goto err_put_ring;
-
 	fsverity_keyring = ring;
 	return 0;
-
-err_put_ring:
-	key_put(ring);
-	return err;
 }
