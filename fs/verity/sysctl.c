@@ -23,7 +23,7 @@ static const char * const fsverity_modes[] = {
 	"enforce",
 	NULL
 };
-static char fsverity_mode[FSVERITY_MODE_LEN] = "enforce";
+static char fsverity_mode[FSVERITY_MODE_LEN] = "audit";
 
 #ifdef CONFIG_SYSCTL
 static struct ctl_table_header *fsverity_sysctl_header;
