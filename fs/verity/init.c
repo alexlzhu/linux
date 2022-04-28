@@ -45,13 +45,18 @@ static int __init fsverity_init(void)
 	if (err)
 		goto err_exit_info_cache;
 
-	err = fsverity_init_signature();
+	err = fsverity_sysctl_init();
 	if (err)
 		goto err_exit_workqueue;
+	err = fsverity_init_signature();
+	if (err)
+		goto err_exit_sysctl;
 
 	pr_debug("Initialized fs-verity\n");
 	return 0;
 
+err_exit_sysctl:
+	fsverity_exit_sysctl();
 err_exit_workqueue:
 	fsverity_exit_workqueue();
 err_exit_info_cache:

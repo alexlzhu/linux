@@ -177,7 +177,7 @@ struct fsverity_info *fsverity_create_info(const struct inode *inode,
 		fsverity_err(inode, "Error %d computing file digest", err);
 		goto out;
 	}
-	pr_debug("Computed file digest: %s:%*phN\n",
+	pr_info("Computed file digest: %s:%*phN\n",
 		 vi->tree_params.hash_alg->name,
 		 vi->tree_params.digest_size, vi->file_digest);
 
@@ -344,6 +344,11 @@ out_free_desc:
  */
 int fsverity_file_open(struct inode *inode, struct file *filp)
 {
+	int ret;
+
+	if (fsverity_disabled())
+		return 0;
+
 	if (!IS_VERITY(inode))
 		return 0;
 
@@ -353,7 +358,12 @@ int fsverity_file_open(struct inode *inode, struct file *filp)
 		return -EPERM;
 	}
 
-	return ensure_verity_info(inode);
+	ret = ensure_verity_info(inode);
+	if (!fsverity_enforced()) {
+		fsverity_warn(inode, "AUDIT ONLY: ignore missing verity info");
+		return 0;
+	}
+	return ret;
 }
 EXPORT_SYMBOL_GPL(fsverity_file_open);
 

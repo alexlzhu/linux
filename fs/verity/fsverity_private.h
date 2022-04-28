@@ -136,6 +136,30 @@ int fsverity_get_descriptor(struct inode *inode,
 int __init fsverity_init_info_cache(void);
 void __init fsverity_exit_info_cache(void);
 
+/* sysctl.c */
+#ifdef CONFIG_SYSCTL
+int __init fsverity_sysctl_init(void);
+void __init fsverity_exit_sysctl(void);
+bool fsverity_disabled(void);
+bool fsverity_enforced(void);
+#else /* !CONFIG_SYSCTL */
+static inline int __init fsverity_sysctl_init(void)
+{
+	return 0;
+}
+static inline void __init fsverity_exit_sysctl(void)
+{
+}
+static inline bool fsverity_disabled(void)
+{
+	return true;
+}
+static inline bool fsverity_enforced(void)
+{
+	return false;
+}
+#endif /* !CONFIG_SYSCTL */
+
 /* signature.c */
 
 #ifdef CONFIG_FS_VERITY_BUILTIN_SIGNATURES
