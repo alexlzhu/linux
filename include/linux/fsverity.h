@@ -147,6 +147,7 @@ int fsverity_ioctl_read_metadata(struct file *filp, const void __user *uarg);
 bool fsverity_verify_page(struct page *page);
 void fsverity_verify_bio(struct bio *bio);
 void fsverity_enqueue_verify_work(struct work_struct *work);
+bool fsverity_active(const struct inode *inode);
 
 #else /* !CONFIG_FS_VERITY */
 
@@ -213,8 +214,6 @@ static inline void fsverity_enqueue_verify_work(struct work_struct *work)
 	WARN_ON(1);
 }
 
-#endif	/* !CONFIG_FS_VERITY */
-
 /**
  * fsverity_active() - do reads from the inode need to go through fs-verity?
  * @inode: inode to check
@@ -232,5 +231,6 @@ static inline bool fsverity_active(const struct inode *inode)
 {
 	return fsverity_get_info(inode) != NULL;
 }
+#endif	/* !CONFIG_FS_VERITY */
 
 #endif	/* _LINUX_FSVERITY_H */

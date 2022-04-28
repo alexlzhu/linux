@@ -42,12 +42,18 @@ int fsverity_verify_signature(const struct fsverity_info *vi,
 	int err;
 
 	if (sig_size == 0) {
+		err = 0;
 		if (fsverity_require_signatures) {
 			fsverity_err(inode,
 				     "require_signatures=1, rejecting unsigned file!");
-			return -EPERM;
+			if (fsverity_enforced()) {
+				err = -EPERM;
+			} else {
+				fsverity_warn(vi->inode, "AUDIT ONLY. ignore unsigned");
+				err = 0;
+			}
 		}
-		return 0;
+		return err;
 	}
 
 	d = kzalloc(sizeof(*d) + hash_alg->digest_size, GFP_KERNEL);
@@ -75,6 +81,10 @@ int fsverity_verify_signature(const struct fsverity_info *vi,
 		else
 			fsverity_err(inode, "Error %d verifying file signature",
 				     err);
+		if (!fsverity_enforced()) {
+			fsverity_warn(vi->inode, "AUDIT ONLY. ignore signature error");
+			err = 0;
+		}
 		return err;
 	}
 
