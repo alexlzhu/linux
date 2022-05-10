@@ -26,6 +26,9 @@
 #include <linux/ftrace.h>
 #include <linux/kprobes.h>
 #include <linux/compiler.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/bsearch.h>
 
 /*
  * These will be re-linked against their real values
