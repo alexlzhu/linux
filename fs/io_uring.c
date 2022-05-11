@@ -200,13 +200,6 @@ struct io_rings {
 	struct io_uring_cqe	cqes[] ____cacheline_aligned_in_smp;
 };
 
-enum io_uring_cmd_flags {
-	IO_URING_F_COMPLETE_DEFER	= 1,
-	IO_URING_F_UNLOCKED		= 2,
-	/* int's last bit, sign checks are usually faster than a bit test */
-	IO_URING_F_NONBLOCK		= INT_MIN,
-};
-
 struct io_mapped_ubuf {
 	u64		ubuf;
 	u64		ubuf_end;
@@ -906,6 +899,7 @@ struct io_kiocb {
 		struct io_hardlink	hardlink;
 		struct io_msg		msg;
 		struct io_nop		nop;
+		struct io_uring_cmd	uring_cmd;
 	};
 
 	u8				opcode;
@@ -970,6 +964,14 @@ struct io_defer_entry {
 	struct io_kiocb		*req;
 	u32			seq;
 };
+
+/*
+ * The URING_CMD payload starts at 'cmd' in the first sqe, and continues into
+ * the following sqe if SQE128 is used.
+ */
+#define uring_cmd_pdu_size(is_sqe128)				\
+	((1 + !!(is_sqe128)) * sizeof(struct io_uring_sqe) -	\
+		offsetof(struct io_uring_sqe, cmd))
 
 struct io_op_def {
 	/* needs req->file assigned */
@@ -1143,6 +1145,12 @@ static const struct io_op_def io_op_defs[] = {
 	[IORING_OP_LINKAT] = {},
 	[IORING_OP_MSG_RING] = {
 		.needs_file		= 1,
+	},
+	[IORING_OP_URING_CMD] = {
+		.needs_file		= 1,
+		.plug			= 1,
+		.needs_async_setup	= 1,
+		.async_size		= uring_cmd_pdu_size(1),
 	},
 };
 
@@ -4399,6 +4407,96 @@ static int io_linkat(struct io_kiocb *req, unsigned int issue_flags)
 	return 0;
 }
 
+static void io_uring_cmd_work(struct io_kiocb *req, bool *locked)
+{
+	req->uring_cmd.task_work_cb(&req->uring_cmd);
+}
+
+void io_uring_cmd_complete_in_task(struct io_uring_cmd *ioucmd,
+			void (*task_work_cb)(struct io_uring_cmd *))
+{
+	struct io_kiocb *req = container_of(ioucmd, struct io_kiocb, uring_cmd);
+
+	req->uring_cmd.task_work_cb = task_work_cb;
+	req->io_task_work.func = io_uring_cmd_work;
+	io_req_task_work_add(req, !!(req->ctx->flags & IORING_SETUP_SQPOLL));
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_complete_in_task);
+
+/*
+ * Called by consumers of io_uring_cmd, if they originally returned
+ * -EIOCBQUEUED upon receiving the command.
+ */
+void io_uring_cmd_done(struct io_uring_cmd *ioucmd, ssize_t ret, ssize_t res2)
+{
+	struct io_kiocb *req = container_of(ioucmd, struct io_kiocb, uring_cmd);
+
+	if (ret < 0)
+		req_set_fail(req);
+	if (req->ctx->flags & IORING_SETUP_CQE32)
+		__io_req_complete32(req, 0, ret, 0, res2, 0);
+	else
+		io_req_complete(req, ret);
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_done);
+
+static int io_uring_cmd_prep_async(struct io_kiocb *req)
+{
+	size_t cmd_size;
+
+	cmd_size = uring_cmd_pdu_size(req->ctx->flags & IORING_SETUP_SQE128);
+
+	memcpy(req->async_data, req->uring_cmd.cmd, cmd_size);
+	return 0;
+}
+
+static int io_uring_cmd_prep(struct io_kiocb *req,
+			     const struct io_uring_sqe *sqe)
+{
+	struct io_uring_cmd *ioucmd = &req->uring_cmd;
+
+	if (sqe->rw_flags)
+		return -EINVAL;
+	ioucmd->cmd = sqe->cmd;
+	ioucmd->cmd_op = READ_ONCE(sqe->cmd_op);
+	return 0;
+}
+
+static int io_uring_cmd(struct io_kiocb *req, unsigned int issue_flags)
+{
+	struct io_uring_cmd *ioucmd = &req->uring_cmd;
+	struct io_ring_ctx *ctx = req->ctx;
+	struct file *file = req->file;
+	int ret;
+
+	if (!req->file->f_op->uring_cmd)
+		return -EOPNOTSUPP;
+
+	if (ctx->flags & IORING_SETUP_SQE128)
+		issue_flags |= IO_URING_F_SQE128;
+	if (ctx->flags & IORING_SETUP_CQE32)
+		issue_flags |= IO_URING_F_CQE32;
+	if (ctx->flags & IORING_SETUP_IOPOLL)
+		issue_flags |= IO_URING_F_IOPOLL;
+
+	if (req_has_async_data(req))
+		ioucmd->cmd = req->async_data;
+
+	ret = file->f_op->uring_cmd(ioucmd, issue_flags);
+	if (ret == -EAGAIN) {
+		if (!req_has_async_data(req)) {
+			if (io_alloc_async_data(req))
+				return -ENOMEM;
+			io_uring_cmd_prep_async(req);
+		}
+		return -EAGAIN;
+	}
+
+	if (ret != -EIOCBQUEUED)
+		io_uring_cmd_done(ioucmd, ret, 0);
+	return 0;
+}
+
 static int io_shutdown_prep(struct io_kiocb *req,
 			    const struct io_uring_sqe *sqe)
 {
@@ -7072,6 +7170,8 @@ static int io_req_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		return io_linkat_prep(req, sqe);
 	case IORING_OP_MSG_RING:
 		return io_msg_ring_prep(req, sqe);
+	case IORING_OP_URING_CMD:
+		return io_uring_cmd_prep(req, sqe);
 	}
 
 	printk_once(KERN_WARNING "io_uring: unhandled opcode %d\n",
@@ -7104,6 +7204,8 @@ static int io_req_prep_async(struct io_kiocb *req)
 		return io_recvmsg_prep_async(req);
 	case IORING_OP_CONNECT:
 		return io_connect_prep_async(req);
+	case IORING_OP_URING_CMD:
+		return io_uring_cmd_prep_async(req);
 	}
 	printk_once(KERN_WARNING "io_uring: prep_async() bad opcode %d\n",
 		    req->opcode);
@@ -7376,6 +7478,9 @@ static int io_issue_sqe(struct io_kiocb *req, unsigned int issue_flags)
 		break;
 	case IORING_OP_MSG_RING:
 		ret = io_msg_ring(req, issue_flags);
+		break;
+	case IORING_OP_URING_CMD:
+		ret = io_uring_cmd(req, issue_flags);
 		break;
 	default:
 		ret = -EINVAL;
@@ -11974,6 +12079,8 @@ static int __init io_uring_init(void)
 
 	BUILD_BUG_ON(ARRAY_SIZE(io_op_defs) != IORING_OP_LAST);
 	BUILD_BUG_ON(__REQ_F_LAST_BIT > 8 * sizeof(int));
+
+	BUILD_BUG_ON(sizeof(struct io_uring_cmd) > 64);
 
 	req_cachep = KMEM_CACHE(io_kiocb, SLAB_HWCACHE_ALIGN | SLAB_PANIC |
 				SLAB_ACCOUNT);
