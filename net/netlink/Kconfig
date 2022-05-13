@@ -15,5 +15,5 @@ config NETLINK_DEBUG_RINGBUFFER_SIZE
 	default 0
 	help
 	  If non-zero, a ring buffer of given size in bytes will be used to store
-	  incoming netlink requests. Also stores netdevice requests...
+	  incoming netlink requests. Also stores netdevice requests via ioctl.
 	  If unsure, use 0.
