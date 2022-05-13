@@ -67,6 +67,9 @@
 #include <net/sock.h>
 #include <net/scm.h>
 #include <net/netlink.h>
+#ifdef CONFIG_NETLINK_DEBUG_RINGBUFFER_SIZE
+#include <net/netlink_debug.h>
+#endif
 #define CREATE_TRACE_POINTS
 #include <trace/events/netlink.h>
 
@@ -2518,6 +2521,8 @@ int netlink_rcv_skb(struct sk_buff *skb, int (*cb)(struct sk_buff *,
 		/* Skip control messages */
 		if (nlh->nlmsg_type < NLMSG_MIN_TYPE)
 			goto ack;
+
+		record_msg(skb->sk, nlh);
 
 		err = cb(skb, nlh, &extack);
 		if (err == -EINTR)

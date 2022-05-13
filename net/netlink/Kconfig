@@ -9,3 +9,11 @@ config NETLINK_DIAG
 	help
 	  Support for NETLINK socket monitoring interface used by the ss tool.
 	  If unsure, say Y.
+
+config NETLINK_DEBUG_RINGBUFFER_SIZE
+	int "NETLINK: ring buffer size in bytes for storing incoming requests"
+	default 0
+	help
+	  If non-zero, a ring buffer of given size in bytes will be used to store
+	  incoming netlink requests. Also stores netdevice requests...
+	  If unsure, use 0.
