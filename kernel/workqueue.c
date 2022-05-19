@@ -51,6 +51,7 @@
 #include <linux/sched/isolation.h>
 #include <linux/nmi.h>
 #include <linux/kvm_para.h>
+#include <linux/livepatch.h>
 
 #include "workqueue_internal.h"
 
@@ -2426,6 +2427,8 @@ recheck:
 			move_linked_works(work, &worker->scheduled, NULL);
 			process_scheduled_works(worker);
 		}
+		if (unlikely(klp_patch_pending(current)))
+			klp_try_switch_task(current);
 	} while (keep_working(pool));
 
 	worker_set_flags(worker, WORKER_PREP);

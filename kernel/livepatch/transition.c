@@ -278,7 +278,7 @@ static int klp_check_stack(struct task_struct *task, char *err_buf)
  * running, or it's sleeping on a to-be-patched or to-be-unpatched function, or
  * if the stack is unreliable, return false.
  */
-static bool klp_try_switch_task(struct task_struct *task)
+bool klp_try_switch_task(struct task_struct *task)
 {
 	static char err_buf[STACK_ERR_BUF_SIZE];
 	struct rq *rq;

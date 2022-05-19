@@ -201,6 +201,7 @@ void klp_module_going(struct module *mod);
 
 void klp_copy_process(struct task_struct *child);
 void klp_update_patch_state(struct task_struct *task);
+bool klp_try_switch_task(struct task_struct *task);
 
 static inline bool klp_patch_pending(struct task_struct *task)
 {
