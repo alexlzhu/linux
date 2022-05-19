@@ -7,7 +7,7 @@ load(":flavors.td.bzl", "FLAVORS_DEF")
 DEBUG_OPTIONS = DEBUG_OPTIONS_DEF
 FLAVORS = FLAVORS_DEF
 
-SELFTESTS = [ "livepatch" ]
+SELFTESTS = [ "livepatch", "vm" ]
 
 def config_name(arch, flavor = None, debug = None, selftests = False):
     name = arch
