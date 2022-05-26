@@ -3275,6 +3275,12 @@ struct softnet_data {
 	struct sk_buff_head	input_pkt_queue;
 	struct napi_struct	backlog;
 
+	/* Another possibly contended cache line */
+	spinlock_t		defer_lock ____cacheline_aligned_in_smp;
+	int			defer_count;
+	int			defer_ipi_scheduled;
+	struct sk_buff		*defer_list;
+	call_single_data_t	defer_csd;
 };
 
 static inline void input_queue_head_incr(struct softnet_data *sd)
@@ -4643,6 +4649,7 @@ void dev_get_tstats64(struct net_device *dev, struct rtnl_link_stats64 *s);
 
 extern int		netdev_max_backlog;
 extern int		netdev_tstamp_prequeue;
+extern unsigned int	sysctl_skb_defer_max;
 extern int		weight_p;
 extern int		dev_weight_rx_bias;
 extern int		dev_weight_tx_bias;

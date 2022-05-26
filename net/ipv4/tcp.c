@@ -325,11 +325,6 @@ struct tcp_splice_state {
 unsigned long tcp_memory_pressure __read_mostly;
 EXPORT_SYMBOL_GPL(tcp_memory_pressure);
 
-DEFINE_STATIC_KEY_FALSE(tcp_rx_skb_cache_key);
-EXPORT_SYMBOL(tcp_rx_skb_cache_key);
-
-DEFINE_STATIC_KEY_FALSE(tcp_tx_skb_cache_key);
-
 void tcp_enter_memory_pressure(struct sock *sk)
 {
 	unsigned long val;
@@ -863,18 +858,6 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp,
 {
 	struct sk_buff *skb;
 
-	if (likely(!size)) {
-		skb = sk->sk_tx_skb_cache;
-		if (skb) {
-			skb->truesize = SKB_TRUESIZE(skb_end_offset(skb));
-			sk->sk_tx_skb_cache = NULL;
-			pskb_trim(skb, 0);
-			INIT_LIST_HEAD(&skb->tcp_tsorted_anchor);
-			skb_shinfo(skb)->tx_flags = 0;
-			memset(TCP_SKB_CB(skb), 0, sizeof(struct tcp_skb_cb));
-			return skb;
-		}
-	}
 	/* The TCP header must be at least 32-bit aligned.  */
 	size = ALIGN(size, 4);
 
@@ -1597,6 +1580,18 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 		tcp_send_ack(sk);
 }
 
+static void tcp_eat_recv_skb(struct sock *sk, struct sk_buff *skb)
+{
+	__skb_unlink(skb, &sk->sk_receive_queue);
+	if (likely(skb->destructor == sock_rfree)) {
+		sock_rfree(skb);
+		skb->destructor = NULL;
+		skb->sk = NULL;
+		return skb_attempt_defer_free(skb);
+	}
+	__kfree_skb(skb);
+}
+
 static struct sk_buff *tcp_recv_skb(struct sock *sk, u32 seq, u32 *off)
 {
 	struct sk_buff *skb;
@@ -1616,7 +1611,7 @@ static struct sk_buff *tcp_recv_skb(struct sock *sk, u32 seq, u32 *off)
 		 * splitted a fat GRO packet, while we released socket lock
 		 * in skb_splice_bits()
 		 */
-		sk_eat_skb(sk, skb);
+		tcp_eat_recv_skb(sk, skb);
 	}
 	return NULL;
 }
@@ -1684,11 +1679,11 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 				continue;
 		}
 		if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN) {
-			sk_eat_skb(sk, skb);
+			tcp_eat_recv_skb(sk, skb);
 			++seq;
 			break;
 		}
-		sk_eat_skb(sk, skb);
+		tcp_eat_recv_skb(sk, skb);
 		if (!desc->count)
 			break;
 		WRITE_ONCE(tp->copied_seq, seq);
@@ -2430,13 +2425,11 @@ static int tcp_recvmsg_locked(struct sock *sk, struct msghdr *msg, size_t len,
 			}
 		}
 
-		tcp_cleanup_rbuf(sk, copied);
-
 		if (copied >= target) {
 			/* Do not sleep, just process backlog. */
-			release_sock(sk);
-			lock_sock(sk);
+			__sk_flush_backlog(sk);
 		} else {
+			tcp_cleanup_rbuf(sk, copied);
 			sk_wait_data(sk, &timeo, last);
 		}
 
@@ -2506,14 +2499,14 @@ skip_copy:
 		if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN)
 			goto found_fin_ok;
 		if (!(flags & MSG_PEEK))
-			sk_eat_skb(sk, skb);
+			tcp_eat_recv_skb(sk, skb);
 		continue;
 
 found_fin_ok:
 		/* Process the FIN. */
 		WRITE_ONCE(*seq, *seq + 1);
 		if (!(flags & MSG_PEEK))
-			sk_eat_skb(sk, skb);
+			tcp_eat_recv_skb(sk, skb);
 		break;
 	} while (len > 0);
 
@@ -2923,11 +2916,6 @@ void tcp_write_queue_purge(struct sock *sk)
 		sk_wmem_free_skb(sk, skb);
 	}
 	tcp_rtx_queue_purge(sk);
-	skb = sk->sk_tx_skb_cache;
-	if (skb) {
-		__kfree_skb(skb);
-		sk->sk_tx_skb_cache = NULL;
-	}
 	INIT_LIST_HEAD(&tcp_sk(sk)->tsorted_sent_queue);
 	sk_mem_reclaim(sk);
 	tcp_clear_all_retrans_hints(tcp_sk(sk));
@@ -2964,10 +2952,6 @@ int tcp_disconnect(struct sock *sk, int flags)
 
 	tcp_clear_xmit_timers(sk);
 	__skb_queue_purge(&sk->sk_receive_queue);
-	if (sk->sk_rx_skb_cache) {
-		__kfree_skb(sk->sk_rx_skb_cache);
-		sk->sk_rx_skb_cache = NULL;
-	}
 	WRITE_ONCE(tp->copied_seq, tp->rcv_nxt);
 	tp->urg_data = 0;
 	tcp_write_queue_purge(sk);

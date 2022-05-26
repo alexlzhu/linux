@@ -311,6 +311,14 @@ permit to distribute the load on several cpus.
 If set to 1 (default), timestamps are sampled as soon as possible, before
 queueing.
 
+skb_defer_max
+-------------
+
+Max size (in skbs) of the per-cpu list of skbs being freed
+by the cpu which allocated them. Used by TCP stack so far.
+
+Default: 64
+
 optmem_max
 ----------
 

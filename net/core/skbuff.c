@@ -203,7 +203,7 @@ static void __build_skb_around(struct sk_buff *skb, void *data,
 	skb->end = skb->tail + size;
 	skb->mac_header = (typeof(skb->mac_header))~0U;
 	skb->transport_header = (typeof(skb->transport_header))~0U;
-
+	skb->alloc_cpu = raw_smp_processor_id();
 	/* make sure we initialize shinfo sequentially */
 	shinfo = skb_shinfo(skb);
 	memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
@@ -1013,6 +1013,7 @@ static void __copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
 #ifdef CONFIG_NET_RX_BUSY_POLL
 	CHECK_SKB_FIELD(napi_id);
 #endif
+	CHECK_SKB_FIELD(alloc_cpu);
 #ifdef CONFIG_XPS
 	CHECK_SKB_FIELD(sender_cpu);
 #endif
@@ -6519,3 +6520,52 @@ free_now:
 }
 EXPORT_SYMBOL(__skb_ext_put);
 #endif /* CONFIG_SKB_EXTENSIONS */
+
+/**
+ * skb_attempt_defer_free - queue skb for remote freeing
+ * @skb: buffer
+ *
+ * Put @skb in a per-cpu list, using the cpu which
+ * allocated the skb/pages to reduce false sharing
+ * and memory zone spinlock contention.
+ */
+void skb_attempt_defer_free(struct sk_buff *skb)
+{
+	int cpu = skb->alloc_cpu;
+	struct softnet_data *sd;
+	unsigned long flags;
+	unsigned int defer_max;
+	bool kick;
+
+	if (WARN_ON_ONCE(cpu >= nr_cpu_ids) ||
+	    !cpu_online(cpu) ||
+	    cpu == raw_smp_processor_id()) {
+nodefer:	__kfree_skb(skb);
+		return;
+	}
+
+	sd = &per_cpu(softnet_data, cpu);
+	defer_max = READ_ONCE(sysctl_skb_defer_max);
+	if (READ_ONCE(sd->defer_count) >= defer_max)
+		goto nodefer;
+
+	/* We do not send an IPI or any signal.
+	 * Remote cpu will eventually call skb_defer_free_flush()
+	 */
+	spin_lock_irqsave(&sd->defer_lock, flags);
+	skb->next = sd->defer_list;
+	/* Paired with READ_ONCE() in skb_defer_free_flush() */
+	WRITE_ONCE(sd->defer_list, skb);
+	sd->defer_count++;
+
+	/* Send an IPI every time queue reaches half capacity. */
+	kick = sd->defer_count == (defer_max >> 1);
+
+	spin_unlock_irqrestore(&sd->defer_lock, flags);
+
+	/* Make sure to trigger NET_RX_SOFTIRQ on the remote CPU
+	 * if we are unlucky enough (this seems very unlikely).
+	 */
+	if (unlikely(kick) && !cmpxchg(&sd->defer_ipi_scheduled, 0, 1))
+		smp_call_function_single_async(cpu, &sd->defer_csd);
+}

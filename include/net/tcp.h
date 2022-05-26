@@ -1352,6 +1352,7 @@ static inline bool tcp_checksum_complete(struct sk_buff *skb)
 }
 
 bool tcp_add_backlog(struct sock *sk, struct sk_buff *skb);
+
 int tcp_filter(struct sock *sk, struct sk_buff *skb);
 void tcp_set_state(struct sock *sk, int state);
 void tcp_done(struct sock *sk);
