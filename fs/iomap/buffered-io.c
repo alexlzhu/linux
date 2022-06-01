@@ -1574,10 +1574,10 @@ iomap_do_writepage(struct page *page, struct writeback_control *wbc, void *data)
 		unsigned offset_into_page = offset & (PAGE_SIZE - 1);
 
 		/*
-		 * Skip the page if it is fully outside i_size, e.g. due to a
-		 * truncate operation that is in progress. We must redirty the
-		 * page so that reclaim stops reclaiming it. Otherwise
-		 * iomap_vm_releasepage() is called on it and gets confused.
+		 * Skip the page if it's fully outside i_size, e.g.
+		 * due to a truncate operation that's in progress.  We've
+		 * cleaned this page and truncate will finish things off for
+		 * us.
 		 *
 		 * Note that the end_index is unsigned long, it would overflow
 		 * if the given offset is greater than 16TB on 32-bit system
@@ -1592,7 +1592,7 @@ iomap_do_writepage(struct page *page, struct writeback_control *wbc, void *data)
 		 */
 		if (page->index > end_index ||
 		    (page->index == end_index && offset_into_page == 0))
-			goto redirty;
+			goto unlock;
 
 		/*
 		 * The page straddles i_size.  It must be zeroed out on each
@@ -1612,6 +1612,7 @@ iomap_do_writepage(struct page *page, struct writeback_control *wbc, void *data)
 
 redirty:
 	redirty_page_for_writepage(wbc, page);
+unlock:
 	unlock_page(page);
 	return 0;
 }
