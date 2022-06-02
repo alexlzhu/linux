@@ -658,6 +658,7 @@ struct mlx5e_rq {
 	u8                     wq_type;
 	u32                    rqn;
 	struct mlx5_core_dev  *mdev;
+	struct mlx5e_channel  *channel;
 	struct mlx5_core_mkey  umr_mkey;
 	struct mlx5e_dma_info  wqe_overflow;
 
@@ -1003,6 +1004,9 @@ void mlx5e_close_cq(struct mlx5e_cq *cq);
 
 int mlx5e_open_locked(struct net_device *netdev);
 int mlx5e_close_locked(struct net_device *netdev);
+
+void mlx5e_trigger_napi_icosq(struct mlx5e_channel *c);
+void mlx5e_trigger_napi_sched(struct napi_struct *napi);
 
 int mlx5e_open_channels(struct mlx5e_priv *priv,
 			struct mlx5e_channels *chs);
