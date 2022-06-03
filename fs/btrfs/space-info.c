@@ -1599,8 +1599,12 @@ static int __reserve_bytes(struct btrfs_fs_info *fs_info,
 		 * flushing is unable to keep up.  Clamp down on the threshold
 		 * for the preemptive flushing in order to keep up with the
 		 * workload.
+		 *
+		 * We want to avoid everybody doing it all at once, so ratelimit
+		 * based on tickets_id.
 		 */
-		maybe_clamp_preempt(fs_info, space_info);
+		if ((space_info->tickets_id % 100) == 0)
+			maybe_clamp_preempt(fs_info, space_info);
 	} else if (!ret && space_info->flags & BTRFS_BLOCK_GROUP_METADATA) {
 		used += orig_bytes;
 		/*
