@@ -1042,7 +1042,9 @@ static void btrfs_preempt_reclaim_metadata_space(struct work_struct *work)
 	struct btrfs_block_rsv *delayed_refs_rsv;
 	struct btrfs_block_rsv *global_rsv;
 	struct btrfs_block_rsv *trans_rsv;
+	enum btrfs_flush_state last_flush = RUN_DELAYED_IPUTS;
 	int loops = 0;
+	bool unclamp = false;
 
 	fs_info = container_of(work, struct btrfs_fs_info,
 			       preempt_reclaim_work);
@@ -1108,18 +1110,39 @@ static void btrfs_preempt_reclaim_metadata_space(struct work_struct *work)
 		/*
 		 * We don't want to reclaim everything, just a portion, so scale
 		 * down the to_reclaim by 1/4.  If it takes us down to 0,
-		 * reclaim 1 items worth.
+		 * reclaim 1 items worth, and then unclamp because we clearly
+		 * don't have a lot of space left to reclaim.
 		 */
 		to_reclaim >>= 2;
-		if (!to_reclaim)
+		if (!to_reclaim) {
+			unclamp = true;
 			to_reclaim = btrfs_calc_insert_metadata_size(fs_info, 1);
+		}
+
 		flush_space(fs_info, space_info, to_reclaim, flush, true);
 		cond_resched();
 		spin_lock(&space_info->lock);
+
+		if (unclamp)
+			break;
+
+		/*
+		 * If we ramped up clamp we could end up flushing more often
+		 * with less pressure, so if we're doing the same flushing state
+		 * and it isn't FLUSH_DELALLOC chances are we aren't making
+		 * progress and need to bail.
+		 */
+		if (last_flush == flush && flush != FLUSH_DELALLOC &&
+		    space_info->clamp) {
+			unclamp = true;
+			break;
+		}
+
+		last_flush = flush;
 	}
 
 	/* We only went through once, back off our clamping. */
-	if (loops == 1 && !space_info->reclaim_size)
+	if (unclamp || (loops == 1 && !space_info->reclaim_size))
 		space_info->clamp = max(1, space_info->clamp - 1);
 	trace_btrfs_done_preemptive_reclaim(fs_info, space_info);
 	spin_unlock(&space_info->lock);
@@ -1576,8 +1599,12 @@ static int __reserve_bytes(struct btrfs_fs_info *fs_info,
 		 * flushing is unable to keep up.  Clamp down on the threshold
 		 * for the preemptive flushing in order to keep up with the
 		 * workload.
+		 *
+		 * We want to avoid everybody doing it all at once, so ratelimit
+		 * based on tickets_id.
 		 */
-		maybe_clamp_preempt(fs_info, space_info);
+		if ((space_info->tickets_id % 100) == 0)
+			maybe_clamp_preempt(fs_info, space_info);
 	} else if (!ret && space_info->flags & BTRFS_BLOCK_GROUP_METADATA) {
 		used += orig_bytes;
 		/*
