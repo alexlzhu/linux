@@ -25,9 +25,9 @@ http_file(
 http_file(
     name = "kpatch-build-rpm",
     urls = [
-        "http://yum/yum/centos/8.x/backports/x86_64/RPMS/kpatch-build-0.9.6-2.9.hs.el8.x86_64.rpm",
+        "http://yum/yum/centos/8.x/backports/x86_64/RPMS/kpatch-build-0.9.6-2.10.hs.el8.x86_64.rpm",
     ],
-    sha256 = "665975347ce286624c4e727ee41985dd8f8a56a7fa660b3ca5d4d415048bdffa",
+    sha256 = "9e7297b569915bd018c61af8451a53558ac331111f16bda6c374a6f5935aea47",
     visibility = ["PUBLIC"],
 )
 
