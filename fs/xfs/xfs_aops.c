@@ -558,16 +558,6 @@ static const struct iomap_writeback_ops xfs_writeback_ops = {
 };
 
 STATIC int
-xfs_vm_writepage(
-	struct page		*page,
-	struct writeback_control *wbc)
-{
-	struct xfs_writepage_ctx wpc = { };
-
-	return iomap_writepage(page, wbc, &wpc.ctx, &xfs_writeback_ops);
-}
-
-STATIC int
 xfs_vm_writepages(
 	struct address_space	*mapping,
 	struct writeback_control *wbc)
@@ -645,7 +635,6 @@ xfs_iomap_swapfile_activate(
 const struct address_space_operations xfs_address_space_operations = {
 	.readpage		= xfs_vm_readpage,
 	.readpages		= xfs_vm_readpages,
-	.writepage		= xfs_vm_writepage,
 	.writepages		= xfs_vm_writepages,
 	.set_page_dirty		= iomap_set_page_dirty,
 	.releasepage		= iomap_releasepage,
