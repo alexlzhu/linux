@@ -32,7 +32,7 @@ config DRM_MIPI_DBI
 	depends on DRM
 
 config DRM_MIPI_DSI
-	bool
+	bool "Enable MIPI DSI"
 	depends on DRM
 
 config DRM_DP_AUX_CHARDEV
