@@ -930,15 +930,15 @@ static int nvme_nvm_user_vcmd(struct nvme_ns *ns, int admin,
 	return ret;
 }
 
-int nvme_nvm_ioctl(struct nvme_ns *ns, unsigned int cmd, void __user *argp)
+int nvme_nvm_ioctl(struct nvme_ns *ns, unsigned int cmd, unsigned long arg)
 {
 	switch (cmd) {
 	case NVME_NVM_IOCTL_ADMIN_VIO:
-		return nvme_nvm_user_vcmd(ns, 1, argp);
+		return nvme_nvm_user_vcmd(ns, 1, (void __user *)arg);
 	case NVME_NVM_IOCTL_IO_VIO:
-		return nvme_nvm_user_vcmd(ns, 0, argp);
+		return nvme_nvm_user_vcmd(ns, 0, (void __user *)arg);
 	case NVME_NVM_IOCTL_SUBMIT_VIO:
-		return nvme_nvm_submit_vio(ns, argp);
+		return nvme_nvm_submit_vio(ns, (void __user *)arg);
 	default:
 		return -ENOTTY;
 	}

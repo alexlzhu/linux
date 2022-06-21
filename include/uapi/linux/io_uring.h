@@ -22,7 +22,6 @@ struct io_uring_sqe {
 	union {
 		__u64	off;	/* offset into file */
 		__u64	addr2;
-		__u32	cmd_op;
 	};
 	union {
 		__u64	addr;	/* pointer to buffer or iovecs */
@@ -61,15 +60,7 @@ struct io_uring_sqe {
 		__s32	splice_fd_in;
 		__u32	file_index;
 	};
-
-	union {
-		__u64	__pad2[2];
-		/*
-		 * If the ring is initialized with IORING_SETUP_SQE128, then
-		 * this field is used for 80 bytes of arbitrary command data
-		 */
-		__u8	cmd[0];
-	};
+	__u64	__pad2[2];
 };
 
 enum {
@@ -111,9 +102,6 @@ enum {
 #define IORING_SETUP_ATTACH_WQ	(1U << 5)	/* attach to existing wq */
 #define IORING_SETUP_R_DISABLED	(1U << 6)	/* start with ring disabled */
 #define IORING_SETUP_SUBMIT_ALL	(1U << 7)	/* continue submit on error */
-
-#define IORING_SETUP_SQE128		(1U << 10) /* SQEs are 128 byte */
-#define IORING_SETUP_CQE32		(1U << 11) /* CQEs are 32 byte */
 
 enum {
 	IORING_OP_NOP,
@@ -157,12 +145,6 @@ enum {
 	IORING_OP_SYMLINKAT,
 	IORING_OP_LINKAT,
 	IORING_OP_MSG_RING,
-	IORING_OP_FSETXATTR,
-	IORING_OP_SETXATTR,
-	IORING_OP_FGETXATTR,
-	IORING_OP_GETXATTR,
-	IORING_OP_SOCKET,
-	IORING_OP_URING_CMD,
 
 	/* this goes last, obviously */
 	IORING_OP_LAST,
@@ -212,12 +194,6 @@ struct io_uring_cqe {
 	__u64	user_data;	/* sqe->data submission passed back */
 	__s32	res;		/* result code for this event */
 	__u32	flags;
-
-	/*
-	 * If the ring is initialized with IORING_SETUP_CQE32, then this field
-	 * contains 16-bytes of padding, doubling the size of the CQE.
-	 */
-	__u64 big_cqe[];
 };
 
 /*
