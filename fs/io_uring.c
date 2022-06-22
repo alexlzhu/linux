@@ -7117,6 +7117,7 @@ static int __io_arm_poll_handler(struct io_kiocb *req,
 		if (unlikely(ipt->error || !ipt->nr_entries)) {
 			poll->events |= EPOLLONESHOT;
 			req->apoll_events |= EPOLLONESHOT;
+			ipt->error = 0;
 		}
 		__io_poll_execute(req, mask, poll->events);
 		return 0;
@@ -7179,6 +7180,7 @@ static int io_arm_poll_handler(struct io_kiocb *req, unsigned issue_flags)
 		mask |= EPOLLEXCLUSIVE;
 	if (req->flags & REQ_F_POLLED) {
 		apoll = req->apoll;
+		kfree(apoll->double_poll);
 	} else if (!(issue_flags & IO_URING_F_UNLOCKED) &&
 		   !list_empty(&ctx->apoll_cache)) {
 		apoll = list_first_entry(&ctx->apoll_cache, struct async_poll,
@@ -7377,6 +7379,8 @@ static int io_poll_add(struct io_kiocb *req, unsigned int issue_flags)
 	ipt.pt._qproc = io_poll_queue_proc;
 
 	ret = __io_arm_poll_handler(req, &req->poll, &ipt, poll->events);
+	if (!ret && ipt.error)
+		req_set_fail(req);
 	ret = ret ?: ipt.error;
 	if (ret)
 		__io_req_complete(req, issue_flags, ret, 0);
