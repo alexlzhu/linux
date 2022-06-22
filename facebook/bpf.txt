@@ -1,2 +1,2 @@
-bpf: ec4eb8a86ade4d22633e1da2a7d85a846b7d1798 ("drivers: net: slip: fix NPD bug in sl_tx_timeout()")
-bpf-next: e58c5c9717460851047f63b8615ea0760a6f3a2e ("libbpf: Potential NULL dereference in usdt_manager_attach_usdt()")
+bpf: a2b1a5d40bd12b44322c2ccd40bb0ec1699708b6 ("net/sched: sch_netem: Fix arithmetic in netem_dump() for 32-bit platforms")
+bpf-next: 0e1bf9ed2000c16fa8e0703e255a23d64a4adb27 ("selftests/bpf: BPF test_prog selftests for bpf_loop inlining")
