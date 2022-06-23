@@ -793,7 +793,7 @@ static const struct bpf_iter_seq_info sock_map_iter_seq_info = {
 	.seq_priv_size		= sizeof(struct sock_map_seq_info),
 };
 
-static int sock_map_btf_id;
+BTF_ID_LIST_SINGLE(sock_map_btf_ids, struct, bpf_stab)
 const struct bpf_map_ops sock_map_ops = {
 	.map_meta_equal		= bpf_map_meta_equal,
 	.map_alloc		= sock_map_alloc,
@@ -805,8 +805,7 @@ const struct bpf_map_ops sock_map_ops = {
 	.map_lookup_elem	= sock_map_lookup,
 	.map_release_uref	= sock_map_release_progs,
 	.map_check_btf		= map_check_no_btf,
-	.map_btf_name		= "bpf_stab",
-	.map_btf_id		= &sock_map_btf_id,
+	.map_btf_id		= &sock_map_btf_ids[0],
 	.iter_seq_info		= &sock_map_iter_seq_info,
 };
 
@@ -1385,7 +1384,7 @@ static const struct bpf_iter_seq_info sock_hash_iter_seq_info = {
 	.seq_priv_size		= sizeof(struct sock_hash_seq_info),
 };
 
-static int sock_hash_map_btf_id;
+BTF_ID_LIST_SINGLE(sock_hash_map_btf_ids, struct, bpf_shtab)
 const struct bpf_map_ops sock_hash_ops = {
 	.map_meta_equal		= bpf_map_meta_equal,
 	.map_alloc		= sock_hash_alloc,
@@ -1397,8 +1396,7 @@ const struct bpf_map_ops sock_hash_ops = {
 	.map_lookup_elem_sys_only = sock_hash_lookup_sys,
 	.map_release_uref	= sock_hash_release_progs,
 	.map_check_btf		= map_check_no_btf,
-	.map_btf_name		= "bpf_shtab",
-	.map_btf_id		= &sock_hash_map_btf_id,
+	.map_btf_id		= &sock_hash_map_btf_ids[0],
 	.iter_seq_info		= &sock_hash_iter_seq_info,
 };
 
@@ -1562,6 +1560,29 @@ void sock_map_unhash(struct sock *sk)
 	saved_unhash(sk);
 }
 EXPORT_SYMBOL_GPL(sock_map_unhash);
+
+void sock_map_destroy(struct sock *sk)
+{
+	void (*saved_destroy)(struct sock *sk);
+	struct sk_psock *psock;
+
+	rcu_read_lock();
+	psock = sk_psock_get(sk);
+	if (unlikely(!psock)) {
+		rcu_read_unlock();
+		if (sk->sk_prot->destroy)
+			sk->sk_prot->destroy(sk);
+		return;
+	}
+
+	saved_destroy = psock->saved_destroy;
+	sock_map_remove_links(sk, psock);
+	rcu_read_unlock();
+	sk_psock_stop(psock, true);
+	sk_psock_put(sk, psock);
+	saved_destroy(sk);
+}
+EXPORT_SYMBOL_GPL(sock_map_destroy);
 
 void sock_map_close(struct sock *sk, long timeout)
 {
