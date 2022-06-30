@@ -423,12 +423,114 @@ static int do_tls_getsockopt_conf(struct sock *sk, char __user *optval,
 			rc = -EFAULT;
 		break;
 	}
+	case TLS_CIPHER_AES_CCM_128: {
+		struct tls12_crypto_info_aes_ccm_128 *aes_ccm_128 =
+			container_of(crypto_info,
+				struct tls12_crypto_info_aes_ccm_128, info);
+
+		if (len != sizeof(*aes_ccm_128)) {
+			rc = -EINVAL;
+			goto out;
+		}
+		lock_sock(sk);
+		memcpy(aes_ccm_128->iv,
+		       cctx->iv + TLS_CIPHER_AES_CCM_128_SALT_SIZE,
+		       TLS_CIPHER_AES_CCM_128_IV_SIZE);
+		memcpy(aes_ccm_128->rec_seq, cctx->rec_seq,
+		       TLS_CIPHER_AES_CCM_128_REC_SEQ_SIZE);
+		release_sock(sk);
+		if (copy_to_user(optval, aes_ccm_128, sizeof(*aes_ccm_128)))
+			rc = -EFAULT;
+		break;
+	}
+	case TLS_CIPHER_CHACHA20_POLY1305: {
+		struct tls12_crypto_info_chacha20_poly1305 *chacha20_poly1305 =
+			container_of(crypto_info,
+				struct tls12_crypto_info_chacha20_poly1305,
+				info);
+
+		if (len != sizeof(*chacha20_poly1305)) {
+			rc = -EINVAL;
+			goto out;
+		}
+		lock_sock(sk);
+		memcpy(chacha20_poly1305->iv,
+		       cctx->iv + TLS_CIPHER_CHACHA20_POLY1305_SALT_SIZE,
+		       TLS_CIPHER_CHACHA20_POLY1305_IV_SIZE);
+		memcpy(chacha20_poly1305->rec_seq, cctx->rec_seq,
+		       TLS_CIPHER_CHACHA20_POLY1305_REC_SEQ_SIZE);
+		release_sock(sk);
+		if (copy_to_user(optval, chacha20_poly1305,
+				sizeof(*chacha20_poly1305)))
+			rc = -EFAULT;
+		break;
+	}
+	case TLS_CIPHER_SM4_GCM: {
+		struct tls12_crypto_info_sm4_gcm *sm4_gcm_info =
+			container_of(crypto_info,
+				struct tls12_crypto_info_sm4_gcm, info);
+
+		if (len != sizeof(*sm4_gcm_info)) {
+			rc = -EINVAL;
+			goto out;
+		}
+		lock_sock(sk);
+		memcpy(sm4_gcm_info->iv,
+		       cctx->iv + TLS_CIPHER_SM4_GCM_SALT_SIZE,
+		       TLS_CIPHER_SM4_GCM_IV_SIZE);
+		memcpy(sm4_gcm_info->rec_seq, cctx->rec_seq,
+		       TLS_CIPHER_SM4_GCM_REC_SEQ_SIZE);
+		release_sock(sk);
+		if (copy_to_user(optval, sm4_gcm_info, sizeof(*sm4_gcm_info)))
+			rc = -EFAULT;
+		break;
+	}
+	case TLS_CIPHER_SM4_CCM: {
+		struct tls12_crypto_info_sm4_ccm *sm4_ccm_info =
+			container_of(crypto_info,
+				struct tls12_crypto_info_sm4_ccm, info);
+
+		if (len != sizeof(*sm4_ccm_info)) {
+			rc = -EINVAL;
+			goto out;
+		}
+		lock_sock(sk);
+		memcpy(sm4_ccm_info->iv,
+		       cctx->iv + TLS_CIPHER_SM4_CCM_SALT_SIZE,
+		       TLS_CIPHER_SM4_CCM_IV_SIZE);
+		memcpy(sm4_ccm_info->rec_seq, cctx->rec_seq,
+		       TLS_CIPHER_SM4_CCM_REC_SEQ_SIZE);
+		release_sock(sk);
+		if (copy_to_user(optval, sm4_ccm_info, sizeof(*sm4_ccm_info)))
+			rc = -EFAULT;
+		break;
+	}
 	default:
 		rc = -EINVAL;
 	}
 
 out:
 	return rc;
+}
+
+static int do_tls_getsockopt_tx_zc(struct sock *sk, char __user *optval,
+				   int __user *optlen)
+{
+	struct tls_context *ctx = tls_get_ctx(sk);
+	unsigned int value;
+	int len;
+
+	if (get_user(len, optlen))
+		return -EFAULT;
+
+	if (len != sizeof(value))
+		return -EINVAL;
+
+	value = ctx->zerocopy_sendfile;
+	if (copy_to_user(optval, &value, sizeof(value)))
+		return -EFAULT;
+
+	return 0;
 }
 
 static int do_tls_getsockopt(struct sock *sk, int optname,
@@ -441,6 +543,9 @@ static int do_tls_getsockopt(struct sock *sk, int optname,
 	case TLS_RX:
 		rc = do_tls_getsockopt_conf(sk, optval, optlen,
 					    optname == TLS_TX);
+		break;
+	case TLS_TX_ZEROCOPY_RO:
+		rc = do_tls_getsockopt_tx_zc(sk, optval, optlen);
 		break;
 	default:
 		rc = -ENOPROTOOPT;
@@ -522,6 +627,12 @@ static int do_tls_setsockopt_conf(struct sock *sk, sockptr_t optval,
 	case TLS_CIPHER_CHACHA20_POLY1305:
 		optsize = sizeof(struct tls12_crypto_info_chacha20_poly1305);
 		break;
+	case TLS_CIPHER_SM4_GCM:
+		optsize = sizeof(struct tls12_crypto_info_sm4_gcm);
+		break;
+	case TLS_CIPHER_SM4_CCM:
+		optsize = sizeof(struct tls12_crypto_info_sm4_ccm);
+		break;
 	default:
 		rc = -EINVAL;
 		goto err_crypto_info;
@@ -587,6 +698,26 @@ err_crypto_info:
 	return rc;
 }
 
+static int do_tls_setsockopt_tx_zc(struct sock *sk, sockptr_t optval,
+				   unsigned int optlen)
+{
+	struct tls_context *ctx = tls_get_ctx(sk);
+	unsigned int value;
+
+	if (sockptr_is_null(optval) || optlen != sizeof(value))
+		return -EINVAL;
+
+	if (copy_from_sockptr(&value, optval, sizeof(value)))
+		return -EFAULT;
+
+	if (value > 1)
+		return -EINVAL;
+
+	ctx->zerocopy_sendfile = value;
+
+	return 0;
+}
+
 static int do_tls_setsockopt(struct sock *sk, int optname, sockptr_t optval,
 			     unsigned int optlen)
 {
@@ -598,6 +729,11 @@ static int do_tls_setsockopt(struct sock *sk, int optname, sockptr_t optval,
 		lock_sock(sk);
 		rc = do_tls_setsockopt_conf(sk, optval, optlen,
 					    optname == TLS_TX);
+		release_sock(sk);
+		break;
+	case TLS_TX_ZEROCOPY_RO:
+		lock_sock(sk);
+		rc = do_tls_setsockopt_tx_zc(sk, optval, optlen);
 		release_sock(sk);
 		break;
 	default:
@@ -785,6 +921,8 @@ static void tls_update(struct sock *sk, struct proto *p,
 {
 	struct tls_context *ctx;
 
+	WARN_ON_ONCE(sk->sk_prot == p);
+
 	ctx = tls_get_ctx(sk);
 	if (likely(ctx)) {
 		ctx->sk_write_space = write_space;
@@ -833,6 +971,12 @@ static int tls_get_info(const struct sock *sk, struct sk_buff *skb)
 	if (err)
 		goto nla_failure;
 
+	if (ctx->tx_conf == TLS_HW && ctx->zerocopy_sendfile) {
+		err = nla_put_flag(skb, TLS_INFO_ZC_RO_TX);
+		if (err)
+			goto nla_failure;
+	}
+
 	rcu_read_unlock();
 	nla_nest_end(skb, start);
 	return 0;
@@ -852,6 +996,7 @@ static size_t tls_get_info_size(const struct sock *sk)
 		nla_total_size(sizeof(u16)) +	/* TLS_INFO_CIPHER */
 		nla_total_size(sizeof(u16)) +	/* TLS_INFO_RXCONF */
 		nla_total_size(sizeof(u16)) +	/* TLS_INFO_TXCONF */
+		nla_total_size(0) +		/* TLS_INFO_ZC_RO_TX */
 		0;
 
 	return size;

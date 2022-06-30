@@ -64,9 +64,10 @@
 #define TLS_AAD_SPACE_SIZE		13
 
 #define MAX_IV_SIZE			16
+#define TLS_TAG_SIZE			16
 #define TLS_MAX_REC_SEQ_SIZE		8
 
-/* For AES-CCM, the full 16-bytes of IV is made of '4' fields of given sizes.
+/* For CCM mode, the full 16-bytes of IV is made of '4' fields of given sizes.
  *
  * IV[16] = b0[1] || implicit nonce[4] || explicit nonce[8] || length[3]
  *
@@ -74,6 +75,7 @@
  * Hence b0 contains (3 - 1) = 2.
  */
 #define TLS_AES_CCM_IV_B0_BYTE		2
+#define TLS_SM4_CCM_IV_B0_BYTE		2
 
 #define __TLS_INC_STATS(net, field)				\
 	__SNMP_INC_STATS((net)->mib.tls_statistics, field)
@@ -118,11 +120,6 @@ struct tls_rec {
 	u8 aead_req_ctx[];
 };
 
-struct tls_msg {
-	struct strp_msg rxm;
-	u8 control;
-};
-
 struct tx_work {
 	struct delayed_work work;
 	struct sock *sk;
@@ -153,13 +150,10 @@ struct tls_sw_context_rx {
 	void (*saved_data_ready)(struct sock *sk);
 
 	struct sk_buff *recv_pkt;
-	u8 control;
 	u8 async_capable:1;
-	u8 decrypted:1;
 	atomic_t decrypt_pending;
 	/* protect crypto_wait with decrypt_pending*/
 	spinlock_t decrypt_compl_lock;
-	bool async_notify;
 };
 
 struct tls_record_info {
@@ -244,6 +238,7 @@ struct tls_context {
 
 	u8 tx_conf:3;
 	u8 rx_conf:3;
+	u8 zerocopy_sendfile:1;
 
 	int (*push_pending_record)(struct sock *sk, int flags);
 	void (*sk_write_space)(struct sock *sk);
@@ -410,7 +405,9 @@ void tls_free_partial_record(struct sock *sk, struct tls_context *ctx);
 
 static inline struct tls_msg *tls_msg(struct sk_buff *skb)
 {
-	return (struct tls_msg *)strp_msg(skb);
+	struct sk_skb_cb *scb = (struct sk_skb_cb *)skb->cb;
+
+	return &scb->tls;
 }
 
 static inline bool tls_is_partially_sent_record(struct tls_context *ctx)
