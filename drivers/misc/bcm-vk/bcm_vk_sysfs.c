@@ -596,7 +596,7 @@ static ssize_t card_state_show(struct device *dev,
 	char *p_buf = buf;
 	static const char * const pwr_state_tab[] = {
 		"Full", "Reduced", "Lowest"};
-	char *pwr_state_str;
+	const char *pwr_state_str;
 	size_t sz = PAGE_SIZE;
 
 	/*
@@ -806,12 +806,13 @@ static ssize_t sysfs_utilization_update(struct device *dev, char *buf,
 static ssize_t utilization_show(struct device *dev,
 				struct device_attribute *devattr, char *buf)
 {
-	int ret, i;
+	int ret;
 	ssize_t cnt = 0;
 	struct bcm_vk_proc_mon_entry_t *entry;
 	size_t sz = PAGE_SIZE;
+	enum proc_mon_type i;
 
-	for (i = 0; i < PROC_MON_TYPE_MAX; i++) {
+	for (i = PROC_MON_PIXELS; i < PROC_MON_TYPE_MAX; i++) {
 		ret = sysfs_utilization_update(dev, &buf[cnt], sz, i, &entry);
 		if (ret > 0)
 			return (ret + cnt);
@@ -1344,6 +1345,30 @@ static ssize_t sotp_boot2_rev_id_show(struct device *dev,
 				VK_BAR1_SOTP_REVID_ADDR(1));
 }
 
+static ssize_t otp_ecid_show(struct device *dev,
+			     struct device_attribute *devattr,
+			     char *buf)
+{
+	return sotp_common_show(dev, devattr, buf,
+				VK_BAR1_OTP_ECID_BASE_ADDR);
+}
+
+static ssize_t otp_rev_id_show(struct device *dev,
+			       struct device_attribute *devattr,
+			       char *buf)
+{
+	return sotp_common_show(dev, devattr, buf,
+				VK_BAR1_OTP_REV_ID_BASE_ADDR);
+}
+
+static ssize_t otp_lot_id_show(struct device *dev,
+			       struct device_attribute *devattr,
+			       char *buf)
+{
+	return sotp_common_show(dev, devattr, buf,
+				VK_BAR1_OTP_LOT_ID_BASE_ADDR);
+}
+
 static void bcm_vk_get_dauth_info(struct bcm_vk *vk)
 {
 	struct device *dev = &vk->pdev->dev;
@@ -1418,6 +1443,9 @@ static DEVICE_ATTR_RO(sotp_dauth_4_valid);
 static DEVICE_ATTR_RO(sotp_dauth_4_active_status);
 static DEVICE_ATTR_RO(sotp_boot1_rev_id);
 static DEVICE_ATTR_RO(sotp_boot2_rev_id);
+static DEVICE_ATTR_RO(otp_ecid);
+static DEVICE_ATTR_RO(otp_rev_id);
+static DEVICE_ATTR_RO(otp_lot_id);
 static DEVICE_ATTR_RO(temperature_sensor_1_c);
 static DEVICE_ATTR_RO(temperature_sensor_2_c);
 static DEVICE_ATTR_RO(temperature_sensor_3_c);
@@ -1513,6 +1541,60 @@ static const struct attribute_group bcm_vk_card_mon_attribute_group = {
 	.attrs = bcm_vk_card_mon_attributes,
 };
 
+static int bcm_add_otp_to_group(struct pci_dev *pdev)
+{
+	struct device *dev = &pdev->dev;
+	int rc;
+
+	rc = sysfs_add_file_to_group(&pdev->dev.kobj,
+				     &dev_attr_otp_ecid.attr,
+				     bcm_vk_card_stat_attribute_group.name);
+	if (rc < 0) {
+		dev_err(dev, "failed to create card otp attr\n");
+		goto err_sysfs_otp_exit;
+	}
+	rc = sysfs_add_file_to_group(&pdev->dev.kobj,
+				     &dev_attr_otp_rev_id.attr,
+				     bcm_vk_card_stat_attribute_group.name);
+	if (rc < 0) {
+		dev_err(dev, "failed to create card otp attr\n");
+		goto err_free_otp_ecid_file;
+	}
+	rc = sysfs_add_file_to_group(&pdev->dev.kobj,
+				     &dev_attr_otp_lot_id.attr,
+				     bcm_vk_card_stat_attribute_group.name);
+	if (rc < 0) {
+		dev_err(dev, "failed to create card otp attr\n");
+		goto err_free_otp_rev_id_file;
+	}
+
+	return 0;
+
+err_free_otp_rev_id_file:
+	sysfs_remove_file_from_group(&pdev->dev.kobj,
+				     &dev_attr_otp_rev_id.attr,
+				     bcm_vk_card_stat_attribute_group.name);
+err_free_otp_ecid_file:
+	sysfs_remove_file_from_group(&pdev->dev.kobj,
+				     &dev_attr_otp_ecid.attr,
+				     bcm_vk_card_stat_attribute_group.name);
+err_sysfs_otp_exit:
+	return rc;
+}
+
+static void bcm_remove_otp_from_group(struct pci_dev *pdev)
+{
+	sysfs_remove_file_from_group(&pdev->dev.kobj,
+				     &dev_attr_otp_ecid.attr,
+				     bcm_vk_card_stat_attribute_group.name);
+	sysfs_remove_file_from_group(&pdev->dev.kobj,
+				     &dev_attr_otp_rev_id.attr,
+				     bcm_vk_card_stat_attribute_group.name);
+	sysfs_remove_file_from_group(&pdev->dev.kobj,
+				     &dev_attr_otp_lot_id.attr,
+				     bcm_vk_card_stat_attribute_group.name);
+}
+
 int bcm_vk_sysfs_init(struct pci_dev *pdev, struct miscdevice *misc_device)
 {
 	struct device *dev = &pdev->dev;
@@ -1533,12 +1615,21 @@ int bcm_vk_sysfs_init(struct pci_dev *pdev, struct miscdevice *misc_device)
 		goto err_free_card_stat_group;
 	}
 
+	/* Create viper specific entries */
+	if (get_soc_idx(vk) == VIPER) {
+		rc = bcm_add_otp_to_group(pdev);
+		if (rc < 0) {
+			dev_err(dev, "failed to create card status attr\n");
+			goto err_free_card_mon_group;
+		}
+	}
+
 	/* create symbolic link from misc device to bus directory */
 	rc = sysfs_create_link(&misc_device->this_device->kobj,
 			       &pdev->dev.kobj, BCM_VK_BUS_SYMLINK_NAME);
 	if (rc < 0) {
 		dev_err(dev, "failed to create symlink\n");
-		goto err_free_card_mon_group;
+		goto err_free_otp_files_from_group;
 	}
 	/* create symbolic link from bus to misc device also */
 	rc = sysfs_create_link(&pdev->dev.kobj,
@@ -1558,6 +1649,9 @@ err_free_sysfs_entry:
 	sysfs_remove_link(&misc_device->this_device->kobj,
 			  BCM_VK_BUS_SYMLINK_NAME);
 
+err_free_otp_files_from_group:
+	if (get_soc_idx(vk) == VIPER)
+		bcm_remove_otp_from_group(pdev);
 err_free_card_mon_group:
 	sysfs_remove_group(&pdev->dev.kobj, &bcm_vk_card_mon_attribute_group);
 err_free_card_stat_group:
@@ -1569,10 +1663,14 @@ err_sysfs_exit:
 
 void bcm_vk_sysfs_exit(struct pci_dev *pdev, struct miscdevice *misc_device)
 {
+	struct bcm_vk *vk = pci_get_drvdata(pdev);
+
 	/* remove the sysfs entry and symlinks associated */
 	sysfs_remove_link(&pdev->dev.kobj, misc_device->name);
 	sysfs_remove_link(&misc_device->this_device->kobj,
 			  BCM_VK_BUS_SYMLINK_NAME);
+	if (get_soc_idx(vk) == VIPER)
+		bcm_remove_otp_from_group(pdev);
 	sysfs_remove_group(&pdev->dev.kobj, &bcm_vk_card_mon_attribute_group);
 	sysfs_remove_group(&pdev->dev.kobj, &bcm_vk_card_stat_attribute_group);
 }

@@ -145,7 +145,7 @@ static int bcm_vk_hwmon_temp_read(struct device *dev, u32 attr, int channel,
 			[TEMP_DDR1] = BCM_VK_DDR1_TEMP_SHIFT,
 		};
 
-		if (channel >= TEMP_CHAN_END)
+		if ((channel < 0) || (channel >= TEMP_CHAN_END))
 			return -ERANGE;
 
 		reg = vkread32(vk, BAR_0, BAR_CARD_TEMPERATURE);
@@ -203,7 +203,7 @@ static int bcm_vk_hwmon_volt_read(struct device *dev, u32 attr, int channel,
 	};
 	struct bcm_vk *vk = dev_get_drvdata(dev);
 
-	if (channel >= VOLT_CHAN_END)
+	if ((channel < 0) || (channel >= VOLT_CHAN_END))
 		return -ERANGE;
 
 	reg = vkread32(vk, BAR_0, BAR_CARD_VOLTAGE);

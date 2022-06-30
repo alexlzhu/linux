@@ -3,12 +3,17 @@
  * Copyright 2018-2020 Broadcom.
  */
 
+#include <linux/version.h>
+#include <linux/aer.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/firmware.h>
 #include <linux/fs.h>
 #include <linux/idr.h>
 #include <linux/interrupt.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,0))
+#include <linux/panic_notifier.h>
+#endif
 #include <linux/kref.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -498,7 +503,7 @@ static int bcm_vk_sync_card_info(struct bcm_vk *vk)
 	 * up
 	 */
 	if (vk->tdma_addr) {
-		vkwrite32(vk, (u64)vk->tdma_addr >> 32, BAR_1,
+		vkwrite32(vk, (u32)((u64)vk->tdma_addr >> 32), BAR_1,
 			  VK_BAR1_SCRATCH_OFF_HI);
 		vkwrite32(vk, (u32)vk->tdma_addr, BAR_1,
 			  VK_BAR1_SCRATCH_OFF_LO);
@@ -569,14 +574,14 @@ void bcm_vk_blk_drv_access(struct bcm_vk *vk)
 }
 
 static void bcm_vk_buf_notify(struct bcm_vk *vk, void *bufp,
-			      dma_addr_t host_buf_addr, u32 buf_size)
+			      dma_addr_t host_buf_addr, size_t buf_size)
 {
 	/* update the dma address to the card */
 	vkwrite32(vk, (u64)host_buf_addr >> 32, BAR_1,
 		  VK_BAR1_DMA_BUF_OFF_HI);
 	vkwrite32(vk, (u32)host_buf_addr, BAR_1,
 		  VK_BAR1_DMA_BUF_OFF_LO);
-	vkwrite32(vk, buf_size, BAR_1, VK_BAR1_DMA_BUF_SZ);
+	vkwrite32(vk, (u32)buf_size, BAR_1, VK_BAR1_DMA_BUF_SZ);
 }
 
 /*
@@ -1313,7 +1318,6 @@ static long bcm_vk_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	long ret = -EINVAL;
 	struct bcm_vk_ctx *ctx = file->private_data;
 	struct bcm_vk *vk = container_of(ctx->miscdev, struct bcm_vk, miscdev);
-	void __user *argp = (void __user *)arg;
 
 	dev_dbg(&vk->pdev->dev,
 		"ioctl, cmd=0x%02x, arg=0x%02lx\n",
@@ -1323,11 +1327,11 @@ static long bcm_vk_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case VK_IOCTL_LOAD_IMAGE:
-		ret = bcm_vk_load_image(vk, argp);
+		ret = bcm_vk_load_image(vk, (const struct vk_image __user *)arg);
 		break;
 
 	case VK_IOCTL_RESET:
-		ret = bcm_vk_reset(vk, argp);
+		ret = bcm_vk_reset(vk, (struct vk_reset __user *)arg);
 		break;
 
 	default:
@@ -1524,12 +1528,17 @@ static int bcm_vk_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		err = -ENOMEM;
 		goto err_ida_remove;
 	}
-	misc_device->fops = &bcm_vk_fops,
+	misc_device->fops = &bcm_vk_fops;
 
 	err = misc_register(misc_device);
 	if (err) {
 		dev_err(dev, "failed to register device\n");
 		goto err_kfree_name;
+	}
+
+	if (get_soc_idx(vk) == VIPER) {
+		if (pci_enable_pcie_error_reporting(pdev))
+			dev_info(dev, "failed to enable pcie error report\n");
 	}
 
 	INIT_WORK(&vk->wq_work, bcm_vk_wq_handler);
@@ -1613,6 +1622,9 @@ err_destroy_workqueue:
 	destroy_workqueue(vk->wq_thread);
 
 err_misc_deregister:
+	if (get_soc_idx(vk) == VIPER)
+		pci_disable_pcie_error_reporting(pdev);
+
 	misc_deregister(misc_device);
 
 err_kfree_name:
@@ -1637,7 +1649,7 @@ err_iounmap:
 	pci_release_regions(pdev);
 
 err_disable_pdev:
-	if (vk->tdma_vaddr)
+	if (vk->tdma_vaddr && vk->tdma_addr)
 		dma_free_coherent(&pdev->dev, nr_scratch_pages * PAGE_SIZE,
 				  vk->tdma_vaddr, vk->tdma_addr);
 
@@ -1772,7 +1784,9 @@ static void bcm_vk_shutdown(struct pci_dev *pdev)
 
 static const struct pci_device_id bcm_vk_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_BROADCOM, PCI_DEVICE_ID_VALKYRIE), },
+#if defined(CONFIG_BCM_VK_VIPER)
 	{ PCI_DEVICE(PCI_VENDOR_ID_BROADCOM, PCI_DEVICE_ID_VIPER), },
+#endif
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, bcm_vk_ids);
