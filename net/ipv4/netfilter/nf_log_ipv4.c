@@ -332,7 +332,7 @@ static void nf_log_ip_packet(struct net *net, u_int8_t pf,
 	if (in != NULL)
 		dump_ipv4_mac_header(m, loginfo, skb);
 
-	dump_ipv4_packet(net, m, loginfo, skb, 0);
+	dump_ipv4_packet(net, m, loginfo, skb, skb_network_offset(skb));
 
 	nf_log_buf_close(m);
 }
