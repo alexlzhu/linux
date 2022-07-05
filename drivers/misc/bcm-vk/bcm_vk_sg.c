@@ -2,13 +2,19 @@
 /*
  * Copyright 2018-2020 Broadcom.
  */
+#include <linux/version.h>
 #include <linux/dma-mapping.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0))
 #include <linux/pgtable.h>
+#endif
 #include <linux/vmalloc.h>
 
 #include <asm/page.h>
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,10,0))
+#include <asm/pgtable.h>
+#endif
 #include <asm/unaligned.h>
 
 #include <uapi/linux/misc/bcm_vk.h>
@@ -16,12 +22,6 @@
 #include "bcm_vk.h"
 #include "bcm_vk_msg.h"
 #include "bcm_vk_sg.h"
-
-/*
- * Valkyrie has a hardware limitation of 16M transfer size.
- * So limit the SGL chunks to 16M.
- */
-#define BCM_VK_MAX_SGL_CHUNK SZ_16M
 
 static int bcm_vk_dma_alloc(struct device *dev,
 			    struct bcm_vk_dma *dma,
@@ -47,6 +47,9 @@ static int bcm_vk_dma_alloc(struct device *dev,
 	u64 data;
 	unsigned long first, last;
 	struct _vk_data *sgdata;
+
+	if (vkdata->size > BCM_VK_MAX_SGL_CHUNK)
+		return -ERANGE;
 
 	/* Get 64-bit user address */
 	data = get_unaligned(&vkdata->address);
@@ -74,7 +77,8 @@ static int bcm_vk_dma_alloc(struct device *dev,
 	/* Get user pages into memory */
 	err = get_user_pages_fast(data & PAGE_MASK,
 				  dma->nr_pages,
-				  direction == DMA_FROM_DEVICE,
+				  (direction == DMA_FROM_DEVICE) ?
+				  FOLL_WRITE : 0,
 				  dma->pages);
 	if (err != dma->nr_pages) {
 		dma->nr_pages = (err >= 0) ? err : 0;
@@ -183,14 +187,22 @@ int bcm_vk_sg_alloc(struct device *dev,
 	/* Convert user addresses to DMA SG List */
 	for (i = 0; i < num; i++) {
 		if (vkdata[i].size && vkdata[i].address) {
-			/*
-			 * If both size and address are non-zero
-			 * then DMA alloc.
-			 */
-			rc = bcm_vk_dma_alloc(dev,
-					      &dma[i],
-					      dir,
-					      &vkdata[i]);
+			/* do a check to cap size */
+			if (vkdata[i].size > BCM_VK_MAX_SGL_CHUNK) {
+				dev_err(dev, "vkdata[%d] size 0x%x > max 0x%x",
+					i, vkdata[i].size,
+					BCM_VK_MAX_SGL_CHUNK);
+				rc = -ERANGE;
+			} else {
+				/*
+				 * If both size and address are non-zero
+				 * then DMA alloc.
+				 */
+				rc = bcm_vk_dma_alloc(dev,
+						      &dma[i],
+						      dir,
+						      &vkdata[i]);
+			}
 		} else if (vkdata[i].size ||
 			   vkdata[i].address) {
 			/*
@@ -235,6 +247,11 @@ static int bcm_vk_dma_free(struct device *dev, struct bcm_vk_dma *dma)
 
 	/* Unmap all pages in the sglist */
 	num_sg = dma->sglist[SGLIST_NUM_SG];
+	if (num_sg > BCM_VK_MAX_NUM_SG) {
+		dev_dbg(dev, "num_sg 0x%x > 0x%x\n", num_sg, BCM_VK_MAX_NUM_SG);
+		return -ERANGE;
+	}
+
 	vkdata = (struct _vk_data *)&dma->sglist[SGLIST_VKDATA_START];
 	for (i = 0; i < num_sg; i++) {
 		size = vkdata[i].size;

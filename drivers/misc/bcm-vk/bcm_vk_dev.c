@@ -3,12 +3,17 @@
  * Copyright 2018-2020 Broadcom.
  */
 
+#include <linux/version.h>
+#include <linux/aer.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/firmware.h>
 #include <linux/fs.h>
 #include <linux/idr.h>
 #include <linux/interrupt.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,0))
+#include <linux/panic_notifier.h>
+#endif
 #include <linux/kref.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -22,13 +27,6 @@
 #define PCI_DEVICE_ID_VIPER	0x5e88
 
 static DEFINE_IDA(bcm_vk_ida);
-
-enum soc_idx {
-	VALKYRIE_A0 = 0,
-	VALKYRIE_B0,
-	VIPER,
-	VK_IDX_INVALID
-};
 
 enum img_idx {
 	IMG_PRI = 0,
@@ -93,6 +91,13 @@ static const struct load_image_entry image_tab[][NUM_BOOT_STAGES] = {
 #define BCM_VK_DEINIT_TIME_MS		(2 * MSEC_PER_SEC)
 
 /*
+ * timeout if kernel does not close all fds after kill signal sent.
+ * This should only happen in very, very rare occasion, and the value
+ * could be made big as long as pid would not wrap around at this duration
+ */
+#define BCM_VK_KILL_WAIT_MS		(30 * MSEC_PER_SEC)
+
+/*
  * module parameters
  */
 static bool auto_load = true;
@@ -125,6 +130,7 @@ const struct bcm_vk_entry bcm_vk_peer_err[BCM_VK_PEER_ERR_NUM] = {
 	{ERR_LOG_LOW_TEMP_WARN, ERR_LOG_LOW_TEMP_WARN, "low_temp warn"},
 	{ERR_LOG_ECC, ERR_LOG_ECC, "ecc"},
 	{ERR_LOG_IPC_DWN, ERR_LOG_IPC_DWN, "ipc_down"},
+	{ERR_LOG_THERMAL_TRAP, ERR_LOG_THERMAL_TRAP, "thermal_trap"},
 };
 
 /* alerts detected by the host */
@@ -376,16 +382,31 @@ static void bcm_vk_get_card_info(struct bcm_vk *vk)
 	u32 offset;
 	int i;
 	u8 *dst;
+	enum pci_barno bar;
 	struct bcm_vk_card_info *info = &vk->card_info;
 
 	/* first read the offset from spare register */
 	offset = vkread32(vk, BAR_0, BAR_CARD_STATIC_INFO);
-	offset &= (pci_resource_len(vk->pdev, BAR_2 * 2) - 1);
+
+	if (get_soc_idx(vk) == VIPER) {
+		bar = BAR_1;
+		if (offset >= CODEPUSH_BOOT1_ENTRY) {
+			offset = (offset - CODEPUSH_BOOT1_ENTRY) +
+				 BAR1_CODEPUSH_BASE_BOOT1;
+		} else {
+			dev_err(dev, "Card info address is invalid\n");
+			return;
+		}
+	} else {
+		bar = BAR_2;
+	}
+
+	offset &= (pci_resource_len(vk->pdev, bar * 2) - 1);
 
 	/* based on the offset, read info to internal card info structure */
 	dst = (u8 *)info;
 	for (i = 0; i < sizeof(*info); i++)
-		*dst++ = vkread8(vk, BAR_2, offset++);
+		*dst++ = vkread8(vk, bar, offset++);
 
 #define CARD_INFO_LOG_FMT "version   : %x\n" \
 			  "os_tag    : %s\n" \
@@ -406,7 +427,7 @@ static void bcm_vk_get_card_info(struct bcm_vk *vk)
 	 * before dump, in case the BAR2 memory has been corrupted.
 	 */
 	vk->peerlog_off = offset;
-	memcpy_fromio(&vk->peerlog_info, vk->bar[BAR_2] + vk->peerlog_off,
+	memcpy_fromio(&vk->peerlog_info, vk->bar[bar] + vk->peerlog_off,
 		      sizeof(vk->peerlog_info));
 
 	/*
@@ -482,7 +503,7 @@ static int bcm_vk_sync_card_info(struct bcm_vk *vk)
 	 * up
 	 */
 	if (vk->tdma_addr) {
-		vkwrite32(vk, (u64)vk->tdma_addr >> 32, BAR_1,
+		vkwrite32(vk, (u32)((u64)vk->tdma_addr >> 32), BAR_1,
 			  VK_BAR1_SCRATCH_OFF_HI);
 		vkwrite32(vk, (u32)vk->tdma_addr, BAR_1,
 			  VK_BAR1_SCRATCH_OFF_LO);
@@ -493,8 +514,9 @@ static int bcm_vk_sync_card_info(struct bcm_vk *vk)
 	/* get static card info, only need to read once */
 	bcm_vk_get_card_info(vk);
 
-	/* get the proc mon info once */
-	bcm_vk_get_proc_mon_info(vk);
+	if (get_soc_idx(vk) != VIPER)
+		/* get the proc mon info once */
+		bcm_vk_get_proc_mon_info(vk);
 
 	return 0;
 }
@@ -502,6 +524,7 @@ static int bcm_vk_sync_card_info(struct bcm_vk *vk)
 void bcm_vk_blk_drv_access(struct bcm_vk *vk)
 {
 	int i;
+	struct bcm_vk_ctx_ctrl *cctrl = &vk->ctx_ctrl;
 
 	/*
 	 * kill all the apps except for the process that is resetting.
@@ -514,14 +537,35 @@ void bcm_vk_blk_drv_access(struct bcm_vk *vk)
 	atomic_set(&vk->msgq_inited, 0);
 
 	for (i = 0; i < VK_PID_HT_SZ; i++) {
-		struct bcm_vk_ctx *ctx;
+		struct bcm_vk_ctx *ctx, *tmp;
 
-		list_for_each_entry(ctx, &vk->pid_ht[i].head, node) {
+		list_for_each_entry_safe(ctx, tmp,
+					 &cctrl->pid_ht[i].head, pid_node) {
 			if (ctx->pid != vk->reset_pid) {
-				dev_dbg(&vk->pdev->dev,
-					"Send kill signal to pid %d\n",
-					ctx->pid);
-				kill_pid(find_vpid(ctx->pid), SIGKILL, 1);
+				if (!ctx->kill_resp_to) {
+					ctx->kill_resp_to = jiffies +
+					  msecs_to_jiffies(BCM_VK_KILL_WAIT_MS);
+					dev_dbg(&vk->pdev->dev,
+						"Send kill signal to pid %d\n",
+						ctx->pid);
+					kill_pid(find_vpid(ctx->pid),
+						 SIGKILL, 1);
+					continue;
+				}
+				if (time_after(jiffies, ctx->kill_resp_to)) {
+					/*
+					 * if the job has been sent a kill and
+					 * time has elapsed enough, we don't
+					 * know why the kernel would not have
+					 * closed all fds, quarantine the item.
+					 */
+					list_del(&ctx->pid_node);
+					ctx->active = false;
+					list_add_tail(&ctx->pid_node,
+						      &cctrl->iso_head);
+					cctrl->act_cnt--;
+					cctrl->iso_cnt++;
+				}
 			}
 		}
 	}
@@ -530,14 +574,47 @@ void bcm_vk_blk_drv_access(struct bcm_vk *vk)
 }
 
 static void bcm_vk_buf_notify(struct bcm_vk *vk, void *bufp,
-			      dma_addr_t host_buf_addr, u32 buf_size)
+			      dma_addr_t host_buf_addr, size_t buf_size)
 {
 	/* update the dma address to the card */
 	vkwrite32(vk, (u64)host_buf_addr >> 32, BAR_1,
 		  VK_BAR1_DMA_BUF_OFF_HI);
 	vkwrite32(vk, (u32)host_buf_addr, BAR_1,
 		  VK_BAR1_DMA_BUF_OFF_LO);
-	vkwrite32(vk, buf_size, BAR_1, VK_BAR1_DMA_BUF_SZ);
+	vkwrite32(vk, (u32)buf_size, BAR_1, VK_BAR1_DMA_BUF_SZ);
+}
+
+/*
+ * check boot1's boot_status to see if it has entered any special mode
+ * return 0 if in special mode, else -EINVAL
+ */
+static int bcm_vk_chk_mode(struct bcm_vk *vk)
+{
+	struct device *dev = &vk->pdev->dev;
+	u32 boot_status, reg;
+	int ret = -EINVAL;
+	bool is_stdalone, is_thermal_trap;
+
+	boot_status = vkread32(vk, BAR_0, BAR_BOOT_STATUS);
+	if (BCM_VK_INTF_IS_DOWN(boot_status))
+		return ret;
+
+	is_stdalone = boot_status & BOOT_STDALONE_RUNNING;
+	is_thermal_trap = boot_status & BOOT_THERMAL_TRAP;
+	if (is_stdalone) {
+		reg = vkread32(vk, BAR_0, BAR_BOOT1_STDALONE_PROGRESS);
+		if ((reg & BOOT1_STDALONE_PROGRESS_MASK) ==
+		     BOOT1_STDALONE_SUCCESS) {
+			dev_dbg(dev, "Boot1 standalone success\n");
+			ret = 0;
+		}
+	} else if (is_thermal_trap) {
+		if ((boot_status & BOOT_STATE_MASK) == BOOT1_THERMAL_TRAP) {
+			dev_info(dev, "Boot1 enters thermal trap state\n");
+			ret = 0;
+		}
+	}
+	return ret;
 }
 
 static int bcm_vk_load_image_by_type(struct bcm_vk *vk, u32 load_type,
@@ -552,7 +629,6 @@ static int bcm_vk_load_image_by_type(struct bcm_vk *vk, u32 load_type,
 	u32 codepush;
 	u32 value;
 	dma_addr_t boot_dma_addr;
-	bool is_stdalone;
 
 	if (load_type == VK_IMAGE_TYPE_BOOT1) {
 		/*
@@ -634,39 +710,28 @@ static int bcm_vk_load_image_by_type(struct bcm_vk *vk, u32 load_type,
 	vkwrite32(vk, codepush, BAR_0, offset_codepush);
 
 	if (load_type == VK_IMAGE_TYPE_BOOT1) {
-		u32 boot_status;
-
 		/* wait until done */
 		ret = bcm_vk_wait(vk, BAR_0, BAR_BOOT_STATUS,
 				  BOOT1_RUNNING,
 				  BOOT1_RUNNING,
 				  BOOT1_STARTUP_TIMEOUT_MS);
 
-		boot_status = vkread32(vk, BAR_0, BAR_BOOT_STATUS);
-		is_stdalone = !BCM_VK_INTF_IS_DOWN(boot_status) &&
-			      (boot_status & BOOT_STDALONE_RUNNING);
-		if (ret && !is_stdalone) {
+		/*
+		 * if the wait to BOOT1_RUNNING times out, boot1 may still boot
+		 * into some other modes, which we need to do a second check
+		 */
+		if (ret)
+			ret = bcm_vk_chk_mode(vk);
+
+		if (ret) {
 			dev_err(dev,
 				"Timeout %ld ms waiting for boot1 to come up - ret(%d)\n",
 				BOOT1_STARTUP_TIMEOUT_MS, ret);
 			goto err_firmware_out;
-		} else if (is_stdalone) {
-			u32 reg;
-
-			reg = vkread32(vk, BAR_0, BAR_BOOT1_STDALONE_PROGRESS);
-			if ((reg & BOOT1_STDALONE_PROGRESS_MASK) ==
-				     BOOT1_STDALONE_SUCCESS) {
-				dev_info(dev, "Boot1 standalone success\n");
-				ret = 0;
-			} else {
-				dev_err(dev, "Timeout %ld ms - Boot1 standalone failure\n",
-					BOOT1_STARTUP_TIMEOUT_MS);
-				ret = -EINVAL;
-				goto err_firmware_out;
-			}
 		}
 	} else if (load_type == VK_IMAGE_TYPE_BOOT2) {
 		unsigned long timeout;
+		bool is_stdalone;
 
 		timeout = jiffies + msecs_to_jiffies(LOAD_IMAGE_TIMEOUT_MS);
 
@@ -798,7 +863,7 @@ static u32 bcm_vk_next_boot_image(struct bcm_vk *vk)
 	return load_type;
 }
 
-static enum soc_idx get_soc_idx(struct bcm_vk *vk)
+enum soc_idx get_soc_idx(struct bcm_vk *vk)
 {
 	struct pci_dev *pdev = vk->pdev;
 	enum soc_idx idx = VK_IDX_INVALID;
@@ -963,7 +1028,8 @@ static long bcm_vk_load_image(struct bcm_vk *vk,
 
 	next_loadable = bcm_vk_next_boot_image(vk);
 	if (next_loadable != image.type) {
-		dev_err(dev, "Next expected image %u, Loading %u\n",
+		dev_err(dev, "Next expected image %s(%u), Loading %u\n",
+			!next_loadable ? "not found" : "",
 			next_loadable, image.type);
 		return ret;
 	}
@@ -1059,6 +1125,7 @@ static int bcm_vk_trigger_reset(struct bcm_vk *vk)
 	u32 i;
 	u32 value, boot_status;
 	bool is_stdalone, is_boot2;
+	int ret = 0;
 	static const u32 bar0_reg_clr_list[] = { BAR_OS_UPTIME,
 						 BAR_INTF_VER,
 						 BAR_CARD_VOLTAGE,
@@ -1067,72 +1134,95 @@ static int bcm_vk_trigger_reset(struct bcm_vk *vk)
 
 	/* clean up before pressing the door bell */
 	bcm_vk_drain_msg_on_reset(vk);
-	vkwrite32(vk, 0, BAR_1, VK_BAR1_MSGQ_DEF_RDY);
-	/* make tag '\0' terminated */
-	vkwrite32(vk, 0, BAR_1, VK_BAR1_BOOT1_VER_TAG);
-
-	for (i = 0; i < VK_BAR1_DAUTH_MAX; i++) {
-		vkwrite32(vk, 0, BAR_1, VK_BAR1_DAUTH_STORE_ADDR(i));
-		vkwrite32(vk, 0, BAR_1, VK_BAR1_DAUTH_VALID_ADDR(i));
-	}
-	for (i = 0; i < VK_BAR1_SOTP_REVID_MAX; i++)
-		vkwrite32(vk, 0, BAR_1, VK_BAR1_SOTP_REVID_ADDR(i));
-
 	memset(&vk->card_info, 0, sizeof(vk->card_info));
 	memset(&vk->peerlog_info, 0, sizeof(vk->peerlog_info));
 	memset(&vk->proc_mon_info, 0, sizeof(vk->proc_mon_info));
 	memset(&vk->alert_cnts, 0, sizeof(vk->alert_cnts));
 
 	/*
-	 * When boot request fails, the CODE_PUSH_OFFSET stays persistent.
-	 * Allowing us to debug the failure. When we call reset,
-	 * we should clear CODE_PUSH_OFFSET so ROM does not execute
-	 * boot again (and fails again) and instead waits for a new
-	 * codepush.  And, if previous boot has encountered error, need
-	 * to clear the entry values
+	 * read/write to PCIe intf becomes noop if it is down, so
+	 * skip it if so
 	 */
 	boot_status = vkread32(vk, BAR_0, BAR_BOOT_STATUS);
-	if (boot_status & BOOT_ERR_MASK) {
-		dev_info(&vk->pdev->dev,
-			 "Card in boot error 0x%x, clear CODEPUSH val\n",
-			 boot_status);
-		value = 0;
-	} else {
-		value = vkread32(vk, BAR_0, BAR_CODEPUSH_SBL);
-		value &= CODEPUSH_MASK;
-	}
-	vkwrite32(vk, value, BAR_0, BAR_CODEPUSH_SBL);
+	if (!BCM_VK_INTF_IS_DOWN(boot_status)) {
+		vkwrite32(vk, 0, BAR_1, VK_BAR1_MSGQ_DEF_RDY);
+		/* make tag '\0' terminated */
+		vkwrite32(vk, 0, BAR_1, VK_BAR1_BOOT1_VER_TAG);
 
-	/* special reset handling */
-	is_stdalone = boot_status & BOOT_STDALONE_RUNNING;
-	is_boot2 = (boot_status & BOOT_STATE_MASK) == BOOT2_RUNNING;
-	if (vk->peer_alert.flags & ERR_LOG_RAMDUMP) {
+		for (i = 0; i < VK_BAR1_DAUTH_MAX; i++) {
+			vkwrite32(vk, 0, BAR_1, VK_BAR1_DAUTH_STORE_ADDR(i));
+			vkwrite32(vk, 0, BAR_1, VK_BAR1_DAUTH_VALID_ADDR(i));
+		}
+		for (i = 0; i < VK_BAR1_SOTP_REVID_MAX; i++)
+			vkwrite32(vk, 0, BAR_1, VK_BAR1_SOTP_REVID_ADDR(i));
+
 		/*
-		 * if card is in ramdump mode, it is hitting an error.  Don't
-		 * reset the reboot reason as it will contain valid info that
-		 * is important - simply use special reset
+		 * When boot request fails, the CODE_PUSH_OFFSET stays persistent.
+		 * Allowing us to debug the failure. When we call reset,
+		 * we should clear CODE_PUSH_OFFSET so ROM does not execute
+		 * boot again (and fails again) and instead waits for a new
+		 * codepush.  And, if previous boot has encountered error, need
+		 * to clear the entry values
 		 */
-		vkwrite32(vk, VK_BAR0_RESET_RAMPDUMP, BAR_0, VK_BAR_FWSTS);
-		return VK_BAR0_RESET_RAMPDUMP;
-	} else if (is_stdalone && !is_boot2) {
-		dev_info(&vk->pdev->dev, "Hard reset on Standalone mode");
-		bcm_to_v_reset_doorbell(vk, VK_BAR0_RESET_DB_HARD);
-		return VK_BAR0_RESET_DB_HARD;
+
+		if (boot_status & BOOT_ERR_MASK) {
+			dev_err(&vk->pdev->dev,
+				"Card in boot error 0x%x, clear CODEPUSH val\n",
+				boot_status);
+			value = 0;
+		} else {
+			value = vkread32(vk, BAR_0, BAR_CODEPUSH_SBL);
+			value &= CODEPUSH_MASK;
+		}
+		vkwrite32(vk, value, BAR_0, BAR_CODEPUSH_SBL);
+
+		/* special reset handling */
+		is_stdalone = boot_status & BOOT_STDALONE_RUNNING;
+		is_boot2 = (boot_status & BOOT_STATE_MASK) == BOOT2_RUNNING;
+		if (vk->peer_alert.flags & ERR_LOG_RAMDUMP) {
+			/*
+			 * if card is in ramdump mode, it is hitting an error.
+			 * Don't reset the reboot reason as it will contain
+			 * valid info that is important - simply use special
+			 * reset
+			 */
+			vkwrite32(vk, VK_BAR0_RESET_RAMPDUMP,
+				  BAR_0, VK_BAR_FWSTS);
+			ret = VK_BAR0_RESET_RAMPDUMP;
+			goto post_db_cleanup;
+		} else if (is_stdalone && !is_boot2) {
+			dev_info(&vk->pdev->dev,
+				 "Hard reset on Standalone mode");
+			bcm_to_v_reset_doorbell(vk, VK_BAR0_RESET_DB_HARD);
+			ret = VK_BAR0_RESET_DB_HARD;
+			goto post_db_cleanup;
+		}
+
+		/* reset fw_status with proper reason, and press db */
+		vkwrite32(vk, VK_FWSTS_RESET_MBOX_DB, BAR_0, VK_BAR_FWSTS);
+		vkwrite32(vk, VK_FWSTS_RESET_MBOX_DB, BAR_0, VK_BAR_COP_FWSTS);
+		bcm_to_v_reset_doorbell(vk, VK_BAR0_RESET_DB_SOFT);
+
+		/* clear other necessary registers and alert records */
+		for (i = 0; i < ARRAY_SIZE(bar0_reg_clr_list); i++)
+			vkwrite32(vk, 0, BAR_0, bar0_reg_clr_list[i]);
 	}
-
-	/* reset fw_status with proper reason, and press db */
-	vkwrite32(vk, VK_FWSTS_RESET_MBOX_DB, BAR_0, VK_BAR_FWSTS);
-	bcm_to_v_reset_doorbell(vk, VK_BAR0_RESET_DB_SOFT);
-
-	/* clear other necessary registers and alert records */
-	for (i = 0; i < ARRAY_SIZE(bar0_reg_clr_list); i++)
-		vkwrite32(vk, 0, BAR_0, bar0_reg_clr_list[i]);
+post_db_cleanup:
 	memset(&vk->host_alert, 0, sizeof(vk->host_alert));
 	memset(&vk->peer_alert, 0, sizeof(vk->peer_alert));
+#if defined(CONFIG_BCM_VK_QSTATS)
+	/* clear qstats */
+	for (i = 0; i < VK_MSGQ_MAX_NR; i++) {
+		memset(&vk->to_v_msg_chan.qstats[i].qcnts, 0,
+		       sizeof(vk->to_v_msg_chan.qstats[i].qcnts));
+		memset(&vk->to_h_msg_chan.qstats[i].qcnts, 0,
+		       sizeof(vk->to_h_msg_chan.qstats[i].qcnts));
+	}
+#endif
 	/* clear 4096 bits of bitmap */
 	bitmap_clear(vk->bmap, 0, VK_MSG_ID_BITMAP_SIZE);
 
-	return 0;
+	return ret;
 }
 
 static long bcm_vk_reset(struct bcm_vk *vk, struct vk_reset __user *arg)
@@ -1228,7 +1318,6 @@ static long bcm_vk_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	long ret = -EINVAL;
 	struct bcm_vk_ctx *ctx = file->private_data;
 	struct bcm_vk *vk = container_of(ctx->miscdev, struct bcm_vk, miscdev);
-	void __user *argp = (void __user *)arg;
 
 	dev_dbg(&vk->pdev->dev,
 		"ioctl, cmd=0x%02x, arg=0x%02lx\n",
@@ -1238,11 +1327,11 @@ static long bcm_vk_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case VK_IOCTL_LOAD_IMAGE:
-		ret = bcm_vk_load_image(vk, argp);
+		ret = bcm_vk_load_image(vk, (const struct vk_image __user *)arg);
 		break;
 
 	case VK_IOCTL_RESET:
-		ret = bcm_vk_reset(vk, argp);
+		ret = bcm_vk_reset(vk, (struct vk_reset __user *)arg);
 		break;
 
 	default:
@@ -1273,6 +1362,29 @@ static int bcm_vk_on_panic(struct notifier_block *nb,
 	bcm_to_v_reset_doorbell(vk, VK_BAR0_RESET_DB_HARD);
 
 	return 0;
+}
+
+static void bcm_vk_sync_alerts(struct bcm_vk *vk)
+{
+	u32 reg;
+
+	/* sync all alert and check if the card reboot from thermal trap */
+	vk->peer_alert.notfs = vkread32(vk, BAR_0, BAR_CARD_ERR_LOG);
+	reg = vkread32(vk, BAR_0, VK_BAR_FWSTS);
+	if (BCM_VK_INTF_IS_DOWN(reg))
+		return;
+
+	if ((reg & VK_FWSTS_RESET_REASON_MASK) == VK_FWSTS_RESET_THERMAL_TRAP) {
+		/*
+		 * this alert is from previous life, and so the card would not
+		 * raise it again, and we want to keep it in sync.
+		 */
+		vk->peer_alert.notfs |= ERR_LOG_THERMAL_TRAP;
+		vkwrite32(vk, vk->peer_alert.notfs, BAR_0, BAR_CARD_ERR_LOG);
+	}
+	bcm_vk_log_notf(vk, &vk->peer_alert, bcm_vk_peer_err,
+			ARRAY_SIZE(bcm_vk_peer_err));
+	vk->peer_alert.flags = vk->peer_alert.notfs;
 }
 
 static int bcm_vk_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
@@ -1416,12 +1528,17 @@ static int bcm_vk_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		err = -ENOMEM;
 		goto err_ida_remove;
 	}
-	misc_device->fops = &bcm_vk_fops,
+	misc_device->fops = &bcm_vk_fops;
 
 	err = misc_register(misc_device);
 	if (err) {
 		dev_err(dev, "failed to register device\n");
 		goto err_kfree_name;
+	}
+
+	if (get_soc_idx(vk) == VIPER) {
+		if (pci_enable_pcie_error_reporting(pdev))
+			dev_info(dev, "failed to enable pcie error report\n");
 	}
 
 	INIT_WORK(&vk->wq_work, bcm_vk_wq_handler);
@@ -1443,19 +1560,29 @@ static int bcm_vk_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* sync other info */
 	bcm_vk_sync_card_info(vk);
 
+	err = bcm_vk_hwmon_init(vk);
+	if (err)
+		goto err_destroy_workqueue;
+
+	err = bcm_vk_sysfs_init(pdev, misc_device);
+	if (err)
+		goto err_hwmon_deinit;
+
 	/* register for panic notifier */
 	vk->panic_nb.notifier_call = bcm_vk_on_panic;
 	err = atomic_notifier_chain_register(&panic_notifier_list,
 					     &vk->panic_nb);
 	if (err) {
 		dev_err(dev, "Fail to register panic notifier\n");
-		goto err_destroy_workqueue;
+		goto err_hwmon_deinit;
 	}
 
 	snprintf(name, sizeof(name), KBUILD_MODNAME ".%d_ttyVK", id);
 	err = bcm_vk_tty_init(vk, name);
 	if (err)
 		goto err_unregister_panic_notifier;
+
+	bcm_vk_sync_alerts(vk);
 
 	/*
 	 * lets trigger an auto download.  We don't want to do it serially here
@@ -1488,10 +1615,16 @@ err_unregister_panic_notifier:
 	atomic_notifier_chain_unregister(&panic_notifier_list,
 					 &vk->panic_nb);
 
+err_hwmon_deinit:
+	bcm_vk_hwmon_deinit(vk);
+
 err_destroy_workqueue:
 	destroy_workqueue(vk->wq_thread);
 
 err_misc_deregister:
+	if (get_soc_idx(vk) == VIPER)
+		pci_disable_pcie_error_reporting(pdev);
+
 	misc_deregister(misc_device);
 
 err_kfree_name:
@@ -1516,7 +1649,7 @@ err_iounmap:
 	pci_release_regions(pdev);
 
 err_disable_pdev:
-	if (vk->tdma_vaddr)
+	if (vk->tdma_vaddr && vk->tdma_addr)
 		dma_free_coherent(&pdev->dev, nr_scratch_pages * PAGE_SIZE,
 				  vk->tdma_vaddr, vk->tdma_addr);
 
@@ -1532,8 +1665,22 @@ err_free_exit:
 
 void bcm_vk_release_data(struct kref *kref)
 {
+	int i;
 	struct bcm_vk *vk = container_of(kref, struct bcm_vk, kref);
 	struct pci_dev *pdev = vk->pdev;
+	struct bcm_vk_ctx_ctrl *cctrl = &vk->ctx_ctrl;
+	struct bcm_vk_ctx *ctx, *tmp;
+
+	/* clean up any stale allocation of ctxs */
+	for (i = 0; i < VK_PID_HT_SZ; i++) {
+		list_for_each_entry_safe(ctx, tmp,
+					 &cctrl->pid_ht[i].head, pid_node)
+			bcm_vk_free_ctx(vk, ctx);
+	}
+	/* free any ctx under quarantine */
+	list_for_each_entry_safe(ctx, tmp,
+				 &vk->ctx_ctrl.iso_head, pid_node)
+		bcm_vk_free_ctx(vk, ctx);
 
 	dev_dbg(&pdev->dev, "BCM-VK:%d release data 0x%p\n", vk->devid, vk);
 	pci_dev_put(pdev);
@@ -1568,8 +1715,13 @@ static void bcm_vk_remove(struct pci_dev *pdev)
 		dma_free_coherent(&pdev->dev, nr_scratch_pages * PAGE_SIZE,
 				  vk->tdma_vaddr, vk->tdma_addr);
 
-	/* remove if name is set which means misc dev registered */
+	/*
+	 * if name is set which means misc dev registered,
+	 * remove corresponding items
+	 */
 	if (misc_device->name) {
+		bcm_vk_sysfs_exit(pdev, misc_device);
+		bcm_vk_hwmon_deinit(vk);
 		misc_deregister(misc_device);
 		kfree(misc_device->name);
 		ida_simple_remove(&bcm_vk_ida, vk->devid);
@@ -1632,6 +1784,9 @@ static void bcm_vk_shutdown(struct pci_dev *pdev)
 
 static const struct pci_device_id bcm_vk_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_BROADCOM, PCI_DEVICE_ID_VALKYRIE), },
+#if defined(CONFIG_BCM_VK_VIPER)
+	{ PCI_DEVICE(PCI_VENDOR_ID_BROADCOM, PCI_DEVICE_ID_VIPER), },
+#endif
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, bcm_vk_ids);

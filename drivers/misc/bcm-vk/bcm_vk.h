@@ -14,7 +14,14 @@
 #include <linux/mutex.h>
 #include <linux/pci.h>
 #include <linux/poll.h>
+#if defined(BCM_VK_LEGACY_API)
+#include <linux/pid.h>
+#include <linux/sched.h>
+#include <linux/signal.h>
+#include <linux/sizes.h>
+#else
 #include <linux/sched/signal.h>
+#endif
 #include <linux/tty.h>
 #include <linux/uaccess.h>
 #include <uapi/linux/misc/bcm_vk.h>
@@ -22,6 +29,13 @@
 #include "bcm_vk_msg.h"
 
 #define DRV_MODULE_NAME		"bcm-vk"
+
+/*
+ * define to make poll method backward compatible
+ */
+#if defined(BCM_VK_LEGACY_POLL)
+#define __poll_t unsigned int
+#endif
 
 /*
  * Load Image is completed in two stages:
@@ -51,6 +65,7 @@
 
 #define SRAM_OPEN			BIT(16)
 #define DDR_OPEN			BIT(17)
+#define BOOT_THERMAL_TRAP		BIT(22)
 
 /* Firmware loader progress status definitions */
 #define FW_LOADER_ACK_SEND_MORE_DATA	BIT(18)
@@ -76,6 +91,8 @@
 #define BROM_RUNNING			(SRAM_OPEN | BROM_STATUS_COMPLETE)
 #define BOOT1_STATUS_COMPLETE		0x6
 #define BOOT1_RUNNING			(DDR_OPEN | BOOT1_STATUS_COMPLETE)
+#define BOOT1_THERMAL_TRAP		(BOOT_THERMAL_TRAP | \
+					 BOOT1_STATUS_COMPLETE)
 #define BOOT2_STATUS_COMPLETE		0x6
 #define BOOT2_RUNNING			(FW_LOADER_ACK_RCVD_ALL_DATA | \
 					 BOOT2_STATUS_COMPLETE)
@@ -101,7 +118,7 @@
 
 #define BAR_CARD_TEMPERATURE		0x45c
 /* defines for all temperature sensor */
-#define BCM_VK_TEMP_FIELD_MASK		0xff
+#define BCM_VK_TEMP_FIELD_WIDTH         8
 #define BCM_VK_CPU_TEMP_SHIFT		0
 #define BCM_VK_DDR0_TEMP_SHIFT		8
 #define BCM_VK_DDR1_TEMP_SHIFT		16
@@ -126,6 +143,7 @@
 #define ERR_LOG_LOW_TEMP_WARN		BIT(9)
 #define ERR_LOG_ECC			BIT(10)
 #define ERR_LOG_IPC_DWN			BIT(11)
+#define ERR_LOG_THERMAL_TRAP		BIT(12)
 
 /* Alert bit definitions detectd on host */
 #define ERR_LOG_HOST_INTF_V_FAIL	BIT(13)
@@ -147,6 +165,7 @@
 #define BCM_VK_LOW_TEMP_THRE_SHIFT	0
 #define BCM_VK_HIGH_TEMP_THRE_SHIFT	8
 #define BCM_VK_PWR_STATE_SHIFT		16
+#define BCM_VK_TRAP_TEMP_THRE_SHIFT	24
 
 #define BAR_CARD_STATIC_INFO		0x470
 
@@ -244,6 +263,11 @@
 #define VK_BAR1_SOTP_REVID_MAX		2
 #define VK_BAR1_SOTP_REVID_ADDR(x) \
 		(VK_BAR1_SOTP_REVID_BASE_ADDR + (x) * VK_BAR1_SOTP_REVID_SIZE)
+
+/* BAR1 OTP ECID, REV_ID, LOT_ID info */
+#define VK_BAR1_OTP_ECID_BASE_ADDR	0x6380
+#define VK_BAR1_OTP_REV_ID_BASE_ADDR	0x63a0
+#define VK_BAR1_OTP_LOT_ID_BASE_ADDR	0x63b0
 
 /* VK device supports a maximum of 3 bars */
 #define MAX_BAR	3
@@ -365,10 +389,15 @@ struct bcm_vk {
 	struct bcm_vk_proc_mon_info proc_mon_info;
 	struct bcm_vk_dauth_info dauth_info;
 
+#if defined(BCM_VK_LEGACY_API)
+	struct msix_entry msix[32];
+#endif
 	/* mutex to protect the ioctls */
 	struct mutex mutex;
 	struct miscdevice miscdev;
 	int devid; /* dev id allocated */
+	char *hwmon_name; /* hwmon name */
+	struct device *hwmon_dev; /* device for using hwmon subsystem */
 
 #ifdef CONFIG_BCM_VK_TTY
 	struct tty_driver *tty_drv;
@@ -385,8 +414,7 @@ struct bcm_vk {
 	u16 msg_id;
 	DECLARE_BITMAP(bmap, VK_MSG_ID_BITMAP_SIZE);
 	spinlock_t ctx_lock; /* Spinlock for component context */
-	struct bcm_vk_ctx ctx[VK_CMPT_CTX_MAX];
-	struct bcm_vk_ht_entry pid_ht[VK_PID_HT_SZ];
+	struct bcm_vk_ctx_ctrl ctx_ctrl;
 	pid_t reset_pid; /* process that issue reset */
 
 	atomic_t msgq_inited; /* indicate if info has been synced with vk */
@@ -434,8 +462,15 @@ struct bcm_vk_entry {
 	const char *str;
 };
 
+enum soc_idx {
+	VALKYRIE_A0 = 0,
+	VALKYRIE_B0,
+	VIPER,
+	VK_IDX_INVALID
+};
+
 /* alerts that could be generated from peer */
-#define BCM_VK_PEER_ERR_NUM 12
+#define BCM_VK_PEER_ERR_NUM 13
 extern struct bcm_vk_entry const bcm_vk_peer_err[BCM_VK_PEER_ERR_NUM];
 /* alerts detected by the host */
 #define BCM_VK_HOST_ERR_NUM 3
@@ -493,6 +528,7 @@ ssize_t bcm_vk_write(struct file *p_file, const char __user *buf,
 		     size_t count, loff_t *f_pos);
 __poll_t bcm_vk_poll(struct file *p_file, struct poll_table_struct *wait);
 int bcm_vk_release(struct inode *inode, struct file *p_file);
+int bcm_vk_free_ctx(struct bcm_vk *vk, struct bcm_vk_ctx *ctx);
 void bcm_vk_release_data(struct kref *kref);
 irqreturn_t bcm_vk_msgq_irqhandler(int irq, void *dev_id);
 irqreturn_t bcm_vk_notf_irqhandler(int irq, void *dev_id);
@@ -512,6 +548,12 @@ void bcm_vk_hb_deinit(struct bcm_vk *vk);
 void bcm_vk_handle_notf(struct bcm_vk *vk);
 bool bcm_vk_drv_access_ok(struct bcm_vk *vk);
 void bcm_vk_set_host_alert(struct bcm_vk *vk, u32 bit_mask);
+int bcm_vk_hwmon_init(struct bcm_vk *vk);
+void bcm_vk_hwmon_deinit(struct bcm_vk *vk);
+enum soc_idx get_soc_idx(struct bcm_vk *vk);
+
+int bcm_vk_sysfs_init(struct pci_dev *pdev, struct miscdevice *misc_device);
+void bcm_vk_sysfs_exit(struct pci_dev *pdev, struct miscdevice *misc_device);
 
 #ifdef CONFIG_BCM_VK_TTY
 int bcm_vk_tty_init(struct bcm_vk *vk, char *name);
@@ -545,5 +587,41 @@ static inline void bcm_vk_tty_set_irq_enabled(struct bcm_vk *vk, int index)
 {
 }
 #endif /* CONFIG_BCM_VK_TTY */
+
+#if defined(BCM_VK_LEGACY_API)
+
+/*
+ * For legacy kernels, the following 2 PCI APIs will be missing, and
+ * have to use msix_entry[] instead.  The APIs are provided in file bcm_vk_pci.c
+ */
+#define PCI_IRQ_MSI		BIT(0)
+#define PCI_IRQ_MSIX		BIT(1)
+
+int pci_irq_vector(struct pci_dev *pdev, unsigned int nr);
+int pci_alloc_irq_vectors(struct pci_dev *pdev, unsigned int min_vecs,
+			  unsigned int max_vecs, unsigned int flags);
+
+#endif
+
+#if defined(CONFIG_REQ_FW_INTO_BUF_PRIV)
+int request_partial_firmware_into_buf(const struct firmware **firmware_p,
+				      const char *name, struct device *device,
+				      void *buf, size_t size, size_t offset);
+#endif
+
+#if defined(KERNEL_PREAD_FLAG_PART)
+static inline int request_partial_firmware_into_buf
+				(const struct firmware **fw,
+				 const char *filename, struct device *dev,
+				 void *bufp, size_t size, size_t offset)
+{
+	int ret;
+
+	ret = request_firmware_into_buf(fw, filename, dev,
+					bufp, size, offset,
+					KERNEL_PREAD_FLAG_PART);
+	return ret;
+}
+#endif
 
 #endif
