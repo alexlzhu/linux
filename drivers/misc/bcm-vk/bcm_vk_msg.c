@@ -445,10 +445,10 @@ static void bcm_vk_drain_all_pend(struct device *dev,
 {
 	u32 num;
 	struct bcm_vk_wkent *entry, *tmp;
-	struct bcm_vk *vk;
+	struct bcm_vk *vk = NULL;
 	struct list_head del_q;
 
-	if (ctx)
+	if (ctx && ctx->miscdev)
 		vk = container_of(ctx->miscdev, struct bcm_vk, miscdev);
 
 	INIT_LIST_HEAD(&del_q);
@@ -478,7 +478,7 @@ static void bcm_vk_drain_all_pend(struct device *dev,
 	list_for_each_entry_safe(entry, tmp, &del_q, node) {
 		list_del(&entry->node);
 		num++;
-		if (ctx) {
+		if (ctx && ctx->miscdev) {
 			struct vk_msg_blk *msg;
 			int bit_set;
 			bool responded;
@@ -639,7 +639,7 @@ static int bcm_vk_msg_chan_init(struct bcm_vk_msg_chan *chan)
 	return 0;
 }
 
-static void bcm_vk_append_pendq(struct bcm_vk_msg_chan *chan, u16 q_num,
+static void bcm_vk_append_pendq(struct bcm_vk_msg_chan *chan, u32 q_num,
 				struct bcm_vk_wkent *entry)
 {
 	struct bcm_vk_ctx *ctx;
@@ -828,8 +828,7 @@ int bcm_vk_send_shutdown_msg(struct bcm_vk *vk, u32 shut_type,
 	if (get_soc_idx(vk) == VIPER)
 		return 0;
 
-	entry = kzalloc(sizeof(*entry) +
-			sizeof(struct vk_msg_blk), GFP_KERNEL);
+	entry = kzalloc(struct_size(entry, to_v_msg, 1), GFP_KERNEL);
 	if (!entry)
 		return -ENOMEM;
 
@@ -883,7 +882,7 @@ static int bcm_vk_handle_last_sess(struct bcm_vk *vk, const pid_t pid,
 
 static struct bcm_vk_wkent *bcm_vk_dequeue_pending(struct bcm_vk *vk,
 						   struct bcm_vk_msg_chan *chan,
-						   u16 q_num,
+						   u32 q_num,
 						   u16 msg_id)
 {
 	bool found = false;
@@ -1335,14 +1334,16 @@ ssize_t bcm_vk_write(struct file *p_file,
 
 	entry->usr_msg_id = get_msg_id(&entry->to_v_msg[0]);
 	if (entry->usr_msg_id != VK_UNPAIRED_MSG_ID) {
+		u32 msg_id;
+
 		/* Use internal message id */
-		rc = bcm_vk_get_msg_id(vk);
-		if (rc == VK_MSG_ID_OVERFLOW) {
+		msg_id = bcm_vk_get_msg_id(vk);
+		if (msg_id == VK_MSG_ID_OVERFLOW) {
 			dev_err(dev, "msg_id overflow\n");
 			rc = -EOVERFLOW;
 			goto write_free_ent;
 		}
-		set_msg_id(&entry->to_v_msg[0], rc);
+		set_msg_id(&entry->to_v_msg[0], msg_id);
 	}
 	ctx->q_num = q_num;
 
@@ -1458,7 +1459,7 @@ ssize_t bcm_vk_write(struct file *p_file,
 					(vk,
 					&vk->to_v_msg_chan,
 					q_num,
-					get_msg_id(&entry->to_v_msg[0]));
+					(u16)get_msg_id(&entry->to_v_msg[0]));
 		}
 		goto write_free_ent;
 	}

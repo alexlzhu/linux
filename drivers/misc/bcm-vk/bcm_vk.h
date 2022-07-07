@@ -264,6 +264,11 @@
 #define VK_BAR1_SOTP_REVID_ADDR(x) \
 		(VK_BAR1_SOTP_REVID_BASE_ADDR + (x) * VK_BAR1_SOTP_REVID_SIZE)
 
+/* BAR1 OTP ECID, REV_ID, LOT_ID info */
+#define VK_BAR1_OTP_ECID_BASE_ADDR	0x6380
+#define VK_BAR1_OTP_REV_ID_BASE_ADDR	0x63a0
+#define VK_BAR1_OTP_LOT_ID_BASE_ADDR	0x63b0
+
 /* VK device supports a maximum of 3 bars */
 #define MAX_BAR	3
 

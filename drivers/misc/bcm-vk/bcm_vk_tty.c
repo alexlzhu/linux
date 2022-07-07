@@ -2,7 +2,7 @@
 /*
  * Copyright 2018-2020 Broadcom.
  */
-
+#include <linux/version.h>
 #include <linux/tty.h>
 #include <linux/tty_driver.h>
 #include <linux/tty_flip.h>
@@ -171,10 +171,14 @@ static void bcm_vk_tty_close(struct tty_struct *tty, struct file *file)
 {
 	struct bcm_vk *vk = dev_get_drvdata(tty->dev);
 
-	if (tty->index >= BCM_VK_NUM_TTY)
+	if ((tty->index < 0) || (tty->index >= BCM_VK_NUM_TTY)) {
+		dev_err(&vk->pdev->dev, "Index %d out of range\n",
+			tty->index);
 		return;
+	}
 
 	vk->tty[tty->index].is_opened = false;
+	vk->tty[tty->index].pid = 0;
 
 	if (tty->count == 1)
 		del_timer_sync(&vk->serial_timer);
@@ -214,9 +218,19 @@ static int bcm_vk_tty_write(struct tty_struct *tty,
 	return count;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,14,0))
+static unsigned int bcm_vk_tty_write_room(struct tty_struct *tty)
+#else
 static int bcm_vk_tty_write_room(struct tty_struct *tty)
+#endif
 {
 	struct bcm_vk *vk = dev_get_drvdata(tty->dev);
+
+	if ((tty->index < 0) || (tty->index >= BCM_VK_NUM_TTY)) {
+		dev_err(&vk->pdev->dev, "Index %d out of range\n",
+			tty->index);
+		return 0;
+	}
 
 	return vk->tty[tty->index].to_size - 1;
 }
@@ -249,7 +263,7 @@ int bcm_vk_tty_init(struct bcm_vk *vk, char *name)
 	tty_drv->name = kstrdup(name, GFP_KERNEL);
 	if (!tty_drv->name) {
 		err = -ENOMEM;
-		goto err_put_tty_driver;
+		goto err_tty_driver_kref_put;
 	}
 	tty_drv->type = TTY_DRIVER_TYPE_SERIAL;
 	tty_drv->subtype = SERIAL_TYPE_NORMAL;
@@ -267,13 +281,13 @@ int bcm_vk_tty_init(struct bcm_vk *vk, char *name)
 		struct device *tty_dev;
 
 		tty_port_init(&vk->tty[i].port);
-		tty_dev = tty_port_register_device(&vk->tty[i].port, tty_drv,
-						   i, dev);
+		tty_dev = tty_port_register_device_attr(&vk->tty[i].port,
+							tty_drv, i, dev, vk,
+							NULL);
 		if (IS_ERR(tty_dev)) {
 			err = PTR_ERR(tty_dev);
 			goto unwind;
 		}
-		dev_set_drvdata(tty_dev, vk);
 		vk->tty[i].is_opened = false;
 	}
 
@@ -295,8 +309,8 @@ err_kfree_tty_name:
 	kfree(tty_drv->name);
 	tty_drv->name = NULL;
 
-err_put_tty_driver:
-	put_tty_driver(tty_drv);
+err_tty_driver_kref_put:
+	tty_driver_kref_put(tty_drv);
 
 	return err;
 }
@@ -317,7 +331,7 @@ void bcm_vk_tty_exit(struct bcm_vk *vk)
 	kfree(vk->tty_drv->name);
 	vk->tty_drv->name = NULL;
 
-	put_tty_driver(vk->tty_drv);
+	tty_driver_kref_put(vk->tty_drv);
 }
 
 void bcm_vk_tty_terminate_tty_user(struct bcm_vk *vk)
@@ -327,8 +341,10 @@ void bcm_vk_tty_terminate_tty_user(struct bcm_vk *vk)
 
 	for (i = 0; i < BCM_VK_NUM_TTY; ++i) {
 		vktty = &vk->tty[i];
-		if (vktty->pid)
+		if (vktty->pid) {
 			kill_pid(find_vpid(vktty->pid), SIGKILL, 1);
+			vktty->pid = 0;
+		}
 	}
 }
 
