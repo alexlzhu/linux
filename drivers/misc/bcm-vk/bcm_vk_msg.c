@@ -23,10 +23,18 @@
 #define BCM_VK_MSG_Q_MASK	 0xF
 #define BCM_VK_MSG_ID_MASK	 0xFFF
 
-#define BCM_VK_DMA_DRAIN_MAX_MS	  2000
+/*
+ * App uses a timeout of 50s, and so here we add a margin of 10s.
+ * In theory, this could be make as large as desired as long as
+ * an ultimate timeout would occur that prevents "hung" sessions.
+ */
+#define BCM_VK_DMA_DRAIN_MAX_MS	  60000
 
 /* number x q_size will be the max number of msg processed per loop */
 #define BCM_VK_MSG_PROC_MAX_LOOP 2
+
+/* msg_id used for all unpaired messages */
+#define VK_UNPAIRED_MSG_ID 0
 
 /* module parameter */
 static bool hb_mon = true;
@@ -35,6 +43,11 @@ MODULE_PARM_DESC(hb_mon, "Monitoring heartbeat continuously.\n");
 static int batch_log = 1;
 module_param(batch_log, int, 0444);
 MODULE_PARM_DESC(batch_log, "Max num of logs per batch operation.\n");
+
+/* forward declaration */
+static void bcm_vk_drain_all_pend(struct device *dev,
+				  struct bcm_vk_msg_chan *chan,
+				  struct bcm_vk_ctx *ctx);
 
 static bool hb_mon_is_on(void)
 {
@@ -102,6 +115,43 @@ u32 msgq_avail_space(const struct bcm_vk_msgq __iomem *msgq,
 	return (qinfo->q_size - msgq_occupied(msgq, qinfo) - 1);
 }
 
+#if defined(CONFIG_BCM_VK_QSTATS)
+
+/* Use default value of 20000 rd/wr per update */
+#if !defined(BCM_VK_QSTATS_ACC_CNT)
+#define BCM_VK_QSTATS_ACC_CNT 20000
+#endif
+
+static void bcm_vk_update_qstats(struct bcm_vk *vk,
+				 const char *tag,
+				 struct bcm_vk_qstats *qstats,
+				 u32 occupancy)
+{
+	struct bcm_vk_qs_cnts *qcnts = &qstats->qcnts;
+
+	if (occupancy > qcnts->max_occ) {
+		qcnts->max_occ = occupancy;
+		if (occupancy > qcnts->max_abs)
+			qcnts->max_abs = occupancy;
+	}
+
+	qcnts->acc_sum += occupancy;
+	if (++qcnts->cnt >= BCM_VK_QSTATS_ACC_CNT) {
+		/* log average and clear counters */
+		trace_printk("Dev-%d-%s[%d]: Max: [%3d/%3d] Acc %d num %d, Aver %d\n",
+			     vk->devid, tag, qstats->q_num,
+			     qcnts->max_occ, qcnts->max_abs,
+			     qcnts->acc_sum,
+			     qcnts->cnt,
+			     qcnts->acc_sum / qcnts->cnt);
+
+		qcnts->cnt = 0;
+		qcnts->max_occ = 0;
+		qcnts->acc_sum = 0;
+	}
+}
+#endif
+
 /* number of retries when enqueue message fails before returning EAGAIN */
 #define BCM_VK_H2VK_ENQ_RETRY 10
 #define BCM_VK_H2VK_ENQ_RETRY_DELAY_MS 50
@@ -124,6 +174,21 @@ void bcm_vk_set_host_alert(struct bcm_vk *vk, u32 bit_mask)
 	if (test_and_set_bit(BCM_VK_WQ_NOTF_PEND, vk->wq_offload) == 0)
 		queue_work(vk->wq_thread, &vk->wq_work);
 }
+
+#if defined(BCM_VK_LEGACY_API)
+/*
+ * legacy does not support heartbeat mechanism
+ */
+void bcm_vk_hb_init(struct bcm_vk *vk)
+{
+	dev_info(&vk->pdev->dev, "skipped\n");
+}
+
+void bcm_vk_hb_deinit(struct bcm_vk *vk)
+{
+	dev_info(&vk->pdev->dev, "skipped\n");
+}
+#else
 
 /*
  * Heartbeat related defines
@@ -194,6 +259,7 @@ void bcm_vk_hb_deinit(struct bcm_vk *vk)
 
 	del_timer(&hb->timer);
 }
+#endif
 
 static void bcm_vk_msgid_bitmap_clear(struct bcm_vk *vk,
 				      unsigned int start,
@@ -209,53 +275,57 @@ static void bcm_vk_msgid_bitmap_clear(struct bcm_vk *vk,
  */
 static struct bcm_vk_ctx *bcm_vk_get_ctx(struct bcm_vk *vk, const pid_t pid)
 {
-	u32 i;
-	struct bcm_vk_ctx *ctx = NULL;
+	struct device *dev = &vk->pdev->dev;
+	struct bcm_vk_ctx *ctx;
 	u32 hash_idx = hash_32(pid, VK_PID_HT_SHIFT_BIT);
+	struct bcm_vk_ctx_ctrl *cctrl = &vk->ctx_ctrl;
+
+	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return ctx;
 
 	spin_lock(&vk->ctx_lock);
+	if (cctrl->act_cnt >= VK_CMPT_CTX_MAX) {
+		dev_err(dev, "Max %d context reached!\n",
+			VK_CMPT_CTX_MAX);
+		goto cleanup;
+	}
 
 	/* check if it is in reset, if so, don't allow */
 	if (vk->reset_pid) {
-		dev_err(&vk->pdev->dev,
+		dev_err(dev,
 			"No context allowed during reset by pid %d\n",
 			vk->reset_pid);
-
-		goto in_reset_exit;
+		goto cleanup;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(vk->ctx); i++) {
-		if (!vk->ctx[i].in_use) {
-			vk->ctx[i].in_use = true;
-			ctx = &vk->ctx[i];
-			break;
-		}
-	}
-
-	if (!ctx) {
-		dev_err(&vk->pdev->dev, "All context in use\n");
-
-		goto all_in_use_exit;
-	}
-
+	cctrl->act_cnt++;
+	ctx->active = true;
+	ctx->idx = ++cctrl->counter; /* unique handle */
+	/* context_id is set correctly upon receipt of INIT_DONE msg */
+	ctx->context_id = VK_NEW_CTX;
 	/* set the pid and insert it to hash table */
 	ctx->pid = pid;
 	ctx->hash_idx = hash_idx;
-	list_add_tail(&ctx->node, &vk->pid_ht[hash_idx].head);
+	list_add_tail(&ctx->pid_node, &cctrl->pid_ht[hash_idx].head);
 
 	/* increase kref */
 	kref_get(&vk->kref);
-
-	/* clear counter */
-	atomic_set(&ctx->pend_cnt, 0);
-	atomic_set(&ctx->dma_cnt, 0);
 	init_waitqueue_head(&ctx->rd_wq);
-
-all_in_use_exit:
-in_reset_exit:
 	spin_unlock(&vk->ctx_lock);
 
+	/* drain stale and clear counters */
+	bcm_vk_drain_all_pend(&vk->pdev->dev, &vk->to_v_msg_chan, ctx);
+	bcm_vk_drain_all_pend(&vk->pdev->dev, &vk->to_h_msg_chan, ctx);
+
+	atomic_set(&ctx->pend_cnt, 0);
+	atomic_set(&ctx->dma_cnt, 0);
 	return ctx;
+
+cleanup:
+	spin_unlock(&vk->ctx_lock);
+	kfree(ctx);
+	return NULL;
 }
 
 static u16 bcm_vk_get_msg_id(struct bcm_vk *vk)
@@ -288,41 +358,42 @@ static u16 bcm_vk_get_msg_id(struct bcm_vk *vk)
 	return rc;
 }
 
-static int bcm_vk_free_ctx(struct bcm_vk *vk, struct bcm_vk_ctx *ctx)
+int bcm_vk_free_ctx(struct bcm_vk *vk, struct bcm_vk_ctx *ctx)
 {
-	u32 idx;
 	u32 hash_idx;
-	pid_t pid;
 	struct bcm_vk_ctx *entry;
-	int count = 0;
+	int ret = -EINVAL;
+	struct bcm_vk_ctx_ctrl *cctrl = &vk->ctx_ctrl;
 
 	if (!ctx) {
 		dev_err(&vk->pdev->dev, "NULL context detected\n");
-		return -EINVAL;
+		return ret;
 	}
-	idx = ctx->idx;
-	pid = ctx->pid;
 
 	spin_lock(&vk->ctx_lock);
-
-	if (!vk->ctx[idx].in_use) {
-		dev_err(&vk->pdev->dev, "context[%d] not in use!\n", idx);
-	} else {
-		vk->ctx[idx].in_use = false;
-		vk->ctx[idx].miscdev = NULL;
-
-		/* Remove it from hash list and see if it is the last one. */
-		list_del(&ctx->node);
+	list_del(&ctx->pid_node);
+	if (ctx->context_id)
+		list_del(&ctx->cid_node);
+	if (ctx->active) {
+		cctrl->act_cnt--;
 		hash_idx = ctx->hash_idx;
-		list_for_each_entry(entry, &vk->pid_ht[hash_idx].head, node) {
-			if (entry->pid == pid)
-				count++;
+		ret = 0;
+		list_for_each_entry(entry, &cctrl->pid_ht[hash_idx].head,
+				    pid_node) {
+			if (entry->pid == ctx->pid)
+				ret++;
 		}
+	} else {
+		/* ctx in quarantine */
+		cctrl->iso_cnt--;
+		dev_warn(&vk->pdev->dev, "ctx not in active - %d\n",
+			 cctrl->iso_cnt);
 	}
-
 	spin_unlock(&vk->ctx_lock);
 
-	return count;
+	kfree(ctx);
+	kref_put(&vk->kref, bcm_vk_release_data);
+	return ret;
 }
 
 static void bcm_vk_free_wkent(struct device *dev, struct bcm_vk_wkent *entry)
@@ -337,24 +408,65 @@ static void bcm_vk_free_wkent(struct device *dev, struct bcm_vk_wkent *entry)
 	kfree(entry);
 }
 
+static void bcm_vk_remove_cid_entry(struct bcm_vk *vk,
+				    struct bcm_vk_ctx *ctx)
+{
+	int i;
+
+	spin_lock(&vk->ctx_lock);
+	if (ctx) {
+		if (ctx->context_id) {
+			ctx->context_id = 0;
+			list_del(&ctx->cid_node);
+		}
+		goto done;
+	}
+
+	for (i = 0; i < VK_CID_HT_SZ; i++) {
+		struct bcm_vk_ctx *temp;
+
+		list_for_each_entry_safe(ctx,
+					 temp,
+					 &vk->ctx_ctrl.cid_ht[i].head,
+					 cid_node) {
+			if (ctx->context_id) {
+				ctx->context_id = 0;
+				list_del(&ctx->cid_node);
+			}
+		}
+	}
+done:
+	spin_unlock(&vk->ctx_lock);
+}
+
 static void bcm_vk_drain_all_pend(struct device *dev,
 				  struct bcm_vk_msg_chan *chan,
 				  struct bcm_vk_ctx *ctx)
 {
 	u32 num;
 	struct bcm_vk_wkent *entry, *tmp;
-	struct bcm_vk *vk;
+	struct bcm_vk *vk = NULL;
 	struct list_head del_q;
 
-	if (ctx)
+	if (ctx && ctx->miscdev)
 		vk = container_of(ctx->miscdev, struct bcm_vk, miscdev);
 
 	INIT_LIST_HEAD(&del_q);
 	spin_lock(&chan->pendq_lock);
 	for (num = 0; num < chan->q_nr; num++) {
 		list_for_each_entry_safe(entry, tmp, &chan->pendq[num], node) {
-			if ((!ctx) || (entry->ctx->idx == ctx->idx)) {
+			if ((!ctx) || (entry->ctx == ctx)) {
 				list_del(&entry->node);
+				if (entry->to_h_msg) {
+					int cnt;
+
+					cnt = atomic_read(&entry->ctx->pend_cnt);
+					if (cnt > 0)
+						atomic_dec(&entry->ctx->pend_cnt);
+					else
+						dev_info(dev, "Drained pend_cnt %d\n",
+							 cnt);
+				}
 				list_add_tail(&entry->node, &del_q);
 			}
 		}
@@ -366,7 +478,7 @@ static void bcm_vk_drain_all_pend(struct device *dev,
 	list_for_each_entry_safe(entry, tmp, &del_q, node) {
 		list_del(&entry->node);
 		num++;
-		if (ctx) {
+		if (ctx && ctx->miscdev) {
 			struct vk_msg_blk *msg;
 			int bit_set;
 			bool responded;
@@ -382,18 +494,18 @@ static void bcm_vk_drain_all_pend(struct device *dev,
 					 "Drained: fid %u size %u msg 0x%x(seq-%x) ctx 0x%x[fd-%d] args:[0x%x 0x%x] resp %s, bmap %d\n",
 					 msg->function_id, msg->size,
 					 msg_id, entry->seq_num,
-					 msg->context_id, entry->ctx->idx,
+					 msg->context_id,
+					 entry->ctx->idx,
 					 msg->cmd, msg->arg,
 					 responded ? "T" : "F", bit_set);
-			if (responded)
-				atomic_dec(&ctx->pend_cnt);
-			else if (bit_set)
+
+			if (bit_set)
 				bcm_vk_msgid_bitmap_clear(vk, msg_id, 1);
 		}
 		bcm_vk_free_wkent(dev, entry);
 	}
 	if (num && ctx)
-		dev_info(dev, "Total drained items %d [fd-%d]\n",
+		dev_info(dev, "Total drained items %d, [fd-%d]\n",
 			 num, ctx->idx);
 }
 
@@ -401,6 +513,7 @@ void bcm_vk_drain_msg_on_reset(struct bcm_vk *vk)
 {
 	bcm_vk_drain_all_pend(&vk->pdev->dev, &vk->to_v_msg_chan, NULL);
 	bcm_vk_drain_all_pend(&vk->pdev->dev, &vk->to_h_msg_chan, NULL);
+	bcm_vk_remove_cid_entry(vk, NULL);
 }
 
 /*
@@ -428,6 +541,9 @@ int bcm_vk_sync_msgq(struct bcm_vk *vk, bool force_sync)
 		dev_info(dev, "BAR1 msgq marker not initialized.\n");
 		return -EAGAIN;
 	}
+
+	if (get_soc_idx(vk) == VIPER)
+		return 0;
 
 	msgq_off = vkread32(vk, BAR_1, VK_BAR1_MSGQ_CTRL_OFF);
 
@@ -513,13 +629,17 @@ static int bcm_vk_msg_chan_init(struct bcm_vk_msg_chan *chan)
 
 	mutex_init(&chan->msgq_mutex);
 	spin_lock_init(&chan->pendq_lock);
-	for (i = 0; i < VK_MSGQ_MAX_NR; i++)
+	for (i = 0; i < VK_MSGQ_MAX_NR; i++) {
 		INIT_LIST_HEAD(&chan->pendq[i]);
+#if defined(CONFIG_BCM_VK_QSTATS)
+		chan->qstats[i].q_num = i;
+#endif
+	}
 
 	return 0;
 }
 
-static void bcm_vk_append_pendq(struct bcm_vk_msg_chan *chan, u16 q_num,
+static void bcm_vk_append_pendq(struct bcm_vk_msg_chan *chan, u32 q_num,
 				struct bcm_vk_wkent *entry)
 {
 	struct bcm_vk_ctx *ctx;
@@ -623,6 +743,10 @@ static int bcm_to_v_msg_enqueue(struct bcm_vk *vk, struct bcm_vk_wkent *entry)
 
 	avail = msgq_avail_space(msgq, qinfo);
 
+#if defined(CONFIG_BCM_VK_QSTATS)
+	bcm_vk_update_qstats(vk, "to_v", &chan->qstats[q_num],
+			     qinfo->q_size - avail);
+#endif
 	/* if not enough space, return EAGAIN and let app handles it */
 	retry = 0;
 	while ((avail < entry->to_v_blks) &&
@@ -701,8 +825,10 @@ int bcm_vk_send_shutdown_msg(struct bcm_vk *vk, u32 shut_type,
 		return -EINVAL;
 	}
 
-	entry = kzalloc(sizeof(*entry) +
-			sizeof(struct vk_msg_blk), GFP_KERNEL);
+	if (get_soc_idx(vk) == VIPER)
+		return 0;
+
+	entry = kzalloc(struct_size(entry, to_v_msg, 1), GFP_KERNEL);
 	if (!entry)
 		return -ENOMEM;
 
@@ -756,7 +882,7 @@ static int bcm_vk_handle_last_sess(struct bcm_vk *vk, const pid_t pid,
 
 static struct bcm_vk_wkent *bcm_vk_dequeue_pending(struct bcm_vk *vk,
 						   struct bcm_vk_msg_chan *chan,
-						   u16 q_num,
+						   u32 q_num,
 						   u16 msg_id)
 {
 	bool found = false;
@@ -793,6 +919,7 @@ s32 bcm_to_h_msg_dequeue(struct bcm_vk *vk)
 	int msg_processed = 0;
 	int max_msg_to_process;
 	bool exit_loop;
+	u32 hash_idx;
 
 	/*
 	 * drain all the messages from the queues, and find its pending
@@ -836,6 +963,10 @@ s32 bcm_to_h_msg_dequeue(struct bcm_vk *vk)
 				goto idx_err;
 			}
 
+#if defined(CONFIG_BCM_VK_QSTATS)
+			bcm_vk_update_qstats(vk, "to_h", &chan->qstats[q_num],
+					     msgq_occupied(msgq, qinfo));
+#endif
 			num_blks = src_size + 1;
 			data = kzalloc(num_blks * VK_MSGQ_BLK_SIZE, GFP_KERNEL);
 			if (data) {
@@ -885,11 +1016,68 @@ s32 bcm_to_h_msg_dequeue(struct bcm_vk *vk)
 			}
 
 			msg_id = get_msg_id(data);
-			/* lookup original message in to_v direction */
-			entry = bcm_vk_dequeue_pending(vk,
-						       &vk->to_v_msg_chan,
-						       q_num,
-						       msg_id);
+			if (msg_id != VK_UNPAIRED_MSG_ID) {
+				/* lookup original message in to_v direction */
+				entry = bcm_vk_dequeue_pending(vk,
+							       &vk->to_v_msg_chan,
+							       q_num,
+							       msg_id);
+
+				/*
+				 * if first INIT msg, set context_id field of ctx
+				 * and add to context_id hash table.  Since deinit
+				 * could happen async, it is possible a CTRL-C/kill
+				 * would have cleanup all the pending init entry, so
+				 * the entry may be NULL.
+				 * In addition, context_id maybe 0 if it was not
+				 * initialized.
+				 */
+				if ((data->function_id == VK_FID_INIT_DONE) &&
+				    (data->context_id)) {
+					if (entry && !entry->ctx->context_id) {
+						spin_lock(&vk->ctx_lock);
+						entry->ctx->context_id = data->context_id;
+						hash_idx = hash_32(data->context_id,
+								   VK_CID_HT_SHIFT_BIT);
+						list_add_tail(&entry->ctx->cid_node,
+							      &vk->ctx_ctrl.cid_ht[hash_idx].head);
+						spin_unlock(&vk->ctx_lock);
+					} else if (!entry) {
+						dev_warn(dev, "INIT DONE with msgid %d not found\n",
+							 msg_id);
+					}
+				}
+			} else {
+				struct bcm_vk_ctx *ctx;
+				bool found = false;
+
+				entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+				if (!entry) {
+					total = -ENOMEM;
+					goto idx_err;
+				}
+
+				/* Search for ctx */
+				hash_idx = hash_32(data->context_id,
+						   VK_CID_HT_SHIFT_BIT);
+				spin_lock(&vk->ctx_lock);
+				list_for_each_entry(ctx,
+						    &vk->ctx_ctrl.cid_ht[hash_idx].head,
+						    cid_node) {
+					if (ctx->context_id == data->context_id) {
+						found = true;
+						break;
+					}
+				}
+				spin_unlock(&vk->ctx_lock);
+				if (found) {
+					entry->ctx = ctx;
+					entry->usr_msg_id = msg_id;
+				} else {
+					kfree(entry);
+					entry = NULL;
+				}
+			}
 
 			/*
 			 * if there is message to does not have prior send,
@@ -937,20 +1125,21 @@ idx_err:
 static int bcm_vk_data_init(struct bcm_vk *vk)
 {
 	int i;
+	struct bcm_vk_ctx_ctrl *cctrl = &vk->ctx_ctrl;
 
 	spin_lock_init(&vk->ctx_lock);
-	for (i = 0; i < ARRAY_SIZE(vk->ctx); i++) {
-		vk->ctx[i].in_use = false;
-		vk->ctx[i].idx = i;	/* self identity */
-		vk->ctx[i].miscdev = NULL;
-	}
 	spin_lock_init(&vk->msg_id_lock);
 	spin_lock_init(&vk->host_alert_lock);
 	vk->msg_id = 0;
 
 	/* initialize hash table */
 	for (i = 0; i < VK_PID_HT_SZ; i++)
-		INIT_LIST_HEAD(&vk->pid_ht[i].head);
+		INIT_LIST_HEAD(&cctrl->pid_ht[i].head);
+	for (i = 0; i < VK_CID_HT_SZ; i++)
+		INIT_LIST_HEAD(&cctrl->cid_ht[i].head);
+	INIT_LIST_HEAD(&cctrl->iso_head);
+	cctrl->act_cnt = 0;
+	cctrl->iso_cnt = 0;
 
 	return 0;
 }
@@ -1031,11 +1220,19 @@ ssize_t bcm_vk_read(struct file *p_file,
 	spin_lock(&chan->pendq_lock);
 	for (q_num = 0; q_num < chan->q_nr; q_num++) {
 		list_for_each_entry(entry, &chan->pendq[q_num], node) {
-			if (entry->ctx->idx == ctx->idx) {
+			if (entry->ctx == ctx) {
 				if (count >=
 				    (entry->to_h_blks * VK_MSGQ_BLK_SIZE)) {
+					int cnt;
+
+					cnt = atomic_read(&ctx->pend_cnt);
 					list_del(&entry->node);
-					atomic_dec(&ctx->pend_cnt);
+					if (cnt > 0)
+						atomic_dec(&ctx->pend_cnt);
+					else
+						dev_info(dev, "unexpected pend_cnt %d\n",
+							 cnt);
+
 					found = true;
 				} else {
 					/* buffer not big enough */
@@ -1089,6 +1286,7 @@ ssize_t bcm_vk_write(struct file *p_file,
 	u32 q_num;
 	u32 msg_size;
 	u32 msgq_size;
+	bool expect_paired_resp;
 
 	if (!bcm_vk_drv_access_ok(vk))
 		return -EPERM;
@@ -1096,9 +1294,11 @@ ssize_t bcm_vk_write(struct file *p_file,
 	dev_dbg(dev, "Msg count %zu\n", count);
 
 	/* first, do sanity check where count should be multiple of basic blk */
-	if (count & (VK_MSGQ_BLK_SIZE - 1)) {
-		dev_err(dev, "Failure with size %zu not multiple of %zu\n",
-			count, VK_MSGQ_BLK_SIZE);
+	if ((count & (VK_MSGQ_BLK_SIZE - 1)) ||
+	    (count > (VK_MSGQ_BLK_SIZE * VK_MAX_BLKS_PER_MSG))) {
+		dev_err(dev, "Size %zu not multiple of %zu, or exceeds %zu\n",
+			count, VK_MSGQ_BLK_SIZE,
+			VK_MSGQ_BLK_SIZE * VK_MAX_BLKS_PER_MSG);
 		rc = -EINVAL;
 		goto write_err;
 	}
@@ -1132,15 +1332,19 @@ ssize_t bcm_vk_write(struct file *p_file,
 		goto write_free_ent;
 	}
 
-	/* Use internal message id */
 	entry->usr_msg_id = get_msg_id(&entry->to_v_msg[0]);
-	rc = bcm_vk_get_msg_id(vk);
-	if (rc == VK_MSG_ID_OVERFLOW) {
-		dev_err(dev, "msg_id overflow\n");
-		rc = -EOVERFLOW;
-		goto write_free_ent;
+	if (entry->usr_msg_id != VK_UNPAIRED_MSG_ID) {
+		u32 msg_id;
+
+		/* Use internal message id */
+		msg_id = bcm_vk_get_msg_id(vk);
+		if (msg_id == VK_MSG_ID_OVERFLOW) {
+			dev_err(dev, "msg_id overflow\n");
+			rc = -EOVERFLOW;
+			goto write_free_ent;
+		}
+		set_msg_id(&entry->to_v_msg[0], msg_id);
 	}
-	set_msg_id(&entry->to_v_msg[0], rc);
 	ctx->q_num = q_num;
 
 	dev_dbg(dev,
@@ -1150,7 +1354,7 @@ ssize_t bcm_vk_write(struct file *p_file,
 
 	if (entry->to_v_msg[0].function_id == VK_FID_TRANS_BUF) {
 		/* Convert any pointers to sg list */
-		unsigned int num_planes;
+		unsigned int num_planes, i;
 		int dir;
 		struct _vk_data *data;
 
@@ -1166,6 +1370,11 @@ ssize_t bcm_vk_write(struct file *p_file,
 		}
 
 		num_planes = entry->to_v_msg[0].cmd & VK_CMD_PLANES_MASK;
+		if (num_planes > VK_CMD_PLANES_MAX) {
+			rc = -ERANGE;
+			goto write_free_msgid;
+		}
+
 		if ((entry->to_v_msg[0].cmd & VK_CMD_MASK) == VK_CMD_DOWNLOAD)
 			dir = DMA_FROM_DEVICE;
 		else
@@ -1183,6 +1392,15 @@ ssize_t bcm_vk_write(struct file *p_file,
 
 		/* Now back up to the start of the pointers */
 		data -= num_planes;
+
+		/* do a range checking */
+		for (i = 0; i < num_planes; i++)
+			if (data[i].size > BCM_VK_MAX_SGL_CHUNK) {
+				dev_err(dev, "data[%d] size 0x%x > max 0x%x",
+					i, data[i].size, BCM_VK_MAX_SGL_CHUNK);
+				rc = -ERANGE;
+				goto write_free_msgid;
+			}
 
 		/* Convert user addresses to DMA SG List */
 		rc = bcm_vk_sg_alloc(dev, entry->dma, dir, data, num_planes);
@@ -1222,24 +1440,33 @@ ssize_t bcm_vk_write(struct file *p_file,
 				org_pid, org_pid, pid, pid);
 	}
 
-	/*
-	 * store work entry to pending queue until a response is received.
-	 * This needs to be done before enqueuing the message
-	 */
-	bcm_vk_append_pendq(&vk->to_v_msg_chan, q_num, entry);
+	expect_paired_resp = entry->usr_msg_id != VK_UNPAIRED_MSG_ID;
+	if (expect_paired_resp) {
+		/*
+		 * store work entry to pending queue until a response is received.
+		 * This needs to be done before enqueuing the message
+		 */
+		bcm_vk_append_pendq(&vk->to_v_msg_chan, q_num, entry);
+	}
 
 	rc = bcm_to_v_msg_enqueue(vk, entry);
 	if (rc) {
 		dev_err(dev, "Fail to enqueue msg to to_v queue\n");
 
-		/* remove message from pending list */
-		entry = bcm_vk_dequeue_pending
-			       (vk,
-				&vk->to_v_msg_chan,
-				q_num,
-				get_msg_id(&entry->to_v_msg[0]));
+		if (expect_paired_resp) {
+			/* remove message from pending list */
+			entry = bcm_vk_dequeue_pending
+					(vk,
+					&vk->to_v_msg_chan,
+					q_num,
+					(u16)get_msg_id(&entry->to_v_msg[0]));
+		}
 		goto write_free_ent;
 	}
+
+	/* If entry was not stored in pending queue, discard. */
+	if (!expect_paired_resp)
+		kfree(entry);
 
 	return count;
 
@@ -1280,7 +1507,8 @@ int bcm_vk_release(struct inode *inode, struct file *p_file)
 	struct bcm_vk *vk = container_of(ctx->miscdev, struct bcm_vk, miscdev);
 	struct device *dev = &vk->pdev->dev;
 	pid_t pid = ctx->pid;
-	int dma_cnt;
+	u32 q_num = ctx->q_num;
+	int dma_cnt = 0;
 	unsigned long timeout, start_time;
 
 	/*
@@ -1305,17 +1533,25 @@ int bcm_vk_release(struct inode *inode, struct file *p_file)
 	} while (dma_cnt);
 	dev_dbg(dev, "Draining for [fd-%d] pid %d - delay %d ms\n",
 		ctx->idx, pid, jiffies_to_msecs(jiffies - start_time));
-
+	/*
+	 * drain item order is important.  There may be transient messages
+	 * in the queues and so we have to drain the queues where responses
+	 * will be looked up against first (ie, cid and to_v).  If not
+	 * following this order, a stale entry maybe pushed to the to_h_msg,
+	 * and when the ctx is reallocted (very likely with same address),
+	 * this stale entry maybe wrongly taken.  This is particular true
+	 * with cid as there is no msg_id to match against, and only the ctx.
+	 */
+	bcm_vk_remove_cid_entry(vk, ctx);
 	bcm_vk_drain_all_pend(&vk->pdev->dev, &vk->to_v_msg_chan, ctx);
 	bcm_vk_drain_all_pend(&vk->pdev->dev, &vk->to_h_msg_chan, ctx);
 
+
 	ret = bcm_vk_free_ctx(vk, ctx);
 	if (ret == 0)
-		ret = bcm_vk_handle_last_sess(vk, pid, ctx->q_num);
+		ret = bcm_vk_handle_last_sess(vk, pid, q_num);
 	else
 		ret = 0;
-
-	kref_put(&vk->kref, bcm_vk_release_data);
 
 	return ret;
 }
@@ -1353,5 +1589,5 @@ void bcm_vk_msg_remove(struct bcm_vk *vk)
 	/* drain all pending items */
 	bcm_vk_drain_all_pend(&vk->pdev->dev, &vk->to_v_msg_chan, NULL);
 	bcm_vk_drain_all_pend(&vk->pdev->dev, &vk->to_h_msg_chan, NULL);
+	bcm_vk_remove_cid_entry(vk, NULL);
 }
-
