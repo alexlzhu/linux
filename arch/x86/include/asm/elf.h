@@ -403,5 +403,5 @@ struct va_alignment {
 } ____cacheline_aligned;
 
 extern struct va_alignment va_align;
-extern unsigned long align_vdso_addr(unsigned long);
+extern unsigned long align_vdso_addr(unsigned long, unsigned long);
 #endif /* _ASM_X86_ELF_H */

@@ -25,11 +25,18 @@
 /*
  * Align a virtual address to avoid aliasing in the I$ on AMD F15h.
  */
-static unsigned long get_align_mask(void)
+static unsigned long get_align_mask(unsigned long len)
 {
 	/* handle 32- and 64-bit case with a single conditional */
-	if (va_align.flags < 0 || !(va_align.flags & (2 - mmap_is_ia32())))
-		return 0;
+	if (va_align.flags < 0 || !(va_align.flags & (2 - mmap_is_ia32()))) {
+		/*
+		 * Read-only file mappings can be mapped using transparent huge pages;
+		 * make sure that large mappings are 2MB aligned.
+		 * */
+		if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && len >= PMD_SIZE)
+			return PMD_SIZE - 1;
+        return 0;
+	}
 
 	if (!(current->flags & PF_RANDOMIZE))
 		return 0;
@@ -47,16 +54,16 @@ static unsigned long get_align_mask(void)
  * value before calling vm_unmapped_area() or ORed directly to the
  * address.
  */
-static unsigned long get_align_bits(void)
+static unsigned long get_align_bits(unsigned long len)
 {
-	return va_align.bits & get_align_mask();
+	return va_align.bits & get_align_mask(len);
 }
 
-unsigned long align_vdso_addr(unsigned long addr)
+unsigned long align_vdso_addr(unsigned long addr, unsigned long len)
 {
-	unsigned long align_mask = get_align_mask();
+	unsigned long align_mask = get_align_mask(len);
 	addr = (addr + align_mask) & ~align_mask;
-	return addr | get_align_bits();
+	return addr | get_align_bits(len);
 }
 
 static int __init control_va_addr_alignment(char *str)
@@ -154,8 +161,8 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 	info.align_mask = 0;
 	info.align_offset = pgoff << PAGE_SHIFT;
 	if (filp) {
-		info.align_mask = get_align_mask();
-		info.align_offset += get_align_bits();
+		info.align_mask = get_align_mask(len);
+		info.align_offset += get_align_bits(len);
 	}
 	return vm_unmapped_area(&info);
 }
@@ -212,8 +219,8 @@ get_unmapped_area:
 	info.align_mask = 0;
 	info.align_offset = pgoff << PAGE_SHIFT;
 	if (filp) {
-		info.align_mask = get_align_mask();
-		info.align_offset += get_align_bits();
+		info.align_mask = get_align_mask(len);
+		info.align_offset += get_align_bits(len);
 	}
 	addr = vm_unmapped_area(&info);
 	if (!(addr & ~PAGE_MASK))
