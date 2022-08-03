@@ -29,6 +29,7 @@
 #include <linux/hashtable.h>
 #include <linux/userfaultfd_k.h>
 #include <linux/page_idle.h>
+#include <linux/proc_fs.h>
 #include <linux/shmem_fs.h>
 #include <linux/oom.h>
 #include <linux/numa.h>
@@ -38,6 +39,8 @@
 #include <asm/pgalloc.h>
 #include "internal.h"
 
+#define THP_UTIL_BUCKET_NR 10
+#define THP_UTIL_SCAN_SIZE 256
 /*
  * By default, transparent hugepage support is disabled in order to avoid
  * risking an increased memory footprint for applications that are not
@@ -62,6 +65,47 @@ static struct shrinker deferred_split_shrinker;
 static atomic_t huge_zero_refcount;
 struct page *huge_zero_page __read_mostly;
 unsigned long huge_zero_pfn __read_mostly = ~0UL;
+
+static void thp_utilization_workfn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(thp_utilization_work, thp_utilization_workfn);
+
+struct thp_scan_info_bucket {
+	int nr_thps;
+	int nr_zero_pages;
+};
+
+struct thp_scan_info {
+	struct thp_scan_info_bucket buckets[THP_UTIL_BUCKET_NR];
+	struct zone *scan_zone;
+	unsigned long pfn;
+	u64 scan_time_ns;
+	u64 timestamp;
+};
+
+static struct thp_scan_info thp_scan_proc;
+static struct thp_scan_info thp_scan;
+
+static int thp_utilization_show(struct seq_file *seqf, void *pos)
+{
+	int i;
+	int start;
+	int end;
+
+	for (i = 0; i < THP_UTIL_BUCKET_NR; i++) {
+		start = i * THP_UTIL_BUCKET_NR;
+		end = (i + 1) * THP_UTIL_BUCKET_NR - (i + 1 == THP_UTIL_BUCKET_NR ? 0 : 1);
+		/* The last bucket will need to contain 100 */
+		seq_printf(seqf, "Utilized[%d-%d]: %d %d\n", start, end,
+			   thp_scan_proc.buckets[i].nr_thps,
+			   thp_scan_proc.buckets[i].nr_zero_pages);
+	}
+	seq_printf(seqf, "%lu.%02lu %lu.%02lu\n",
+		   (unsigned long)thp_scan_proc.timestamp / NSEC_PER_SEC,
+		   (unsigned long)(thp_scan_proc.timestamp / (NSEC_PER_SEC / 100)) % 100,
+		   (unsigned long)thp_scan_proc.scan_time_ns / NSEC_PER_SEC,
+		   (unsigned long)(thp_scan_proc.scan_time_ns / (NSEC_PER_SEC / 100)) % 100);
+	return 0;
+}
 
 static inline bool file_thp_enabled(struct vm_area_struct *vma)
 {
@@ -424,6 +468,9 @@ static int __init hugepage_init(void)
 	if (err)
 		goto err_slab;
 
+	proc_create_single("thp_utilization", 0, NULL, &thp_utilization_show);
+	schedule_delayed_work(&thp_utilization_work, msecs_to_jiffies(1000));
+
 	err = register_shrinker(&huge_zero_page_shrinker);
 	if (err)
 		goto err_hzp_shrinker;
@@ -539,6 +586,12 @@ bool is_transparent_hugepage(struct page *page)
 }
 EXPORT_SYMBOL_GPL(is_transparent_hugepage);
 
+bool is_anon_transparent_hugepage(struct page *page)
+{
+	return PageAnon(page) && is_transparent_hugepage(page);
+}
+EXPORT_SYMBOL_GPL(is_anon_transparent_hugepage);
+
 static unsigned long __thp_get_unmapped_area(struct file *filp,
 		unsigned long addr, unsigned long len,
 		loff_t off, unsigned long flags, unsigned long size)
@@ -591,6 +644,34 @@ out:
 	return current->mm->get_unmapped_area(filp, addr, len, pgoff, flags);
 }
 EXPORT_SYMBOL_GPL(thp_get_unmapped_area);
+
+int thp_number_utilized_pages(struct page *page)
+{
+	unsigned long page_index, page_offset, value;
+	int thp_nr_utilized_pages = HPAGE_PMD_NR;
+	int step_size = sizeof(unsigned long);
+	bool is_all_zeroes;
+	void *kaddr;
+
+	if (!page || !is_anon_transparent_hugepage(page))
+		return -1;
+
+	kaddr = kmap_local_page(page);
+	for (page_index = 0; page_index < HPAGE_PMD_NR; page_index++) {
+		is_all_zeroes = true;
+		for (page_offset = 0; page_offset < PAGE_SIZE; page_offset += step_size) {
+			value = *(unsigned long *)(kaddr + page_index * PAGE_SIZE + page_offset);
+			if (value != 0) {
+				is_all_zeroes = false;
+				break;
+			}
+		}
+		if (is_all_zeroes)
+			thp_nr_utilized_pages--;
+	}
+	kunmap_local(kaddr);
+	return thp_nr_utilized_pages;
+}
 
 static vm_fault_t __do_huge_pmd_anonymous_page(struct vm_fault *vmf,
 			struct page *page, gfp_t gfp)
@@ -3045,3 +3126,75 @@ void remove_migration_pmd(struct page_vma_mapped_walk *pvmw, struct page *new)
 	update_mmu_cache_pmd(vma, address, pvmw->pmd);
 }
 #endif
+
+static void thp_scan_next_zone(void)
+{
+	u64 current_timestamp;
+	int i;
+	bool update_proc;
+
+	thp_scan.scan_zone = next_zone(thp_scan.scan_zone);
+	update_proc = !thp_scan.scan_zone;
+	thp_scan.scan_zone = update_proc ? (first_online_pgdat())->node_zones
+			: thp_scan.scan_zone;
+	thp_scan.pfn = (thp_scan.scan_zone->zone_start_pfn + HPAGE_PMD_NR - 1)
+			& ~(HPAGE_PMD_SIZE - 1);
+	if (!update_proc)
+		return;
+
+	current_timestamp = local_clock();
+	thp_scan_proc.scan_time_ns = current_timestamp - thp_scan_proc.timestamp;
+	thp_scan_proc.timestamp = current_timestamp;
+
+	for (i = 0; i < THP_UTIL_BUCKET_NR; i++) {
+		thp_scan_proc.buckets[i].nr_thps = thp_scan.buckets[i].nr_thps;
+		thp_scan_proc.buckets[i].nr_zero_pages = thp_scan.buckets[i].nr_zero_pages;
+		thp_scan.buckets[i].nr_thps = 0;
+		thp_scan.buckets[i].nr_zero_pages = 0;
+	}
+}
+
+static void thp_util_scan(unsigned long hend)
+{
+	struct page *page, *head = NULL;
+	int bucket, num_utilized_pages, util_pct;
+	int i;
+
+	for (i = 0; i < THP_UTIL_SCAN_SIZE; i++) {
+		if (thp_scan.pfn >= hend)
+			break;
+		if (!pfn_valid(thp_scan.pfn))
+			goto next;
+
+		page = pfn_to_page(thp_scan.pfn);
+		num_utilized_pages = thp_number_utilized_pages(page);
+		if (num_utilized_pages < 0)
+			goto next;
+
+		util_pct = (num_utilized_pages * 100) / HPAGE_PMD_NR;
+		head = compound_head(page);
+		bucket = min(util_pct / THP_UTIL_BUCKET_NR, THP_UTIL_BUCKET_NR - 1);
+		thp_scan.buckets[bucket].nr_thps++;
+		thp_scan.buckets[bucket].nr_zero_pages += (HPAGE_PMD_NR - num_utilized_pages);
+next:
+		thp_scan.pfn += HPAGE_PMD_NR;
+	}
+}
+
+static void thp_utilization_workfn(struct work_struct *work)
+{
+	unsigned long hend;
+
+	if (!thp_scan.scan_zone)
+		thp_scan.scan_zone = (first_online_pgdat())->node_zones;
+
+	hend = (thp_scan.scan_zone->zone_start_pfn +
+			thp_scan.scan_zone->spanned_pages + HPAGE_PMD_NR - 1)
+			& ~(HPAGE_PMD_SIZE - 1);
+	if (!populated_zone(thp_scan.scan_zone) || thp_scan.pfn >= hend)
+		thp_scan_next_zone();
+	else
+		thp_util_scan(hend);
+
+	schedule_delayed_work(&thp_utilization_work, msecs_to_jiffies(1000));
+}

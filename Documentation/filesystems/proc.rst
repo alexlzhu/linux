@@ -714,6 +714,7 @@ files are there, and which are missing.
  sys          See chapter 2
  sysvipc      Info of SysVIPC Resources (msg, sem, shm)		(2.4)
  tty 	      Info of tty drivers
+ thp_utilization 	      Info on thp utilization
  uptime       Wall clock since boot, combined idle time of all cpus
  version      Kernel version
  video 	      bttv info of video resources			(2.4)
@@ -1102,6 +1103,34 @@ VmallocChunk
 Percpu
               Memory allocated to the percpu allocator used to back percpu
               allocations. This stat excludes the cost of metadata.
+
+thp_utilization
+~~~~~~~~~~~~~~~
+
+Provides information on the utilization of Transparent Hugepages. The
+utilization of a THP is defined as the percentage of normal sized pages
+in the THP that are not zero pages. The buckets are labelled by
+utilization percentage with one line per utilization bucket. Each line
+contains the total number of THPs in that bucket, and the total number
+of 4kb zero pages summed over all THPs in that bucket. The last line
+shows the timestamp of the last scan over all of physical memory, and
+the time required to scan.
+
+::
+
+    > cat /proc/thp_utilization
+    Utilized[0-9]: 402 201184
+    Utilized[10-19]: 56 24601
+    Utilized[20-29]: 28 10722
+    Utilized[30-39]: 26 8617
+    Utilized[40-49]: 33 9168
+    Utilized[50-59]: 51 11738
+    Utilized[60-69]: 39 7039
+    Utilized[70-79]: 40 5103
+    Utilized[80-89]: 48 3632
+    Utilized[90-100]: 313 2163
+    278.86 136.25
+
 
 vmallocinfo
 ~~~~~~~~~~~
